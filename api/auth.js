@@ -51,7 +51,7 @@ async function sendCodeEmail(email, name, code, type) {
       </div>
 
       <p style="font-size:12px;color:#6a90a8;line-height:1.7;">
-        To sign in: enter your email + this 6-digit code at passport.ffppassport.com
+        To sign in: enter your email + this 6-digit code at ffppassport.com
         <br/>This code does not expire until you reset it.
       </p>
 
