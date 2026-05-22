@@ -164,3 +164,20 @@ export async function reset(req, res) {
 
   res.json({ success: true, message: 'New code sent. Your old code no longer works.' });
 }
+// === Default export (added) — dispatches to the right named function based on URL ===
+// Goes at the VERY BOTTOM of api/auth.js, after the reset function.
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+
+  const action = req.query?.action
+    || (req.url || '').split('?')[0].split('/').pop();
+
+  if (action === 'signup') return signup(req, res);
+  if (action === 'signin') return signin(req, res);
+  if (action === 'reset')  return reset(req, res);
+
+  return res.status(404).json({ error: 'Unknown auth action: ' + action });
+}
