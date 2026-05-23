@@ -246,7 +246,8 @@ app.put('/api/members/:id', async (req, res) => {
       interests, 
       fitness_level, 
       date_of_birth, 
-      gender 
+      gender,
+      skills
     } = req.body;
 
     const { data: member, error } = await supabase
@@ -259,6 +260,7 @@ app.put('/api/members/:id', async (req, res) => {
         fitness_level: fitness_level || undefined,
         date_of_birth: date_of_birth || undefined,
         gender: gender || undefined,
+        skills: skills || undefined,
         profile_complete: true
       })
       .eq('id', id)
