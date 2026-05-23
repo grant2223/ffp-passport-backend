@@ -11,27 +11,23 @@ import nodemailer from 'nodemailer';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware - CORS Headers
-app.use((req, res, next) => {
-  const allowedOrigins = ['https://ffppassport.com', 'https://www.ffppassport.com', 'http://localhost:3000'];
-  const origin = req.headers.origin;
-  
-  if (allowedOrigins.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Credentials', 'true');
-  }
-  
+// CORS - Handle preflight
+app.options('*', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
+  res.sendStatus(200);
+});
+
+// CORS - Apply to all requests
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   next();
 });
 
 app.use(express.json({ limit: '50mb' }));
-
 // ── Supabase Client ───────────────────────────────────────────────────────
 const supabase = createClient(
   process.env.SUPABASE_URL,
