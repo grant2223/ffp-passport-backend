@@ -223,7 +223,13 @@ app.put('/api/members/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { 
-      full_name, 
+      full_name,
+      surname,
+      given_names,
+      email,
+      phone,
+      city,
+      nationality,
       photo_url, 
       bio, 
       interests, 
@@ -237,6 +243,12 @@ app.put('/api/members/:id', async (req, res) => {
       .from('members')
       .update({
         full_name: full_name || undefined,
+        surname: surname || undefined,
+        given_names: given_names || undefined,
+        email: email || undefined,
+        phone: phone || undefined,
+        city: city || undefined,
+        nationality: nationality || undefined,
         photo_url: photo_url || undefined,
         bio: bio || undefined,
         interests: interests || undefined,
