@@ -7,6 +7,7 @@ import express from 'express';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
+import Stripe from 'stripe';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -27,12 +28,100 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: '50mb' }));
-
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
+
+// ────────────────────────────────────────────────────────────
+// STRIPE WEBHOOK — must be defined BEFORE express.json()
+// because Stripe sigs are verified against the raw request body.
+// ────────────────────────────────────────────────────────────
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret) {
+    console.error('STRIPE_WEBHOOK_SECRET not set');
+    return res.status(500).send('Webhook secret not configured');
+  }
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, secret);
+  } catch (err) {
+    console.error('Stripe webhook signature failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    try {
+      const session = event.data.object;
+      const email = (session.customer_details && session.customer_details.email) || session.customer_email;
+      const name  = (session.customer_details && session.customer_details.name) || '';
+
+      if (!email) {
+        console.error('Stripe webhook: no email in session', session.id);
+        return res.status(200).json({ received: true, warning: 'no email' });
+      }
+
+      // Check if member already exists (idempotency — Stripe may retry)
+      const { data: existing } = await supabase
+        .from('members')
+        .select('id, access_code')
+        .eq('email', email)
+        .maybeSingle();
+
+      if (existing) {
+        console.log('Stripe webhook: member already exists for', email);
+        return res.status(200).json({ received: true, member_id: existing.id, already_exists: true });
+      }
+
+      // Create new paid member
+      const { code, hash } = generateCode();
+      const passport_no = `FFP-${new Date().getFullYear()}-${String(Math.floor(Math.random()*9999+1)).padStart(4,'0')}`;
+
+      const { data: member, error: insertErr } = await supabase
+        .from('members')
+        .insert({
+          email,
+          full_name: name,
+          access_code: hash,
+          role: 'member',
+          passport_no,
+          paid: true,
+          stripe_session_id: session.id,
+          stripe_customer_id: session.customer || null
+        })
+        .select()
+        .single();
+
+      if (insertErr) {
+        console.error('Stripe webhook: member insert failed', insertErr.message);
+        return res.status(500).json({ error: insertErr.message });
+      }
+
+      // Send welcome email with access code
+      try {
+        await sendCodeEmail(email, name, code, 'signup');
+      } catch (mailErr) {
+        console.error('Stripe webhook: email send failed', mailErr.message);
+        // Member is still created — don't return error to Stripe
+      }
+
+      console.log('Stripe webhook: paid member created', email, member.id);
+    } catch (err) {
+      console.error('Stripe webhook handler error:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  res.json({ received: true });
+});
+
+// JSON parser for all OTHER routes
+app.use(express.json({ limit: '50mb' }));
 
 const mailer = nodemailer.createTransport({
   host:   process.env.SMTP_HOST,
@@ -93,6 +182,16 @@ app.get('/', (req, res) => {
 
 // Signup
 app.post('/api/auth/signup', async (req, res) => {
+  // ⚠️  Free direct signup is disabled in production.
+  // Members are created via the Stripe webhook (payment first).
+  // Set ALLOW_FREE_SIGNUP=true in env to re-enable for development/testing.
+  if (process.env.ALLOW_FREE_SIGNUP !== 'true') {
+    return res.status(403).json({
+      error: 'Account creation requires payment. Please complete checkout to become a member.',
+      checkout_url: process.env.STRIPE_CHECKOUT_URL || 'https://ffppassport.com'
+    });
+  }
+
   try {
     const { email, full_name, role = 'member' } = req.body;
     if (!email) return res.status(400).json({ error: 'Email required' });
@@ -118,8 +217,8 @@ app.post('/api/auth/signup', async (req, res) => {
 
     await sendCodeEmail(email, full_name, code, 'signup');
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: 'Account created. Check your email for your access code.',
       member_id: member.id
     });
