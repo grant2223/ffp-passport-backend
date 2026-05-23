@@ -159,16 +159,16 @@ async function sendCodeEmail(email, name, code, type) {
         <div style="font-size:11px;color:#6a90a8;margin-top:8px;text-transform:uppercase;letter-spacing:1px;">Your access code</div>
       </div>
       <p style="font-size:12px;color:#6a90a8;line-height:1.7;">
-        To sign in: enter your email + this 6-digit code at passport.findFitpeople.com<br/>This code does not expire until you reset it.
+        To sign in: enter your email + this 6-digit code at ffppassport.com<br/>This code does not expire until you reset it.
       </p>
       <div style="margin-top:32px;padding-top:24px;border-top:1px solid rgba(43,168,224,.1);font-size:11px;color:#6a90a8;">
-        FFP Passport · UAE 2026 · findFitpeople.com
+        FFP Passport · UAE 2026 · ffppassport.com
       </div>
     </div>
   `;
 
   await mailer.sendMail({
-    from: '"FFP Passport" <noreply@findFitpeople.com>',
+    from: '"FFP Passport" <noreply@ffppassport.com>',
     to: email,
     subject,
     html
