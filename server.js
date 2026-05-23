@@ -28,13 +28,12 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: '50mb' }));
-// ── Supabase Client ───────────────────────────────────────────────────────
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// ── Email Transporter ────────────────────────────────────────────────────
 const mailer = nodemailer.createTransport({
   host:   process.env.SMTP_HOST,
   port:   465,
@@ -45,7 +44,6 @@ const mailer = nodemailer.createTransport({
   }
 });
 
-// ── Helper Functions ────────────────────────────────────────────────────
 function generateCode() {
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const hash = crypto.createHash('sha256').update(code).digest('hex');
@@ -61,24 +59,19 @@ async function sendCodeEmail(email, name, code, type) {
     <div style="font-family:Montserrat,sans-serif;max-width:480px;margin:0 auto;background:#081420;color:#fff;padding:32px;border-radius:16px;">
       <div style="font-size:22px;font-weight:900;letter-spacing:3px;margin-bottom:8px;">FFP <span style="color:#2ba8e0;">PASSPORT</span></div>
       <div style="font-size:12px;color:#6a90a8;letter-spacing:2px;text-transform:uppercase;margin-bottom:32px;">Find Fit People</div>
-      
       <p style="font-size:16px;color:#9dbdd0;">Hi ${name || 'there'},</p>
       <p style="font-size:14px;color:#9dbdd0;line-height:1.7;">
         ${type === 'signup'
           ? 'Welcome to FFP Passport! Here is your 6-digit access code. This is your permanent login code — keep it somewhere safe.'
           : 'Here is your new 6-digit access code. Your old code has been deactivated.'}
       </p>
-
       <div style="background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:12px;padding:24px;text-align:center;margin:24px 0;">
         <div style="font-size:42px;font-weight:900;letter-spacing:12px;color:#fff;">${code}</div>
         <div style="font-size:11px;color:#6a90a8;margin-top:8px;text-transform:uppercase;letter-spacing:1px;">Your access code</div>
       </div>
-
       <p style="font-size:12px;color:#6a90a8;line-height:1.7;">
-        To sign in: enter your email + this 6-digit code at passport.findFitpeople.com
-        <br/>This code does not expire until you reset it.
+        To sign in: enter your email + this 6-digit code at passport.findFitpeople.com<br/>This code does not expire until you reset it.
       </p>
-
       <div style="margin-top:32px;padding-top:24px;border-top:1px solid rgba(43,168,224,.1);font-size:11px;color:#6a90a8;">
         FFP Passport · UAE 2026 · findFitpeople.com
       </div>
@@ -93,16 +86,10 @@ async function sendCodeEmail(email, name, code, type) {
   });
 }
 
-// ── Routes ──────────────────────────────────────────────────────────────
-
 // Health check
 app.get('/', (req, res) => {
   res.json({ status: 'FFP Passport API running' });
 });
-
-// ════════════════════════════════════════════════════════════════════════════
-// AUTHENTICATION
-// ════════════════════════════════════════════════════════════════════════════
 
 // Signup
 app.post('/api/auth/signup', async (req, res) => {
@@ -212,10 +199,6 @@ app.post('/api/auth/reset', async (req, res) => {
   }
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-// MEMBER PROFILE
-// ════════════════════════════════════════════════════════════════════════════
-
 // Get member profile by ID
 app.get('/api/members/:id', async (req, res) => {
   try {
@@ -223,7 +206,7 @@ app.get('/api/members/:id', async (req, res) => {
     
     const { data: member, error } = await supabase
       .from('members')
-      .select('id, email, full_name, passport_no, photo_url, bio, interests, fitness_level, date_of_birth, gender, points, tier, ambassador_tier, joined_at, visit_count')
+      .select('id, email, full_name, passport_no, photo_url, bio, interests, fitness_level, date_of_birth, gender, points, tier, ambassador_tier, joined_at, visit_count, skills')
       .eq('id', id)
       .single();
 
@@ -279,15 +262,16 @@ app.put('/api/members/:id', async (req, res) => {
   }
 });
 
-// List all members (for member discovery)
+// List all members (discovery)
 app.get('/api/members', async (req, res) => {
   try {
     const { limit = 50, offset = 0 } = req.query;
 
     const { data: members, error } = await supabase
       .from('members')
-      .select('id, full_name, photo_url, bio, interests, fitness_level, points, tier, ambassador_tier, visit_count')
+      .select('id, full_name, photo_url, bio, interests, fitness_level, gender, city, points, profile_complete')
       .eq('status', 'active')
+      .eq('profile_complete', true)
       .order('points', { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -302,10 +286,6 @@ app.get('/api/members', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// ════════════════════════════════════════════════════════════════════════════
-// MEETUPS
-// ════════════════════════════════════════════════════════════════════════════
 
 // Create meetup
 app.post('/api/meetups', async (req, res) => {
@@ -332,7 +312,6 @@ app.post('/api/meetups', async (req, res) => {
 
     if (error) return res.status(500).json({ error: error.message });
 
-    // Auto-add creator as attendee
     await supabase
       .from('meetup_attendees')
       .insert({ meetup_id: meetup.id, member_id: creator_id });
@@ -357,7 +336,6 @@ app.get('/api/meetups', async (req, res) => {
 
     if (meetupError) return res.status(500).json({ error: meetupError.message });
 
-    // Get attendee count for each meetup
     const meetupsWithAttendees = await Promise.all(
       meetups.map(async (meetup) => {
         const { data: attendees } = await supabase
@@ -365,7 +343,6 @@ app.get('/api/meetups', async (req, res) => {
           .select('member_id')
           .eq('meetup_id', meetup.id);
 
-        // Get creator info
         const { data: creator } = await supabase
           .from('members')
           .select('id, full_name, photo_url')
@@ -399,7 +376,6 @@ app.get('/api/meetups/:id', async (req, res) => {
 
     if (meetupError || !meetup) return res.status(404).json({ error: 'Meetup not found' });
 
-    // Get attendees with member details
     const { data: attendeeRecords } = await supabase
       .from('meetup_attendees')
       .select('member_id')
@@ -412,7 +388,6 @@ app.get('/api/meetups/:id', async (req, res) => {
       .select('id, full_name, photo_url, bio, interests')
       .in('id', attendeeIds);
 
-    // Get creator info
     const { data: creator } = await supabase
       .from('members')
       .select('id, full_name, photo_url')
@@ -441,7 +416,6 @@ app.post('/api/meetups/:id/join', async (req, res) => {
 
     if (!member_id) return res.status(400).json({ error: 'member_id required' });
 
-    // Check if already joined
     const { data: existing } = await supabase
       .from('meetup_attendees')
       .select('id')
@@ -487,10 +461,6 @@ app.post('/api/meetups/:id/leave', async (req, res) => {
   }
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-// CALORIE TRACKING
-// ════════════════════════════════════════════════════════════════════════════
-
 // Save calorie log
 app.post('/api/calorie/save', async (req, res) => {
   try {
@@ -511,10 +481,6 @@ app.post('/api/calorie/save', async (req, res) => {
   }
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-// PROVIDER / QR CODE VISITS
-// ════════════════════════════════════════════════════════════════════════════
-
 // Log visit (QR scan)
 app.post('/api/visits/log', async (req, res) => {
   try {
@@ -529,7 +495,6 @@ app.post('/api/visits/log', async (req, res) => {
 
     if (error) return res.status(500).json({ error: error.message });
 
-    // Increment visit count on member
     await supabase
       .from('members')
       .update({ visit_count: supabase.raw('visit_count + 1') })
