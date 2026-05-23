@@ -1,7 +1,7 @@
 // FFP Passport — Express Server (Railway-compatible)
-// This wraps the Vercel functions to run on Railway
+// Updated with profile, member discovery, and meetup endpoints
 // Deploy: Push to GitHub, connect to Railway, set environment variables
-// v1 - Fresh build for Node.js 20
+// v2 - Profile & Meetups
 
 import express from 'express';
 import cors from 'cors';
@@ -14,7 +14,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 
 // ── Supabase Client ───────────────────────────────────────────────────────
 const supabase = createClient(
@@ -83,10 +83,14 @@ async function sendCodeEmail(email, name, code, type) {
 
 // ── Routes ──────────────────────────────────────────────────────────────
 
-// Health check (Railway uses this)
+// Health check
 app.get('/', (req, res) => {
   res.json({ status: 'FFP Passport API running' });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// AUTHENTICATION
+// ════════════════════════════════════════════════════════════════════════════
 
 // Signup
 app.post('/api/auth/signup', async (req, res) => {
@@ -115,7 +119,11 @@ app.post('/api/auth/signup', async (req, res) => {
 
     await sendCodeEmail(email, full_name, code, 'signup');
 
-    res.json({ success: true, message: 'Account created. Check your email for your access code.' });
+    res.json({ 
+      success: true, 
+      message: 'Account created. Check your email for your access code.',
+      member_id: member.id
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -149,16 +157,19 @@ app.post('/api/auth/signin', async (req, res) => {
       success: true,
       token,
       member: {
-        id:          member.id,
-        email:       member.email,
-        full_name:   member.full_name,
-        passport_no: member.passport_no,
-        role:        member.role,
-        points:      member.points,
+        id:              member.id,
+        email:           member.email,
+        full_name:       member.full_name,
+        passport_no:     member.passport_no,
+        role:            member.role,
+        points:          member.points,
+        profile_complete: member.profile_complete,
       },
-      redirect: member.role === 'admin' ? '/ffp-admin.html'
-               : member.role === 'provider' ? '/ffp-provider.html'
-               : '/ffp-member-dashboard.html'
+      redirect: member.profile_complete 
+        ? (member.role === 'admin' ? '/ffp-admin.html'
+           : member.role === 'provider' ? '/ffp-provider.html'
+           : '/ffp-member-dashboard.html')
+        : '/ffp-profile-complete.html'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -189,6 +200,283 @@ app.post('/api/auth/reset', async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// MEMBER PROFILE
+// ════════════════════════════════════════════════════════════════════════════
+
+// Get member profile by ID
+app.get('/api/members/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const { data: member, error } = await supabase
+      .from('members')
+      .select('id, email, full_name, passport_no, photo_url, bio, interests, fitness_level, date_of_birth, gender, points, tier, ambassador_tier, joined_at, visit_count')
+      .eq('id', id)
+      .single();
+
+    if (error || !member) return res.status(404).json({ error: 'Member not found' });
+
+    res.json({ success: true, member });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update member profile
+app.put('/api/members/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      full_name, 
+      photo_url, 
+      bio, 
+      interests, 
+      fitness_level, 
+      date_of_birth, 
+      gender 
+    } = req.body;
+
+    const { data: member, error } = await supabase
+      .from('members')
+      .update({
+        full_name: full_name || undefined,
+        photo_url: photo_url || undefined,
+        bio: bio || undefined,
+        interests: interests || undefined,
+        fitness_level: fitness_level || undefined,
+        date_of_birth: date_of_birth || undefined,
+        gender: gender || undefined,
+        profile_complete: true
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({ 
+      success: true, 
+      message: 'Profile updated',
+      member 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// List all members (for member discovery)
+app.get('/api/members', async (req, res) => {
+  try {
+    const { limit = 50, offset = 0 } = req.query;
+
+    const { data: members, error } = await supabase
+      .from('members')
+      .select('id, full_name, photo_url, bio, interests, fitness_level, points, tier, ambassador_tier, visit_count')
+      .eq('status', 'active')
+      .order('points', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({ 
+      success: true, 
+      members,
+      count: members.length 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// MEETUPS
+// ════════════════════════════════════════════════════════════════════════════
+
+// Create meetup
+app.post('/api/meetups', async (req, res) => {
+  try {
+    const { creator_id, title, description, location, date_time, max_attendees = 20 } = req.body;
+    
+    if (!creator_id || !title || !location || !date_time) {
+      return res.status(400).json({ error: 'creator_id, title, location, and date_time required' });
+    }
+
+    const { data: meetup, error } = await supabase
+      .from('meetups')
+      .insert({
+        creator_id,
+        title,
+        description,
+        location,
+        date_time,
+        max_attendees,
+        status: 'active'
+      })
+      .select()
+      .single();
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Auto-add creator as attendee
+    await supabase
+      .from('meetup_attendees')
+      .insert({ meetup_id: meetup.id, member_id: creator_id });
+
+    res.json({ success: true, meetup });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// List all meetups
+app.get('/api/meetups', async (req, res) => {
+  try {
+    const { limit = 50, offset = 0 } = req.query;
+
+    const { data: meetups, error: meetupError } = await supabase
+      .from('meetups')
+      .select('*')
+      .eq('status', 'active')
+      .order('date_time', { ascending: true })
+      .range(offset, offset + limit - 1);
+
+    if (meetupError) return res.status(500).json({ error: meetupError.message });
+
+    // Get attendee count for each meetup
+    const meetupsWithAttendees = await Promise.all(
+      meetups.map(async (meetup) => {
+        const { data: attendees } = await supabase
+          .from('meetup_attendees')
+          .select('member_id')
+          .eq('meetup_id', meetup.id);
+
+        // Get creator info
+        const { data: creator } = await supabase
+          .from('members')
+          .select('id, full_name, photo_url')
+          .eq('id', meetup.creator_id)
+          .single();
+
+        return {
+          ...meetup,
+          attendee_count: attendees?.length || 0,
+          creator: creator
+        };
+      })
+    );
+
+    res.json({ success: true, meetups: meetupsWithAttendees });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get single meetup with attendees
+app.get('/api/meetups/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: meetup, error: meetupError } = await supabase
+      .from('meetups')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (meetupError || !meetup) return res.status(404).json({ error: 'Meetup not found' });
+
+    // Get attendees with member details
+    const { data: attendeeRecords } = await supabase
+      .from('meetup_attendees')
+      .select('member_id')
+      .eq('meetup_id', id);
+
+    const attendeeIds = attendeeRecords?.map(r => r.member_id) || [];
+
+    const { data: attendees } = await supabase
+      .from('members')
+      .select('id, full_name, photo_url, bio, interests')
+      .in('id', attendeeIds);
+
+    // Get creator info
+    const { data: creator } = await supabase
+      .from('members')
+      .select('id, full_name, photo_url')
+      .eq('id', meetup.creator_id)
+      .single();
+
+    res.json({
+      success: true,
+      meetup: {
+        ...meetup,
+        creator,
+        attendees,
+        attendee_count: attendees?.length || 0
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Join meetup
+app.post('/api/meetups/:id/join', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { member_id } = req.body;
+
+    if (!member_id) return res.status(400).json({ error: 'member_id required' });
+
+    // Check if already joined
+    const { data: existing } = await supabase
+      .from('meetup_attendees')
+      .select('id')
+      .eq('meetup_id', id)
+      .eq('member_id', member_id)
+      .single();
+
+    if (existing) return res.status(409).json({ error: 'Already joined this meetup' });
+
+    const { data: attendee, error } = await supabase
+      .from('meetup_attendees')
+      .insert({ meetup_id: id, member_id })
+      .select()
+      .single();
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({ success: true, message: 'Joined meetup', attendee });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Leave meetup
+app.post('/api/meetups/:id/leave', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { member_id } = req.body;
+
+    if (!member_id) return res.status(400).json({ error: 'member_id required' });
+
+    const { error } = await supabase
+      .from('meetup_attendees')
+      .delete()
+      .eq('meetup_id', id)
+      .eq('member_id', member_id);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({ success: true, message: 'Left meetup' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// CALORIE TRACKING
+// ════════════════════════════════════════════════════════════════════════════
+
 // Save calorie log
 app.post('/api/calorie/save', async (req, res) => {
   try {
@@ -209,6 +497,10 @@ app.post('/api/calorie/save', async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// PROVIDER / QR CODE VISITS
+// ════════════════════════════════════════════════════════════════════════════
+
 // Log visit (QR scan)
 app.post('/api/visits/log', async (req, res) => {
   try {
@@ -217,11 +509,17 @@ app.post('/api/visits/log', async (req, res) => {
 
     const { data, error } = await supabase
       .from('visit_logs')
-      .insert({ member_id, provider_id, qr_code, visited_at: new Date().toISOString() })
+      .insert({ member_id, provider_id, qr_code, logged_at: new Date().toISOString() })
       .select()
       .single();
 
     if (error) return res.status(500).json({ error: error.message });
+
+    // Increment visit count on member
+    await supabase
+      .from('members')
+      .update({ visit_count: supabase.raw('visit_count + 1') })
+      .eq('id', member_id);
 
     res.json({ success: true, data });
   } catch (error) {
