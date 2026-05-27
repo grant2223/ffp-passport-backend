@@ -1,5 +1,7 @@
 // FFP Passport — Express Server (Vercel, CommonJS) — v2
-// v2: webhook updates stripe_session_id on existing members (was: return early without update)
+// v2: webhook updates stripe_session_id on existing members
+//     (v1 returned early without update, which broke profile-complete v7
+//     lookup for any repeat or test payment with an existing email)
 
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
