@@ -1,208 +1,116 @@
-// ============================================================================
-// FFP Passport — Backend (v2 — minimal)
-// ============================================================================
-// Single purpose: handle Stripe webhook → create Supabase Auth user + members row.
-//
-// Everything else is now handled by:
-//   - Supabase Auth (login, OTP codes, session tokens)
-//   - Supabase JS client directly from the frontend (all data reads/writes)
-//
-// All previous endpoints (/api/auth/*, /api/members/*, /api/meetups/*, /api/calorie/*,
-// /api/visits/*) have been retired. They return 410 Gone if accidentally hit.
-//
-// Env vars required:
-//   STRIPE_SECRET_KEY        — Stripe API secret key
-//   STRIPE_WEBHOOK_SECRET    — Stripe webhook signing secret (whsec_...)
-//   SUPABASE_URL             — Supabase project URL
-//   SUPABASE_SERVICE_KEY     — Supabase service_role key (NOT the anon key)
-// ============================================================================
+/* =============================================================
+   FFP Passport — Stripe Session Auto-Signin (v1)
+   Path: assets/ffp-session-signin.js
 
-import express from 'express';
-import { createClient } from '@supabase/supabase-js';
-import Stripe from 'stripe';
+   Detects ?session_id= in the page URL (set by Stripe Payment Link
+   success URL after a paid checkout) and exchanges it for an auth
+   token via the backend's /api/auth/session-signin endpoint.
 
-const app = express();
+   Behaviour:
+   - No ?session_id in URL → script is a no-op (page renders normally)
+   - User already signed in → strips session_id from URL, no API call
+   - Token returned → stores token + member, cleans URL
+   - profile already complete → redirects to dashboard
+   - Failure → redirects to /login
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-  apiVersion: '2022-08-01'
-});
+   Brand rules:
+   - Montserrat only (no other fonts)
+   - Solid colours only (no rgba opacity hacks)
+   - No emojis, no native scrollbars
+   - Uses FFP navy palette: #081420 / #2ba8e0 / #6a90a8
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY,
-  { auth: { persistSession: false, autoRefreshToken: false } }
-);
+   Dependency:
+   - Must be loaded AFTER assets/ffp-api-integration.js
+   - Both must exist on the page that runs this script
+   ============================================================= */
+(function () {
+  'use strict';
 
-// CORS — allow browser calls for health check and future direct calls
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
+  // Inject scrollbar-hiding CSS (FFP platform-wide rule)
+  var styleEl = document.createElement('style');
+  styleEl.textContent = '\
+*::-webkit-scrollbar{display:none;width:0;height:0;}\
+*{-ms-overflow-style:none;scrollbar-width:none;}\
+#ffp-stripe-overlay{position:fixed;inset:0;z-index:99999;background:#081420;color:#fff;font-family:Montserrat,sans-serif;display:none;align-items:center;justify-content:center;}\
+#ffp-stripe-overlay.show{display:flex;}\
+#ffp-stripe-overlay .ffp-so-inner{text-align:center;}\
+#ffp-stripe-overlay .ffp-so-brand{font-size:24px;font-weight:900;letter-spacing:3px;}\
+#ffp-stripe-overlay .ffp-so-brand span{color:#2ba8e0;}\
+#ffp-stripe-overlay .ffp-so-msg{font-size:12px;color:#6a90a8;margin-top:16px;letter-spacing:1px;text-transform:uppercase;}\
+';
+  document.head.appendChild(styleEl);
 
-// ────────────────────────────────────────────────────────────────────────────
-// STRIPE WEBHOOK — must come BEFORE express.json() because Stripe signature
-// verification requires the raw request body bytes.
-// ────────────────────────────────────────────────────────────────────────────
-app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
-  const signature = req.headers['stripe-signature'];
-  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  // Inject overlay DOM
+  var overlay = document.createElement('div');
+  overlay.id = 'ffp-stripe-overlay';
+  overlay.innerHTML = '\
+<div class="ffp-so-inner">\
+<div class="ffp-so-brand">FFP <span>PASSPORT</span></div>\
+<div class="ffp-so-msg">Signing you in&hellip;</div>\
+</div>\
+';
 
-  if (!secret) {
-    console.error('[stripe-webhook] STRIPE_WEBHOOK_SECRET not configured');
-    return res.status(500).send('Webhook secret not configured');
-  }
+  function start() {
+    // Body must exist before appending overlay
+    if (!document.body) {
+      document.addEventListener('DOMContentLoaded', start);
+      return;
+    }
+    document.body.appendChild(overlay);
 
-  // 1. Verify signature
-  let event;
-  try {
-    event = stripe.webhooks.constructEvent(req.body, signature, secret);
-  } catch (err) {
-    console.error('[stripe-webhook] signature failed:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
+    var sessionId = new URLSearchParams(window.location.search).get('session_id');
+    if (!sessionId) return;
 
-  // 2. Only care about completed checkouts
-  if (event.type !== 'checkout.session.completed') {
-    return res.status(200).json({ received: true, ignored: event.type });
-  }
-
-  const session = event.data.object;
-  const email = session.customer_details?.email;
-  const fullName = session.customer_details?.name || null;
-  const stripeSessionId = session.id;
-  const stripeCustomerId = session.customer || null;
-
-  if (session.payment_status !== 'paid') {
-    return res.status(200).json({ received: true, ignored: 'not_paid' });
-  }
-  if (!email) {
-    console.error('[stripe-webhook] no email in session:', stripeSessionId);
-    return res.status(400).json({ error: 'No email in session' });
-  }
-
-  try {
-    // 3. Idempotency check — has this email already been processed?
-    const { data: existing, error: lookupError } = await supabase
-      .from('members')
-      .select('id, paid')
-      .eq('email', email)
-      .maybeSingle();
-
-    if (lookupError) {
-      console.error('[stripe-webhook] lookup failed:', lookupError);
-      return res.status(500).json({ error: 'Lookup failed' });
+    // Already signed in? Just clean URL, don't re-auth.
+    if (window.FFPAuth && window.FFPAuth.isAuthenticated()) {
+      var cleanUrl = window.location.pathname;
+      window.history.replaceState({}, '', cleanUrl);
+      return;
     }
 
-    let userId;
+    overlay.classList.add('show');
 
-    if (existing) {
-      // Member exists — just mark paid if not already
-      userId = existing.id;
-      if (!existing.paid) {
-        await supabase
-          .from('members')
-          .update({
-            paid: true,
-            stripe_session_id: stripeSessionId,
-            stripe_customer_id: stripeCustomerId
-          })
-          .eq('id', userId);
+    function callApi(retries) {
+      if (typeof FFPApi === 'undefined' || !FFPApi.sessionSignin) {
+        if (retries > 30) {
+          console.error('[FFP Session Signin] FFPApi.sessionSignin not available after 3s — is ffp-api-integration.js loaded?');
+          window.location.href = '/login';
+          return;
+        }
+        setTimeout(function () { callApi(retries + 1); }, 100);
+        return;
       }
-      console.log('[stripe-webhook] existing member updated:', email);
-    } else {
-      // 4. Create Supabase Auth user (email_confirm=true — payment proves identity)
-      const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-        email,
-        email_confirm: true,
-        user_metadata: { full_name: fullName }
+
+      FFPApi.sessionSignin(sessionId).then(function (res) {
+        overlay.classList.remove('show');
+
+        if (!res || res.error) {
+          console.error('[FFP Session Signin] Failed:', res && res.error);
+          window.location.href = '/login';
+          return;
+        }
+
+        // Clean the URL (remove ?session_id=...)
+        var cleanUrl = window.location.pathname;
+        window.history.replaceState({}, '', cleanUrl);
+
+        // If profile is already complete, jump to the right dashboard
+        if (res.member && res.member.profile_complete) {
+          window.location.href = res.redirect || '/ffp-member-dashboard.html';
+          return;
+        }
+
+        // Otherwise: stay on this page (profile-complete form)
+        console.log('[FFP Session Signin v1] Signed in as', res.member && res.member.email);
+      }).catch(function (err) {
+        overlay.classList.remove('show');
+        console.error('[FFP Session Signin] Network error:', err);
+        window.location.href = '/login';
       });
-
-      if (authError) {
-        console.error('[stripe-webhook] auth user creation failed:', authError);
-        return res.status(500).json({ error: 'Auth creation failed' });
-      }
-
-      userId = authData.user.id;
-
-      // 5. Generate referral code: first name + 4-char UUID slice
-      //    Example: "Grant Goes" + uuid abc12... → "GRANTABC1"
-      const firstName = (fullName || 'FFP').split(' ')[0];
-      const namePart = firstName.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 6) || 'FFP';
-      const idPart = userId.replace(/-/g, '').toUpperCase().slice(0, 4);
-      const referralCode = namePart + idPart;
-
-      // 6. Generate passport number: FFP-2026-XXXX
-      const passportNo = `FFP-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9999 + 1)).padStart(4, '0')}`;
-
-      // 7. Insert members row
-      const { error: insertError } = await supabase.from('members').insert({
-        id: userId,
-        email,
-        full_name: fullName,
-        passport_no: passportNo,
-        tier: 'member',
-        balance_aed: 0,
-        referral_code: referralCode,
-        paid: true,
-        stripe_session_id: stripeSessionId,
-        stripe_customer_id: stripeCustomerId,
-        profile_complete: false
-      });
-
-      if (insertError) {
-        console.error('[stripe-webhook] member insert failed:', insertError);
-        // Rollback: clean up the orphaned auth user
-        await supabase.auth.admin.deleteUser(userId);
-        return res.status(500).json({ error: 'Member insert failed' });
-      }
-
-      console.log('[stripe-webhook] new member created:', email, userId);
     }
 
-    // 8. Trigger welcome email with 6-digit OTP code via Supabase Auth.
-    //    Supabase sends this through your configured SMTP (Resend).
-    //    The email template MUST include {{ .Token }} for the 6-digit code.
-    //    Configure at: Supabase Dashboard → Authentication → Email Templates → Magic Link
-    const { error: linkError } = await supabase.auth.admin.generateLink({
-      type: 'magiclink',
-      email
-    });
-
-    if (linkError) {
-      // Non-fatal — member is created, they can request a code from login.html
-      console.error('[stripe-webhook] welcome email failed (non-fatal):', linkError);
-    }
-
-    return res.status(200).json({ received: true, member_id: userId });
-  } catch (err) {
-    console.error('[stripe-webhook] unexpected error:', err);
-    return res.status(500).json({ error: 'Internal server error' });
+    callApi(0);
   }
-});
 
-// JSON parser for all other routes (health check, retired endpoints)
-app.use(express.json({ limit: '1mb' }));
-
-// Health check
-app.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'ffp-passport-backend',
-    version: '2.0',
-    note: 'Backend reduced to Stripe webhook only. All data + auth now via Supabase.'
-  });
-});
-
-// Catch retired endpoints with a helpful message instead of a 404
-app.all('/api/*', (req, res) => {
-  res.status(410).json({
-    error: 'This endpoint has been retired.',
-    detail: 'Data access now happens directly via Supabase JS client from the frontend. Auth is handled by Supabase Auth (email OTP). This backend only handles the Stripe webhook.',
-    retired_endpoint: `${req.method} ${req.path}`
-  });
-});
-
-export default app;
+  start();
+})();
