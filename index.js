@@ -1,14 +1,13 @@
-// FFP Passport — Express Server (Vercel entry point)
-// Restored from working state. ESM Express app with Stripe webhook, auth, members, meetups, calorie, visits.
+// FFP Passport — Express Server (Vercel, CommonJS)
+// CommonJS for reliable Vercel bundling
 
-import express from 'express';
-import { createClient } from '@supabase/supabase-js';
-import crypto from 'crypto';
-import nodemailer from 'nodemailer';
-import Stripe from 'stripe';
+const express = require('express');
+const { createClient } = require('@supabase/supabase-js');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
+const Stripe = require('stripe');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
 // CORS - Handle preflight
 app.options('*', (req, res) => {
@@ -35,7 +34,6 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
 // ────────────────────────────────────────────────────────────
 // STRIPE WEBHOOK — must be defined BEFORE express.json()
-// because Stripe sigs are verified against the raw request body.
 // ────────────────────────────────────────────────────────────
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -64,7 +62,6 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
         return res.status(200).json({ received: true, warning: 'no email' });
       }
 
-      // Check if member already exists (idempotency — Stripe may retry)
       const { data: existing } = await supabase
         .from('members')
         .select('id, access_code')
@@ -76,7 +73,6 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
         return res.status(200).json({ received: true, member_id: existing.id, already_exists: true });
       }
 
-      // Create new paid member
       const { code, hash } = generateCode();
       const passport_no = `FFP-${new Date().getFullYear()}-${String(Math.floor(Math.random()*9999+1)).padStart(4,'0')}`;
 
@@ -100,12 +96,10 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
         return res.status(500).json({ error: insertErr.message });
       }
 
-      // Send welcome email with access code
       try {
         await sendCodeEmail(email, name, code, 'signup');
       } catch (mailErr) {
         console.error('Stripe webhook: email send failed', mailErr.message);
-        // Member is still created — don't return error to Stripe
       }
 
       console.log('Stripe webhook: paid member created', email, member.id);
@@ -118,7 +112,6 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
   res.json({ received: true });
 });
 
-// JSON parser for all OTHER routes
 app.use(express.json({ limit: '50mb' }));
 
 const mailer = nodemailer.createTransport({
@@ -173,12 +166,10 @@ async function sendCodeEmail(email, name, code, type) {
   });
 }
 
-// Health check
 app.get('/', (req, res) => {
   res.json({ status: 'FFP Passport API running' });
 });
 
-// Signup
 app.post('/api/auth/signup', async (req, res) => {
   if (process.env.ALLOW_FREE_SIGNUP !== 'true') {
     return res.status(403).json({
@@ -222,7 +213,6 @@ app.post('/api/auth/signup', async (req, res) => {
   }
 });
 
-// Signin
 app.post('/api/auth/signin', async (req, res) => {
   try {
     const { email, code } = req.body;
@@ -269,7 +259,6 @@ app.post('/api/auth/signin', async (req, res) => {
   }
 });
 
-// Reset password
 app.post('/api/auth/reset', async (req, res) => {
   try {
     const { email } = req.body;
@@ -293,11 +282,9 @@ app.post('/api/auth/reset', async (req, res) => {
   }
 });
 
-// Get member profile by ID
 app.get('/api/members/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    
     const { data: member, error } = await supabase
       .from('members')
       .select('id, email, full_name, passport_no, photo_url, bio, interests, fitness_level, date_of_birth, gender, points, tier, ambassador_tier, joined_at, visit_count, skills')
@@ -312,25 +299,12 @@ app.get('/api/members/:id', async (req, res) => {
   }
 });
 
-// Update member profile
 app.put('/api/members/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { 
-      full_name,
-      surname,
-      given_names,
-      email,
-      phone,
-      city,
-      nationality,
-      photo_url, 
-      bio, 
-      interests, 
-      fitness_level, 
-      date_of_birth, 
-      gender,
-      skills
+      full_name, surname, given_names, email, phone, city, nationality,
+      photo_url, bio, interests, fitness_level, date_of_birth, gender, skills
     } = req.body;
 
     const { data: member, error } = await supabase
@@ -358,17 +332,12 @@ app.put('/api/members/:id', async (req, res) => {
 
     if (error) return res.status(500).json({ error: error.message });
 
-    res.json({ 
-      success: true, 
-      message: 'Profile updated',
-      member 
-    });
+    res.json({ success: true, message: 'Profile updated', member });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// List all members (discovery)
 app.get('/api/members', async (req, res) => {
   try {
     const { limit = 50, offset = 0 } = req.query;
@@ -383,17 +352,12 @@ app.get('/api/members', async (req, res) => {
 
     if (error) return res.status(500).json({ error: error.message });
 
-    res.json({ 
-      success: true, 
-      members,
-      count: members.length 
-    });
+    res.json({ success: true, members, count: members.length });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Create meetup
 app.post('/api/meetups', async (req, res) => {
   try {
     const { creator_id, title, description, location, date_time, max_attendees = 20 } = req.body;
@@ -404,15 +368,7 @@ app.post('/api/meetups', async (req, res) => {
 
     const { data: meetup, error } = await supabase
       .from('meetups')
-      .insert({
-        creator_id,
-        title,
-        description,
-        location,
-        date_time,
-        max_attendees,
-        status: 'active'
-      })
+      .insert({ creator_id, title, description, location, date_time, max_attendees, status: 'active' })
       .select()
       .single();
 
@@ -428,7 +384,6 @@ app.post('/api/meetups', async (req, res) => {
   }
 });
 
-// List all meetups
 app.get('/api/meetups', async (req, res) => {
   try {
     const { limit = 50, offset = 0 } = req.query;
@@ -455,11 +410,7 @@ app.get('/api/meetups', async (req, res) => {
           .eq('id', meetup.creator_id)
           .single();
 
-        return {
-          ...meetup,
-          attendee_count: attendees?.length || 0,
-          creator: creator
-        };
+        return { ...meetup, attendee_count: (attendees && attendees.length) || 0, creator };
       })
     );
 
@@ -469,7 +420,6 @@ app.get('/api/meetups', async (req, res) => {
   }
 });
 
-// Get single meetup with attendees
 app.get('/api/meetups/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -487,7 +437,7 @@ app.get('/api/meetups/:id', async (req, res) => {
       .select('member_id')
       .eq('meetup_id', id);
 
-    const attendeeIds = attendeeRecords?.map(r => r.member_id) || [];
+    const attendeeIds = (attendeeRecords || []).map(r => r.member_id);
 
     const { data: attendees } = await supabase
       .from('members')
@@ -502,19 +452,13 @@ app.get('/api/meetups/:id', async (req, res) => {
 
     res.json({
       success: true,
-      meetup: {
-        ...meetup,
-        creator,
-        attendees,
-        attendee_count: attendees?.length || 0
-      }
+      meetup: { ...meetup, creator, attendees, attendee_count: (attendees && attendees.length) || 0 }
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Join meetup
 app.post('/api/meetups/:id/join', async (req, res) => {
   try {
     const { id } = req.params;
@@ -545,7 +489,6 @@ app.post('/api/meetups/:id/join', async (req, res) => {
   }
 });
 
-// Leave meetup
 app.post('/api/meetups/:id/leave', async (req, res) => {
   try {
     const { id } = req.params;
@@ -567,7 +510,6 @@ app.post('/api/meetups/:id/leave', async (req, res) => {
   }
 });
 
-// Save calorie log
 app.post('/api/calorie/save', async (req, res) => {
   try {
     const { member_id, calories, log_date } = req.body;
@@ -587,7 +529,6 @@ app.post('/api/calorie/save', async (req, res) => {
   }
 });
 
-// Log visit (QR scan)
 app.post('/api/visits/log', async (req, res) => {
   try {
     const { member_id, provider_id, qr_code } = req.body;
@@ -612,4 +553,4 @@ app.post('/api/visits/log', async (req, res) => {
   }
 });
 
-export default app;
+module.exports = app;
