@@ -1,5 +1,5 @@
-// FFP Passport — Express Server (Vercel, CommonJS)
-// CommonJS for reliable Vercel bundling
+// FFP Passport — Express Server (Vercel, CommonJS) — v2
+// v2: webhook updates stripe_session_id on existing members (was: return early without update)
 
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
