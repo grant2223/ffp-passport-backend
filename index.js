@@ -69,8 +69,27 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
         .maybeSingle();
 
       if (existing) {
-        console.log('Stripe webhook: member already exists for', email);
-        return res.status(200).json({ received: true, member_id: existing.id, already_exists: true });
+        // v2: Update existing member with the new stripe_session_id so
+        // ffp-profile-complete v7 can find them. Without this, repeat
+        // payments (or test runs with an existing email) leave the
+        // existing row with a stale/null stripe_session_id and the
+        // profile-complete lookup fails.
+        console.log('Stripe webhook: member already exists for', email, '- refreshing stripe session');
+        const { error: updateErr } = await supabase
+          .from('members')
+          .update({
+            stripe_session_id: session.id,
+            stripe_customer_id: session.customer || null,
+            paid: true
+          })
+          .eq('id', existing.id);
+
+        if (updateErr) {
+          console.error('Stripe webhook: existing member update failed', updateErr.message);
+          return res.status(500).json({ error: updateErr.message });
+        }
+
+        return res.status(200).json({ received: true, member_id: existing.id, already_exists: true, updated: true });
       }
 
       const { code, hash } = generateCode();
