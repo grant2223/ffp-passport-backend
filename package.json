@@ -1,16 +1,17 @@
 {
   "name": "ffp-passport-backend",
-  "version": "2.0.0",
-  "description": "FFP Passport — Stripe webhook handler",
-  "main": "server.js",
-  "type": "module",
+  "version": "1.0.0",
+  "description": "FFP Passport auth & data API",
+  "main": "index.js",
   "scripts": {
-    "dev": "node server.js",
-    "start": "node server.js"
+    "dev": "node index.js",
+    "start": "node index.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
+    "cors": "^2.8.5",
     "express": "^4.18.2",
+    "nodemailer": "^6.9.0",
     "stripe": "^17.0.0"
   },
   "engines": {
