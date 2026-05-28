@@ -1,4 +1,16 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v4
+// FFP Passport — Express Server (Vercel, CommonJS) — v6
+// v6: welcome email content matches Grant's spec EXACTLY — no embellishments,
+//     no closing sign-off, no mailto, no language not in his brief.
+//     Greeting: "Hey, [First]." → "You are now officially an FFP Passport
+//     holder - so cool!" → "As a new member of the community, let's get you
+//     set up and connected with the best experiences:" → three steps
+//     (1 mandatory profile with location/gender/age/interests+level/few words,
+//     2 Meet & Move panel, 3 join or host) → "What's a Meet?" explainer with
+//     skill-pairing examples → CTA "Go To Dashboard" → brand footer only.
+//     NOTE: v5 was drafted but never deployed — replaced wholesale by v6.
+// v5: [never deployed] rewrote welcome email to Grant's spec but added
+//     content (closing sign-off, mailto, alternate wording) Grant hadn't
+//     asked for. Replaced by v6.
 // v4: adds welcome email send-call to /api/onboard/from-stripe (fires once,
 //     on first-time profile completion only — distinct from the access code email).
 //     Welcome email is separate orientation message: "you're officially in, here's
@@ -339,63 +351,54 @@ async function sendCodeEmail(email, name, code, type) {
     html
   });
 }
-// v4 — Welcome email sent on first-time profile-complete. Separate from the
-// access code email so each message has a single, clear purpose:
-//   - Access code email = "here's how to log back in"
-//   - Welcome email     = "here's how to start using the platform"
+// v6 — Welcome email content matches Grant's spec EXACTLY. No closing sign-off,
+// no mailto, no embellishment. Sent on first-time profile-complete only.
+// Separate from the access code email.
+// city param kept on the signature for future personalisation; currently unused.
 async function sendWelcomeEmail(email, firstName, city) {
   const safeName = escapeHtml(firstName);
-  const cityLine = city
-    ? `Find members near you in ${escapeHtml(city)} who share your interests.`
-    : `Find members near you in the UAE who share your interests.`;
   const subject = `Welcome to FFP Passport, ${firstName}`;
   const html = `
     <div style="font-family:Montserrat,sans-serif;max-width:480px;margin:0 auto;background:#081420;color:#fff;padding:32px;border-radius:16px;">
       <div style="font-size:22px;font-weight:900;letter-spacing:3px;margin-bottom:8px;">FFP <span style="color:#2ba8e0;">PASSPORT</span></div>
       <div style="font-size:12px;color:#6a90a8;letter-spacing:2px;text-transform:uppercase;margin-bottom:32px;">Find Fit People</div>
 
-      <p style="font-size:18px;color:#fff;font-weight:700;margin:0 0 14px;">Welcome, ${safeName}.</p>
+      <p style="font-size:18px;color:#fff;font-weight:700;margin:0 0 14px;">Hey, ${safeName}.</p>
 
       <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">
-        You're officially in. Your FFP Passport is active and the community is yours to explore.
+        You are now officially an FFP Passport holder - so cool!
       </p>
 
       <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 18px;">
-        Here's how to get the most out of it from day one:
+        As a new member of the community, let's get you set up and connected with the best experiences:
       </p>
 
+      <!-- Step 1 -->
       <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:10px;">
-        <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;">Start matching</div>
-        <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">${cityLine}</div>
+        <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;">1. Complete your profile</div>
+        <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">This one matters most &mdash; your profile helps match you. Add: location, gender, age, interests + level, a few words.</div>
       </div>
 
+      <!-- Step 2 -->
       <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:10px;">
-        <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;">Host or join a Meet &amp; Move</div>
-        <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">A small-group session, up to 8 people, is the simplest way to get something on the calendar this week.</div>
+        <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;">2. Open the Meet &amp; Move panel</div>
+        <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">Where you'll see your matches and can start connecting with your people.</div>
       </div>
 
-      <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:10px;">
-        <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;">Tap into Deals &amp; Member Perks</div>
-        <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">Partner venues, member-only offers and invitations across the UAE.</div>
+      <!-- Step 3 -->
+      <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:18px;">
+        <div style="font-size:13px;font-weight:800;color:#fff;">3. Join a Meet, or host your own</div>
       </div>
 
-      <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:24px;">
-        <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;">Round out your profile (optional)</div>
-        <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">You're already set up. Add more detail in the Profile tab whenever you want — the more you share, the better your matches.</div>
+      <!-- What's a Meet? -->
+      <div style="padding:14px 16px;background:rgba(255,204,0,.06);border:1px solid rgba(255,204,0,.2);border-radius:10px;margin-bottom:24px;">
+        <div style="font-size:11px;font-weight:800;color:#FFCC00;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:6px;">What's a Meet?</div>
+        <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">They are small active meet ups (max 8 persons) to connect you to people with the same skill + ability. Eg; Yoga - beginner, Tennis - intermediate, Powerlifting - Advanced, etc.</div>
       </div>
 
       <div style="text-align:center;margin:24px 0 28px;">
-        <a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;background:#2ba8e0;color:#081420;text-decoration:none;font-weight:800;font-size:14px;padding:14px 32px;border-radius:8px;letter-spacing:.5px;">Open My Dashboard</a>
+        <a href="https://ffppassport.com/ffp-member-dashboard.html#profile" style="display:inline-block;background:#2ba8e0;color:#081420;text-decoration:none;font-weight:800;font-size:14px;padding:14px 32px;border-radius:8px;letter-spacing:.5px;">Go To Dashboard</a>
       </div>
-
-      <p style="font-size:13px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">
-        Questions, ideas, or want to host something? Drop us a note at <a href="mailto:hello@ffppassport.com" style="color:#2ba8e0;text-decoration:none;">hello@ffppassport.com</a> &mdash; we read every message.
-      </p>
-
-      <p style="font-size:13px;color:#9dbdd0;line-height:1.7;margin:0;">
-        Move together.<br/>
-        Team FFP
-      </p>
 
       <div style="margin-top:32px;padding-top:24px;border-top:1px solid rgba(43,168,224,.1);font-size:11px;color:#6a90a8;">
         FFP Passport · UAE 2026 · ffppassport.com
