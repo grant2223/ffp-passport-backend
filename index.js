@@ -1,4 +1,12 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v8
+// FFP Passport — Express Server (Vercel, CommonJS) — v9
+// v9: /api/auth/signin now returns the FULL member object (excluding the
+//     hashed access_code for safety) instead of only 7 hand-picked fields.
+//     Previously the signin response stripped surname, given_names,
+//     nationality, date_of_birth, country, city, gender, photo_url, bio,
+//     interests, fitness_level, tier and everything else — so the passport-
+//     card loader (which reads localStorage.ffp_member) had nothing to
+//     render with after signin, leaving the card blank. Fix: spread the
+//     full member row in the response.
 // v8: Adds status: 'active' to all three member-insert paths (Stripe webhook,
 //     /api/onboard/from-stripe, /api/auth/signup). Without this, new members
 //     got the DB-column default (null) for status, which fails the signin
@@ -494,18 +502,15 @@ app.post('/api/auth/signin', async (req, res) => {
     await supabase.from('members').update({
       last_login: new Date().toISOString()
     }).eq('id', member.id);
+    // v9: return the full member row so the dashboard loader has everything
+    // it needs to populate the passport card (surname, given_names, DOB,
+    // nationality, country, city, gender, photo_url, etc.). Strip the
+    // hashed access_code for safety — frontend never needs it.
+    const { access_code: _ac, ...memberSafe } = member;
     res.json({
       success: true,
       token,
-      member: {
-        id:              member.id,
-        email:           member.email,
-        full_name:       member.full_name,
-        passport_no:     member.passport_no,
-        role:            member.role,
-        points:          member.points,
-        profile_complete: member.profile_complete,
-      },
+      member: memberSafe,
       redirect: member.profile_complete
         ? (member.role === 'admin' ? '/ffp-admin.html'
            : member.role === 'provider' ? '/ffp-provider.html'
@@ -729,28 +734,4 @@ app.post('/api/calorie/save', async (req, res) => {
       .select()
       .single();
     if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true, data });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-app.post('/api/visits/log', async (req, res) => {
-  try {
-    const { member_id, provider_id, qr_code } = req.body;
-    if (!member_id || !provider_id) return res.status(400).json({ error: 'member_id and provider_id required' });
-    const { data, error } = await supabase
-      .from('visit_logs')
-      .insert({ member_id, provider_id, qr_code, logged_at: new Date().toISOString() })
-      .select()
-      .single();
-    if (error) return res.status(500).json({ error: error.message });
-    await supabase
-      .from('members')
-      .update({ visit_count: supabase.raw('visit_count + 1') })
-      .eq('id', member_id);
-    res.json({ success: true, data });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-module.exports = app;
+    res.json({ success: true, data
