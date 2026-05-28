@@ -1,4 +1,12 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v7
+// FFP Passport — Express Server (Vercel, CommonJS) — v8
+// v8: Adds status: 'active' to all three member-insert paths (Stripe webhook,
+//     /api/onboard/from-stripe, /api/auth/signup). Without this, new members
+//     got the DB-column default (null) for status, which fails the signin
+//     check `if (member.status !== 'active')` → 403 "Account suspended". So
+//     no one could ever sign in after a fresh signup. Discovered 2026-05-28
+//     when grant tested admin@ffptravels.com — the code email arrived (good)
+//     but verifyCode returned 403. Existing affected accounts need a one-off
+//     SQL UPDATE to set status='active' (delivered alongside this v8).
 // v7: Removes the access-code email from the Stripe webhook handler. Grant
 //     specifically asked that no login-code email fire after Stripe payment
 //     completion. The user gets the welcome email after profile-complete
@@ -119,6 +127,7 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
           role: 'member',
           passport_no,
           paid: true,
+          status: 'active', // v8: required for signin check `member.status !== 'active'`
           stripe_session_id: session.id,
           stripe_customer_id: session.customer || null
         })
@@ -240,6 +249,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           access_code: generated.hash,
           role: 'member',
           paid: true,
+          status: 'active', // v8: required for signin check `member.status !== 'active'`
           stripe_session_id: session_id,
           stripe_customer_id: customerId,
           profile_complete: true
@@ -453,7 +463,7 @@ app.post('/api/auth/signup', async (req, res) => {
     const passport_no = `FFP-${new Date().getFullYear()}-${String(Math.floor(Math.random()*9999+1)).padStart(4,'0')}`;
     const { data: member, error } = await supabase
       .from('members')
-      .insert({ email, full_name, access_code: hash, role, passport_no })
+      .insert({ email, full_name, access_code: hash, role, passport_no, status: 'active' }) // v8: status required for signin
       .select()
       .single();
     if (error) return res.status(500).json({ error: error.message });
