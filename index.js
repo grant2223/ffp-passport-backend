@@ -1,5 +1,6 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v2
-// v2: webhook updates stripe_session_id on existing members
+// FFP Passport — Express Server (Vercel, CommonJS) — v3
+// v3: adds /api/onboard/from-stripe endpoint (atomic onboarding without webhook dependency)
+//     v2 webhook update behaviour retained as a fallback (no longer on critical path)
 //     (v1 returned early without update, which broke profile-complete v7
 //     lookup for any repeat or test payment with an existing email)
 
@@ -134,6 +135,169 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
 });
 
 app.use(express.json({ limit: '50mb' }));
+
+// ────────────────────────────────────────────────────────────
+// v3 — ATOMIC ONBOARDING ENDPOINT
+// ────────────────────────────────────────────────────────────
+// Single endpoint called by ffp-profile-complete-v8.html on form submit.
+// Does NOT depend on the Stripe webhook having fired. Fetches the Stripe
+// session directly, then UPSERTs the member row with everything in one
+// database write. Returns the full member object for the frontend to
+// cache in localStorage for the dashboard.
+app.post('/api/onboard/from-stripe', async (req, res) => {
+  try {
+    const {
+      session_id, surname, given_names, date_of_birth,
+      nationality, country, city, skills
+    } = req.body;
+
+    if (!session_id) {
+      return res.status(400).json({ error: 'session_id required' });
+    }
+
+    // 1) Pull the Stripe checkout session for email + name + customer id
+    let session;
+    try {
+      session = await stripe.checkout.sessions.retrieve(session_id);
+    } catch (stripeErr) {
+      console.error('Onboard: Stripe session retrieve failed:', stripeErr.message);
+      return res.status(400).json({ error: 'Invalid Stripe session: ' + stripeErr.message });
+    }
+
+    const email = (session.customer_details && session.customer_details.email) || session.customer_email;
+    const stripeName = (session.customer_details && session.customer_details.name) || '';
+    const customerId = session.customer || null;
+
+    if (!email) {
+      return res.status(400).json({ error: 'No email on Stripe session' });
+    }
+
+    // 2) Build full_name (form values take priority over Stripe's single field)
+    const fullName = ((given_names || '') + ' ' + (surname || '')).trim() || stripeName;
+
+    // 3) Find existing member by email
+    const { data: existing } = await supabase
+      .from('members')
+      .select('id, paid')
+      .eq('email', email)
+      .maybeSingle();
+
+    let memberId;
+    let isNew = false;
+    let accessCode = null;
+
+    if (existing) {
+      // UPDATE path: existing email (could be an admin, repeat customer, prior test)
+      const { error: updateErr } = await supabase
+        .from('members')
+        .update({
+          full_name: fullName,
+          surname: surname || null,
+          given_names: given_names || null,
+          date_of_birth: date_of_birth || null,
+          nationality: nationality || null,
+          country: country || null,
+          city: city || null,
+          paid: true,
+          stripe_session_id: session_id,
+          stripe_customer_id: customerId,
+          profile_complete: true
+        })
+        .eq('id', existing.id);
+
+      if (updateErr) {
+        console.error('Onboard: member UPDATE failed:', updateErr.message);
+        return res.status(500).json({ error: 'Update failed: ' + updateErr.message });
+      }
+      memberId = existing.id;
+    } else {
+      // INSERT path: brand new member
+      const generated = generateCode();
+      accessCode = generated.code;
+      isNew = true;
+
+      const passport_no = `FFP-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9999 + 1)).padStart(4, '0')}`;
+
+      const { data: inserted, error: insertErr } = await supabase
+        .from('members')
+        .insert({
+          email,
+          full_name: fullName,
+          surname: surname || null,
+          given_names: given_names || null,
+          date_of_birth: date_of_birth || null,
+          nationality: nationality || null,
+          country: country || null,
+          city: city || null,
+          passport_no,
+          access_code: generated.hash,
+          role: 'member',
+          paid: true,
+          stripe_session_id: session_id,
+          stripe_customer_id: customerId,
+          profile_complete: true
+        })
+        .select()
+        .single();
+
+      if (insertErr) {
+        console.error('Onboard: member INSERT failed:', insertErr.message);
+        return res.status(500).json({ error: 'Insert failed: ' + insertErr.message });
+      }
+      memberId = inserted.id;
+    }
+
+    // 4) Upsert skills / chronological age into profile_meta (non-blocking on failure)
+    if (Array.isArray(skills) && skills.length > 0) {
+      let chronoAge = null;
+      if (date_of_birth) {
+        const birth = new Date(date_of_birth);
+        const today = new Date();
+        chronoAge = today.getFullYear() - birth.getFullYear();
+        const m = today.getMonth() - birth.getMonth();
+        if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) chronoAge--;
+      }
+
+      const { error: metaErr } = await supabase
+        .from('profile_meta')
+        .upsert({
+          member_id: memberId,
+          chrono_age: chronoAge,
+          skills
+        }, { onConflict: 'member_id' });
+
+      if (metaErr) {
+        // Don't fail onboarding for a meta error — log and continue
+        console.warn('Onboard: profile_meta upsert failed (non-blocking):', metaErr.message);
+      }
+    }
+
+    // 5) Email the 6-digit access code (only for brand new members)
+    if (isNew && accessCode) {
+      try {
+        await sendCodeEmail(email, fullName, accessCode, 'signup');
+      } catch (mailErr) {
+        console.warn('Onboard: welcome email failed (non-blocking):', mailErr.message);
+      }
+    }
+
+    // 6) Return the full member row for the frontend to cache
+    const { data: finalMember } = await supabase
+      .from('members')
+      .select('*')
+      .eq('id', memberId)
+      .single();
+
+    return res.json({
+      success: true,
+      member: finalMember,
+      is_new: isNew
+    });
+  } catch (error) {
+    console.error('Onboard endpoint error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
 
 const mailer = nodemailer.createTransport({
   host:   process.env.SMTP_HOST,
