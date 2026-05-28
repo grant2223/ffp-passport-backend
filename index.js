@@ -1,4 +1,12 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v10
+// FFP Passport — Express Server (Vercel, CommonJS) — v11
+// v11: /api/auth/signin redirect logic — admin and provider roles now go
+//      straight to their dashboards regardless of profile_complete value.
+//      Previously: ALL roles required profile_complete=true before dashboard
+//      redirect, otherwise punted to /ffp-profile-complete.html. But admins
+//      and providers aren't created via Stripe + profile-complete form;
+//      they're created via SQL with profile_complete left false. So they
+//      were stuck in a redirect loop to the member-only profile-complete
+//      form. v11: profile-complete check now only applies to role='member'.
 // v10: /api/onboard/from-stripe now accepts `gender` in req.body and
 //      writes it to the members table on both INSERT and UPDATE paths.
 //      Without this, profile-complete v11 sends gender but backend silently
@@ -518,11 +526,12 @@ app.post('/api/auth/signin', async (req, res) => {
       success: true,
       token,
       member: memberSafe,
-      redirect: member.profile_complete
-        ? (member.role === 'admin' ? '/ffp-admin.html'
-           : member.role === 'provider' ? '/ffp-provider.html'
-           : '/ffp-member-dashboard.html')
-        : '/ffp-profile-complete.html'
+      // v11: role-based redirect — admin/provider go straight to their dashboard,
+      // members still need profile_complete=true before reaching the dashboard.
+      redirect: member.role === 'admin' ? '/ffp-admin-dashboard.html'
+              : member.role === 'provider' ? '/ffp-provider-dashboard.html'
+              : member.profile_complete ? '/ffp-member-dashboard.html'
+              : '/ffp-profile-complete.html'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
