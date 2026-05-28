@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v9
+// FFP Passport — Express Server (Vercel, CommonJS) — v10
+// v10: /api/onboard/from-stripe now accepts `gender` in req.body and
+//      writes it to the members table on both INSERT and UPDATE paths.
+//      Without this, profile-complete v11 sends gender but backend silently
+//      drops it (members.gender stays null, Profile panel renders blank
+//      Gender field for every new user).
 // v9: /api/auth/signin now returns the FULL member object (excluding the
 //     hashed access_code for safety) instead of only 7 hand-picked fields.
 //     Previously the signin response stripped surname, given_names,
@@ -175,7 +180,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
   try {
     const {
       session_id, surname, given_names, date_of_birth,
-      nationality, country, city, skills
+      nationality, country, city, skills, gender
     } = req.body;
     if (!session_id) {
       return res.status(400).json({ error: 'session_id required' });
@@ -225,6 +230,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           nationality: nationality || null,
           country: country || null,
           city: city || null,
+          gender: gender || null,    // v10
           paid: true,
           stripe_session_id: session_id,
           stripe_customer_id: customerId,
@@ -253,6 +259,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           nationality: nationality || null,
           country: country || null,
           city: city || null,
+          gender: gender || null,    // v10
           passport_no,
           access_code: generated.hash,
           role: 'member',
