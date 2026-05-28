@@ -2,6 +2,18 @@
 // v12: PUT /api/members/:id now accepts `country` and `phone_country_code`
 //      in req.body so the Profile panel Save button can persist them.
 //      Without this, the frontend save would silently drop those fields.
+// v13: JWT bridge for Supabase RLS — /api/auth/signin and /api/onboard/from-stripe
+//      now ALSO return a Supabase-compatible HS256 JWT (signed with SUPABASE_JWT_SECRET).
+//      The frontend stores this and calls supabase.auth.setSession({access_token: jwt,
+//      refresh_token: ''}) so auth.uid() returns member.id inside Postgres. Every
+//      existing RLS policy (member_id = auth.uid() OR is_admin()) then evaluates
+//      correctly for custom-auth members — unblocking all four member-dashboard
+//      loaders (Earnings/Calorie/Fitness Stats/Meet & Move) without touching RLS
+//      and fixing the provider_hours_own RLS rejection as a side-effect.
+//      Requires SUPABASE_JWT_SECRET env var (Supabase Dashboard → Settings → API →
+//      JWT Settings → JWT Secret). No new npm dependency — signed with Node crypto.
+// v12: PUT /api/members/:id now accepts country + phone_country_code (added 2026-05-29
+//      to support member-dashboard v101 Profile save).
 // v11: /api/auth/signin redirect logic — admin and provider roles now go
 //      straight to their dashboards regardless of profile_complete value.
 //      Previously: ALL roles required profile_complete=true before dashboard
@@ -70,6 +82,52 @@ const nodemailer = require('nodemailer');
 const Stripe = require('stripe');
 const app = express();
 // CORS - Handle preflight
+// ── JWT bridge (v13) ────────────────────────────────────────────────
+// Mints a Supabase-compatible HS256 JWT so custom-auth members can use
+// supabase-js with proper auth.uid() inside RLS policies. The secret is
+// the same one Supabase uses to sign its own tokens — set in Vercel env
+// as SUPABASE_JWT_SECRET (Supabase Dashboard → Settings → API → JWT
+// Settings → JWT Secret). Sign-only, never verify — we trust our own
+// signin/onboard flows and Postgres verifies the JWT on every query.
+function base64urlEncode(input) {
+  return Buffer.from(input)
+    .toString('base64')
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+}
+function mintSupabaseJwt(member) {
+  const secret = process.env.SUPABASE_JWT_SECRET;
+  if (!secret) {
+    console.warn('[JWT v13] SUPABASE_JWT_SECRET not set — returning empty JWT. Loaders will not be able to read RLS-protected data until this env var is added.');
+    return '';
+  }
+  if (!member || !member.id) {
+    console.warn('[JWT v13] mintSupabaseJwt called with no member.id — returning empty JWT');
+    return '';
+  }
+  const header  = { alg: 'HS256', typ: 'JWT' };
+  const nowSec  = Math.floor(Date.now() / 1000);
+  const payload = {
+    aud:   'authenticated',
+    role:  'authenticated',
+    sub:   member.id,        // becomes auth.uid() inside Postgres RLS
+    email: member.email || '',
+    iat:   nowSec,
+    exp:   nowSec + 60 * 60 * 24  // 24-hour session
+  };
+  const h = base64urlEncode(JSON.stringify(header));
+  const p = base64urlEncode(JSON.stringify(payload));
+  const sig = crypto
+    .createHmac('sha256', secret)
+    .update(h + '.' + p)
+    .digest('base64')
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+  return h + '.' + p + '.' + sig;
+}
+// ────────────────────────────────────────────────────────────────────
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -340,9 +398,13 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       .select('*')
       .eq('id', memberId)
       .single();
+    // v13: mint Supabase-compatible JWT so profile-complete can setSession()
+    // and the dashboard it lands on can read RLS-protected loader data.
+    const supabaseJwt = mintSupabaseJwt(finalMember);
     return res.json({
       success: true,
       member: finalMember,
+      jwt: supabaseJwt,  // v13: Supabase Auth JWT for client setSession()
       is_new: isNew
     });
   } catch (error) {
@@ -525,9 +587,13 @@ app.post('/api/auth/signin', async (req, res) => {
     // nationality, country, city, gender, photo_url, etc.). Strip the
     // hashed access_code for safety — frontend never needs it.
     const { access_code: _ac, ...memberSafe } = member;
+    // v13: mint Supabase-compatible JWT so the frontend can setSession()
+    // and unlock RLS-protected loader queries.
+    const supabaseJwt = mintSupabaseJwt(memberSafe);
     res.json({
       success: true,
       token,
+      jwt: supabaseJwt,  // v13: Supabase Auth JWT for client setSession()
       member: memberSafe,
       // v11: role-based redirect — admin/provider go straight to their dashboard,
       // members still need profile_complete=true before reaching the dashboard.
