@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v11
+// FFP Passport — Express Server (Vercel, CommonJS) — v12
+// v12: PUT /api/members/:id now accepts `country` and `phone_country_code`
+//      in req.body so the Profile panel Save button can persist them.
+//      Without this, the frontend save would silently drop those fields.
 // v11: /api/auth/signin redirect logic — admin and provider roles now go
 //      straight to their dashboards regardless of profile_complete value.
 //      Previously: ALL roles required profile_complete=true before dashboard
@@ -573,7 +576,8 @@ app.put('/api/members/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      full_name, surname, given_names, email, phone, city, nationality,
+      full_name, surname, given_names, email, phone, phone_country_code,
+      city, country, nationality,
       photo_url, bio, interests, fitness_level, date_of_birth, gender, skills
     } = req.body;
     const { data: member, error } = await supabase
@@ -584,7 +588,9 @@ app.put('/api/members/:id', async (req, res) => {
         given_names: given_names || undefined,
         email: email || undefined,
         phone: phone || undefined,
+        phone_country_code: phone_country_code || undefined, // v12
         city: city || undefined,
+        country: country || undefined, // v12
         nationality: nationality || undefined,
         photo_url: photo_url || undefined,
         bio: bio || undefined,
