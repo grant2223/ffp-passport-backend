@@ -734,4 +734,28 @@ app.post('/api/calorie/save', async (req, res) => {
       .select()
       .single();
     if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true, data
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+app.post('/api/visits/log', async (req, res) => {
+  try {
+    const { member_id, provider_id, qr_code } = req.body;
+    if (!member_id || !provider_id) return res.status(400).json({ error: 'member_id and provider_id required' });
+    const { data, error } = await supabase
+      .from('visit_logs')
+      .insert({ member_id, provider_id, qr_code, logged_at: new Date().toISOString() })
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    await supabase
+      .from('members')
+      .update({ visit_count: supabase.raw('visit_count + 1') })
+      .eq('id', member_id);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+module.exports = app;
