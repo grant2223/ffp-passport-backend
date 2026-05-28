@@ -1,4 +1,14 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v6
+// FFP Passport — Express Server (Vercel, CommonJS) — v7
+// v7: Removes the access-code email from the Stripe webhook handler. Grant
+//     specifically asked that no login-code email fire after Stripe payment
+//     completion. The user gets the welcome email after profile-complete
+//     instead. If they later need a code to sign in, they request it via
+//     the /login "send me a code" flow which calls /api/auth/reset.
+//     The access_code is still GENERATED and stored on the member row when
+//     the webhook creates them — just no longer emailed at that moment.
+//     (The /api/onboard/from-stripe endpoint still has its own code-email
+//     send for the rare race-case where profile-complete beats the webhook.
+//     Almost never fires in practice; kept as defensive backup.)
 // v6: welcome email content matches Grant's spec EXACTLY — no embellishments,
 //     no closing sign-off, no mailto, no language not in his brief.
 //     Greeting: "Hey, [First]." → "You are now officially an FFP Passport
@@ -118,12 +128,12 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
         console.error('Stripe webhook: member insert failed', insertErr.message);
         return res.status(500).json({ error: insertErr.message });
       }
-      try {
-        await sendCodeEmail(email, name, code, 'signup');
-      } catch (mailErr) {
-        console.error('Stripe webhook: email send failed', mailErr.message);
-      }
-      console.log('Stripe webhook: paid member created', email, member.id);
+      // v7: Code email intentionally NOT sent here. Grant's directive — no
+      // login-code email after Stripe payment. The access_code is generated
+      // and stored on the member row above; user receives orientation via
+      // the welcome email after profile-complete, and can request a code
+      // any time via /login → "send me a code" (which calls /api/auth/reset).
+      console.log('Stripe webhook: paid member created', email, member.id, '(code generated, email suppressed per v7)');
     } catch (err) {
       console.error('Stripe webhook handler error:', err.message);
       return res.status(500).json({ error: err.message });
