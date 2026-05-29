@@ -841,4 +841,18 @@ app.get('/api/members/:id/stats', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Member activity logs (for the Passport journey/map) — service-role read.
+app.get('/api/members/:id/activity-logs', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const r = await supabase.from('activity_logs')
+      .select('activity, city, country, duration_min, calories, logged_at')
+      .eq('member_id', id)
+      .order('logged_at', { ascending: false })
+      .limit(500);
+    if (r.error) return res.status(500).json({ error: r.error.message });
+    res.json({ success: true, logs: r.data || [] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = app;
