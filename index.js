@@ -1,97 +1,4 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v28
-// v28: matches return photo + connection status; + member_connections endpoints
-//      (request / respond / list) — the friends layer behind Meet & Move.
-// v27: matching reads profile_meta.skills (real storage) — members has no
-//      sports/interests/bio/fitness_level cols. Scores shared skills + city + age.
-// v26: match endpoint enriched — returns full profile shape (sports, why-you-match,
-//      bio, age, city) so the Meet & Move match strip + profile card render real data.
-// v25: GET /api/members/:id/matches — "people like you" scored by shared sports/
-//      interests + city + fitness level. Powers the Meet & Move match strip.
-// v24: quest_venues.task returned in GET /api/quests/:id (what to do at each venue).
-// v23: GET /api/quests/provider/:provider_id/stats — aggregated quest-visitor
-//      analytics (total check-ins, unique visitors, gender breakdown, top quests)
-//      for the provider Analytics panel. Service-role aggregate; no PII. Additive.
-// v22: Provider portal — GET /api/quests/provider/:provider_id/checkins
-//      Lists a provider's quest check-ins (default pending) enriched with
-//      member name + quest title via service-role read (RLS hides other
-//      members from the provider's own Supabase queries). Additive.
-// v21: QUESTS. Adds quest endpoints (additive — no existing route touched):
-//      GET  /api/quests                      list live quests + member progress
-//      GET  /api/quests/:id                  one quest + staked venues + progress
-//      GET  /api/quests/venue/:provider_id   member's live quests at a venue (picker)
-//      POST /api/quests/checkin              member creates a pending check-in request
-//      GET  /api/quests/checkin/:id          poll status (waiting -> approved)
-//      POST /api/quests/checkin/:id/approve  provider approves -> AWARD TRANSACTION
-//      POST /api/quests/checkin/:id/decline  provider declines
-//      Award: distinct-venue dedup -> +1 step -> on completion award stamp,
-//      claim prize slot if first-N, recompute tier. Service-role client.
-// v12: PUT /api/members/:id now accepts `country` and `phone_country_code`
-//      in req.body so the Profile panel Save button can persist them.
-//      Without this, the frontend save would silently drop those fields.
-// v20: REMOVED /api/verify alias. /api/passport/:passport_no is the only
-//      member-data endpoint. Old QRs encoding /verify.html?p=... still work
-//      via Netlify _redirects rewrite to /my-passport.html, which calls
-//      /api/passport. Clean single-source backend route.
-// v19: Rename /api/verify/:passport_no → /api/passport/:passport_no for
-//      semantic alignment with the page rename (verify.html → my-passport.html).
-//      Both routes registered to the SAME handler so any deployed code
-//      still calling /api/verify keeps working forever. Old QRs scanned
-//      via /verify.html (which Netlify _redirects rewrites to
-//      /my-passport.html) all keep working.
-// v18: /api/verify/:passport_no response now ALSO returns full passport-
-//      card fields: given_names, surname, nationality, gender, dob,
-//      referral_code. Enables verify.html v2 to render the actual
-//      FFP passport card (marketing-grade page where any scanner sees
-//      the card + CTA to get their own, with the viewed member's
-//      referral_code automatically attributed on signup).
-// v17: /api/referrer/:code response now ALSO returns photo_url,
-//      passport_no, tier, and full_name. Used by homepage v5 banner
-//      to show a richer 'Invited by [name] [avatar]' card with a
-//      'see their passport' link that opens /verify.html?p={passport_no}.
-//      Photo + passport-card preview = social proof for the visitor.
-// v16: REFERRAL SYSTEM. Adds GET /api/referrer/:code public endpoint
-//      (returns referrer's first name for homepage banner). Adds
-//      creditReferrer() helper called in /api/onboard/from-stripe
-//      after successful member insert — reads Stripe session's
-//      client_reference_id (the referrer's referral_code), looks up
-//      the referrer, inserts referrals + transactions rows crediting
-//      the referrer with tier-based amount (Member 25 / Supporter 50
-//      / Ambassador 100 AED). FFPRealtime push lets the referrer's
-//      Earnings panel update live.
-// v15: /api/verify response now includes `verified` boolean (admin-set
-//      identity verification). Separate from `status` which is membership
-//      lifecycle (active/expired/etc). 'Verified' = admin confirmed the
-//      member is a real person. Default false. See [[verification-vs-status]].
-// v14: GET /api/verify/:passport_no — public endpoint backing the QR
-//      Identity verification flow. Returns only public-safe member fields
-//      (name, photo_url, status, tier, passport_no, member_since), never
-//      email/phone/DOB/address. Uses service key to bypass RLS so anyone
-//      scanning a QR can see verification info without authenticating.
-// v13: JWT bridge for Supabase RLS — /api/auth/signin and /api/onboard/from-stripe
-//      now ALSO return a Supabase-compatible HS256 JWT (signed with SUPABASE_JWT_SECRET).
-//      The frontend stores this and calls supabase.auth.setSession({access_token: jwt,
-//      refresh_token: ''}) so auth.uid() returns member.id inside Postgres. Every
-//      existing RLS policy (member_id = auth.uid() OR is_admin()) then evaluates
-//      correctly for custom-auth members — unblocking all four member-dashboard
-//      loaders (Earnings/Calorie/Fitness Stats/Meet & Move) without touching RLS
-//      and fixing the provider_hours_own RLS rejection as a side-effect.
-//      Requires SUPABASE_JWT_SECRET env var (Supabase Dashboard → Settings → API →
-//      JWT Settings → JWT Secret). No new npm dependency — signed with Node crypto.
-// v12: PUT /api/members/:id now accepts country + phone_country_code (added 2026-05-29
-//      to support member-dashboard v101 Profile save).
-// v11: /api/auth/signin redirect logic — admin and provider roles now go
-//      straight to their dashboards regardless of profile_complete value.
-//      Previously: ALL roles required profile_complete=true before dashboard
-//      redirect, otherwise punted to /ffp-profile-complete.html. But admins
-//      and providers aren't created via Stripe + profile-complete form;
-//      they're created via SQL with profile_complete left false. So they
-//      were stuck in a redirect loop to the member-only profile-complete
-//      form. v11: profile-complete check now only applies to role='member'.
-// v10: /api/onboard/from-stripe now accepts `gender` in req.body and
-//      writes it to the members table on both INSERT and UPDATE paths.
-//      Without this, profile-complete v11 sends gender but backend silently
-//      drops it (members.gender stays null, Profile panel renders blank
-//      Gender field for every new user).
+// FFP Passport — Express Server (Vercel, CommonJS) — v9
 // v9: /api/auth/signin now returns the FULL member object (excluding the
 //     hashed access_code for safety) instead of only 7 hand-picked fields.
 //     Previously the signin response stripped surname, given_names,
@@ -147,52 +54,6 @@ const nodemailer = require('nodemailer');
 const Stripe = require('stripe');
 const app = express();
 // CORS - Handle preflight
-// ── JWT bridge (v13) ────────────────────────────────────────────────
-// Mints a Supabase-compatible HS256 JWT so custom-auth members can use
-// supabase-js with proper auth.uid() inside RLS policies. The secret is
-// the same one Supabase uses to sign its own tokens — set in Vercel env
-// as SUPABASE_JWT_SECRET (Supabase Dashboard → Settings → API → JWT
-// Settings → JWT Secret). Sign-only, never verify — we trust our own
-// signin/onboard flows and Postgres verifies the JWT on every query.
-function base64urlEncode(input) {
-  return Buffer.from(input)
-    .toString('base64')
-    .replace(/=/g, '')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_');
-}
-function mintSupabaseJwt(member) {
-  const secret = process.env.SUPABASE_JWT_SECRET;
-  if (!secret) {
-    console.warn('[JWT v13] SUPABASE_JWT_SECRET not set — returning empty JWT. Loaders will not be able to read RLS-protected data until this env var is added.');
-    return '';
-  }
-  if (!member || !member.id) {
-    console.warn('[JWT v13] mintSupabaseJwt called with no member.id — returning empty JWT');
-    return '';
-  }
-  const header  = { alg: 'HS256', typ: 'JWT' };
-  const nowSec  = Math.floor(Date.now() / 1000);
-  const payload = {
-    aud:   'authenticated',
-    role:  'authenticated',
-    sub:   member.id,        // becomes auth.uid() inside Postgres RLS
-    email: member.email || '',
-    iat:   nowSec,
-    exp:   nowSec + 60 * 60 * 24  // 24-hour session
-  };
-  const h = base64urlEncode(JSON.stringify(header));
-  const p = base64urlEncode(JSON.stringify(payload));
-  const sig = crypto
-    .createHmac('sha256', secret)
-    .update(h + '.' + p)
-    .digest('base64')
-    .replace(/=/g, '')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_');
-  return h + '.' + p + '.' + sig;
-}
-// ────────────────────────────────────────────────────────────────────
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -314,7 +175,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
   try {
     const {
       session_id, surname, given_names, date_of_birth,
-      nationality, country, city, skills, gender
+      nationality, country, city, skills
     } = req.body;
     if (!session_id) {
       return res.status(400).json({ error: 'session_id required' });
@@ -364,7 +225,6 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           nationality: nationality || null,
           country: country || null,
           city: city || null,
-          gender: gender || null,    // v10
           paid: true,
           stripe_session_id: session_id,
           stripe_customer_id: customerId,
@@ -393,7 +253,6 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           nationality: nationality || null,
           country: country || null,
           city: city || null,
-          gender: gender || null,    // v10
           passport_no,
           access_code: generated.hash,
           role: 'member',
@@ -463,39 +322,9 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       .select('*')
       .eq('id', memberId)
       .single();
-    // v16: credit the referrer if this signup came via a referral link.
-    // The frontend appends ?client_reference_id={referrer.referral_code} to
-    // the Stripe checkout URL when the buyer clicks the Become A Member CTA
-    // with an active ref code in localStorage. Stripe stores it on the
-    // session; we read it back here. Best-effort — never blocks onboarding.
-    try {
-      let refCode = null;
-      // refCode can arrive directly in req.body (frontend submit) OR via
-      // the Stripe session metadata (webhook path). Check both.
-      if (req.body && req.body.client_reference_id) {
-        refCode = String(req.body.client_reference_id).trim() || null;
-      } else if (session_id) {
-        try {
-          const sess = await stripe.checkout.sessions.retrieve(session_id);
-          refCode = (sess && sess.client_reference_id) ? String(sess.client_reference_id).trim() : null;
-        } catch (e) {
-          console.warn('[onboard v16] could not retrieve Stripe session for refCode:', e.message);
-        }
-      }
-      if (refCode && isNew) {
-        await creditReferrer(finalMember, refCode);
-      }
-    } catch (e) {
-      console.warn('[onboard v16] referral credit step failed (non-blocking):', e.message);
-    }
-
-    // v13: mint Supabase-compatible JWT so profile-complete can setSession()
-    // and the dashboard it lands on can read RLS-protected loader data.
-    const supabaseJwt = mintSupabaseJwt(finalMember);
     return res.json({
       success: true,
       member: finalMember,
-      jwt: supabaseJwt,  // v13: Supabase Auth JWT for client setSession()
       is_new: isNew
     });
   } catch (error) {
@@ -678,20 +507,23 @@ app.post('/api/auth/signin', async (req, res) => {
     // nationality, country, city, gender, photo_url, etc.). Strip the
     // hashed access_code for safety — frontend never needs it.
     const { access_code: _ac, ...memberSafe } = member;
-    // v13: mint Supabase-compatible JWT so the frontend can setSession()
-    // and unlock RLS-protected loader queries.
-    const supabaseJwt = mintSupabaseJwt(memberSafe);
+    // v29: attach skills + preferences from profile_meta so the dashboard hydrates them
+    let _metaSkills = [], _metaPrefs = null;
+    try {
+      const { data: _meta } = await supabase.from('profile_meta').select('skills, preferences').eq('member_id', member.id).maybeSingle();
+      if (_meta) { _metaSkills = _meta.skills || []; _metaPrefs = _meta.preferences || null; }
+    } catch (e) {}
+    memberSafe.skills = _metaSkills;
+    memberSafe.preferences = _metaPrefs;
     res.json({
       success: true,
       token,
-      jwt: supabaseJwt,  // v13: Supabase Auth JWT for client setSession()
       member: memberSafe,
-      // v11: role-based redirect — admin/provider go straight to their dashboard,
-      // members still need profile_complete=true before reaching the dashboard.
-      redirect: member.role === 'admin' ? '/ffp-admin-dashboard.html'
-              : member.role === 'provider' ? '/ffp-provider-dashboard.html'
-              : member.profile_complete ? '/ffp-member-dashboard.html'
-              : '/ffp-profile-complete.html'
+      redirect: member.profile_complete
+        ? (member.role === 'admin' ? '/ffp-admin.html'
+           : member.role === 'provider' ? '/ffp-provider.html'
+           : '/ffp-member-dashboard.html')
+        : '/ffp-profile-complete.html'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -733,9 +565,8 @@ app.put('/api/members/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      full_name, surname, given_names, email, phone, phone_country_code,
-      city, country, nationality,
-      photo_url, bio, interests, fitness_level, date_of_birth, gender, skills
+      full_name, surname, given_names, email, phone, city, nationality,
+      photo_url, bio, interests, fitness_level, date_of_birth, gender, skills, preferences
     } = req.body;
     const { data: member, error } = await supabase
       .from('members')
@@ -745,9 +576,7 @@ app.put('/api/members/:id', async (req, res) => {
         given_names: given_names || undefined,
         email: email || undefined,
         phone: phone || undefined,
-        phone_country_code: phone_country_code || undefined, // v12
         city: city || undefined,
-        country: country || undefined, // v12
         nationality: nationality || undefined,
         photo_url: photo_url || undefined,
         bio: bio || undefined,
@@ -755,13 +584,24 @@ app.put('/api/members/:id', async (req, res) => {
         fitness_level: fitness_level || undefined,
         date_of_birth: date_of_birth || undefined,
         gender: gender || undefined,
-        skills: skills || undefined,
         profile_complete: true
       })
       .eq('id', id)
       .select()
       .single();
     if (error) return res.status(500).json({ error: error.message });
+    // v29: persist skills + preferences to profile_meta (matching reads skills here)
+    if (skills !== undefined || preferences !== undefined) {
+      const _metaRow = { member_id: id };
+      if (skills !== undefined) _metaRow.skills = skills;
+      if (preferences !== undefined) _metaRow.preferences = preferences;
+      const { error: _metaErr } = await supabase.from('profile_meta').upsert(_metaRow, { onConflict: 'member_id' });
+      if (_metaErr) console.warn('PUT member: profile_meta upsert failed:', _metaErr.message);
+    }
+    if (member) {
+      if (skills !== undefined) member.skills = skills;
+      if (preferences !== undefined) member.preferences = preferences;
+    }
     res.json({ success: true, message: 'Profile updated', member });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -937,621 +777,4 @@ app.post('/api/visits/log', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// ── v14: PUBLIC verify endpoint (QR scan target) ────────────────────
-// GET /api/verify/:passport_no
-// No auth required — anyone scanning a member's QR can see their
-// identity card. Returns ONLY public-safe fields. Never email/phone/
-// DOB/address/etc. Status is returned regardless of value (active /
-// expired / suspended) so the scanner sees the real state, not just
-// "exists or not".
-app.get('/api/passport/:passport_no', async (req, res) => {
-  try {
-    const passportNo = String(req.params.passport_no || '').trim();
-    if (!passportNo) {
-      return res.status(400).json({ error: 'passport_no required' });
-    }
-    const { data: member, error } = await supabase
-      .from('members')
-      .select('passport_no, given_names, surname, full_name, photo_url, status, tier, country, nationality, gender, date_of_birth, created_at, verified, referral_code')
-      .eq('passport_no', passportNo)
-      .maybeSingle();
-    if (error) {
-      console.error('[verify] supabase error:', error);
-      return res.status(500).json({ error: error.message });
-    }
-    if (!member) {
-      return res.status(404).json({ error: 'Member not found', passport_no: passportNo });
-    }
-    // Compute expiry as created_at + 1 year (matches member-dashboard convention)
-    let expiry = null;
-    if (member.created_at) {
-      const d = new Date(member.created_at);
-      d.setFullYear(d.getFullYear() + 1);
-      expiry = d.toISOString().slice(0, 10);
-    }
-    return res.json({
-      success: true,
-      member: {
-        passport_no:   member.passport_no,
-        full_name:     member.full_name || ((member.given_names || '') + ' ' + (member.surname || '')).trim(),
-        given_names:   member.given_names || '',
-        surname:       member.surname || '',
-        photo_url:     member.photo_url || null,
-        status:        member.status || 'unknown',
-        tier:          member.tier || 'Member',
-        country:       member.country || null,
-        nationality:   member.nationality || null,
-        gender:        member.gender || null,
-        date_of_birth: member.date_of_birth || null,
-        member_since:  member.created_at ? String(member.created_at).slice(0, 10) : null,
-        expires:       expiry,
-        verified:      !!member.verified,
-        referral_code: member.referral_code || null
-      }
-    });
-  } catch (e) {
-    console.error('[verify] handler error:', e);
-    return res.status(500).json({ error: e.message });
-  }
-});
-
-
-// ── v16: REFERRAL SYSTEM ────────────────────────────────────────────
-// Tier-based reward amounts (AED). Member is the default for new signups.
-const REFERRAL_TIER_CREDITS = { Member: 25, Supporter: 50, Ambassador: 100 };
-
-// GET /api/referrer/:code — public, returns referrer's first name only.
-// Used by homepage banner: "Invited by Jamie — welcome to FFP Passport"
-app.get('/api/referrer/:code', async (req, res) => {
-  try {
-    const code = String(req.params.code || '').trim();
-    if (!code) return res.status(400).json({ error: 'code required' });
-    // v17: extended select — homepage banner needs photo + passport_no + tier
-    // to render a personalised card with link to the referrer's verify page.
-    // Public-safe fields only — no email/phone/DOB.
-    const { data: referrer, error } = await supabase
-      .from('members')
-      .select('given_names, surname, full_name, photo_url, passport_no, tier')
-      .eq('referral_code', code)
-      .maybeSingle();
-    if (error) return res.status(500).json({ error: error.message });
-    if (!referrer) return res.status(404).json({ error: 'Invalid referral code', code });
-    const firstName = ((referrer.given_names || '').trim().split(/\s+/)[0])
-                   || ((referrer.full_name   || '').trim().split(/\s+/)[0])
-                   || 'a friend';
-    const fullName  = (referrer.full_name && referrer.full_name.trim())
-                   || ((referrer.given_names || '') + ' ' + (referrer.surname || '')).trim()
-                   || firstName;
-    return res.json({
-      success:     true,
-      first_name:  firstName,
-      full_name:   fullName,
-      photo_url:   referrer.photo_url   || null,
-      passport_no: referrer.passport_no || null,
-      tier:        referrer.tier        || 'Member'
-    });
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
-  }
-});
-
-// Credit a referrer based on their tier — called from /api/onboard/from-stripe
-// once a new member has been successfully inserted. refCode comes from the
-// Stripe session's client_reference_id (which we set via the Stripe link URL
-// on the frontend before redirecting the buyer to checkout). Best-effort:
-// any failure here logs + continues — we never want a credit hiccup to
-// break the onboard flow for a paying member.
-async function creditReferrer(newMember, refCode) {
-  if (!refCode || !newMember || !newMember.id) return;
-  try {
-    const { data: referrer } = await supabase
-      .from('members')
-      .select('id, tier, given_names, full_name')
-      .eq('referral_code', refCode)
-      .maybeSingle();
-    if (!referrer) {
-      console.warn('[referral v16] no referrer for code:', refCode);
-      return;
-    }
-    if (referrer.id === newMember.id) {
-      console.warn('[referral v16] self-referral blocked for member:', newMember.id);
-      return;
-    }
-    const amount = REFERRAL_TIER_CREDITS[referrer.tier] || REFERRAL_TIER_CREDITS.Member;
-    const newName = newMember.full_name
-                 || ((newMember.given_names || '') + ' ' + (newMember.surname || '')).trim()
-                 || 'new member';
-
-    // 1) referrals row — tracks the relationship
-    const { error: rErr } = await supabase.from('referrals').insert({
-      referrer_id:        referrer.id,
-      referred_member_id: newMember.id,
-      referral_code:      refCode,
-      credit_amount:      amount,
-      status:             'credited',
-      credited_at:        new Date().toISOString()
-    });
-    if (rErr) console.warn('[referral v16] referrals insert error:', rErr.message);
-
-    // 2) transactions row — surfaces in Earnings panel via existing loader
-    const { error: tErr } = await supabase.from('transactions').insert({
-      member_id:   referrer.id,
-      type:        'credit',
-      category:    'referrals',
-      amount_aed:  amount,
-      description: 'Referral reward — ' + newName + ' joined',
-      status:      'completed'
-    });
-    if (tErr) console.warn('[referral v16] transactions insert error:', tErr.message);
-
-    console.log('[referral v16] credited', amount, 'AED to', referrer.id, '(tier:', (referrer.tier || 'Member') + ')', 'for referring', newMember.id);
-  } catch (e) {
-    console.warn('[referral v16] creditReferrer threw:', e.message);
-  }
-}
-
-// ── QUESTS (v21) ───────────────────────────────────────────────────────
-// Member reads + check-in request, and the provider approve/decline award
-// transaction. Uses the service-role `supabase` client (bypasses RLS);
-// member/provider identity is passed explicitly, same as the other endpoints.
-
-// Tier ladder by total stamps collected.
-function questTier(stampCount) {
-  if (stampCount >= 12) return 'Navigator';
-  if (stampCount >= 6)  return 'Adventurer';
-  return 'Explorer';
-}
-
-// GET /api/quests?member_id=&scope=&category= — live quests + this member's progress
-app.get('/api/quests', async (req, res) => {
-  try {
-    const { member_id, scope, category } = req.query;
-    let query = supabase
-      .from('quests')
-      .select('*, sponsors(name, logo)')
-      .eq('status', 'live');
-    if (scope)    query = query.eq('scope', scope);
-    if (category) query = query.eq('category', category);
-    const { data: quests, error } = await query.order('created_at', { ascending: false });
-    if (error) return res.status(500).json({ error: error.message });
-
-    const progressByQuest = {};
-    if (member_id) {
-      const { data: prog } = await supabase
-        .from('quest_progress')
-        .select('quest_id, completed_count, status, completed_at')
-        .eq('member_id', member_id);
-      (prog || []).forEach((p) => { progressByQuest[p.quest_id] = p; });
-    }
-    const withProgress = (quests || []).map((q) => ({
-      ...q,
-      progress: progressByQuest[q.id] || { completed_count: 0, status: 'not_started' }
-    }));
-    res.json({ success: true, quests: withProgress });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// GET /api/quests/:id?member_id= — one quest + staked venues + member progress + checkins
-app.get('/api/quests/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { member_id } = req.query;
-    const { data: quest, error } = await supabase
-      .from('quests')
-      .select('*, sponsors(name, logo)')
-      .eq('id', id)
-      .single();
-    if (error || !quest) return res.status(404).json({ error: 'Quest not found' });
-
-    const { data: venues } = await supabase
-      .from('quest_venues')
-      .select('provider_id, task, providers(business_name, letter_mark)')
-      .eq('quest_id', id);
-
-    let progress = { completed_count: 0, status: 'not_started' };
-    let checkins = [];
-    if (member_id) {
-      const { data: p } = await supabase
-        .from('quest_progress')
-        .select('completed_count, status, completed_at')
-        .eq('quest_id', id).eq('member_id', member_id).maybeSingle();
-      if (p) progress = p;
-      const { data: c } = await supabase
-        .from('quest_checkins')
-        .select('id, provider_id, status, approved_at')
-        .eq('quest_id', id).eq('member_id', member_id);
-      checkins = c || [];
-    }
-    res.json({ success: true, quest, venues: venues || [], progress, checkins });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// GET /api/quests/venue/:provider_id?member_id= — member's live quests staked to this
-// venue (powers the post-scan picker)
-app.get('/api/quests/venue/:provider_id', async (req, res) => {
-  try {
-    const { provider_id } = req.params;
-    const { member_id } = req.query;
-    const { data: stakes, error } = await supabase
-      .from('quest_venues')
-      .select('quest_id, quests!inner(id, title, category, scope, target_count, reward_type, status)')
-      .eq('provider_id', provider_id);
-    if (error) return res.status(500).json({ error: error.message });
-    let quests = (stakes || []).map((s) => s.quests).filter((q) => q && q.status === 'live');
-
-    if (member_id && quests.length) {
-      const ids = quests.map((q) => q.id);
-      const { data: prog } = await supabase
-        .from('quest_progress')
-        .select('quest_id, completed_count, status')
-        .eq('member_id', member_id).in('quest_id', ids);
-      const byId = {};
-      (prog || []).forEach((p) => { byId[p.quest_id] = p; });
-      quests = quests.map((q) => ({ ...q, progress: byId[q.id] || { completed_count: 0, status: 'not_started' } }));
-    }
-    res.json({ success: true, provider_id, quests });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// POST /api/quests/checkin  { member_id, quest_id, provider_id } — create a pending request
-app.post('/api/quests/checkin', async (req, res) => {
-  try {
-    const { member_id, quest_id, provider_id } = req.body || {};
-    if (!member_id || !quest_id || !provider_id)
-      return res.status(400).json({ error: 'member_id, quest_id and provider_id required' });
-
-    // venue must be staked into this quest, and the quest must be live
-    const { data: stake } = await supabase
-      .from('quest_venues')
-      .select('quest_id, quests!inner(status)')
-      .eq('quest_id', quest_id).eq('provider_id', provider_id).maybeSingle();
-    if (!stake) return res.status(400).json({ error: 'This venue is not part of that quest' });
-    if (!stake.quests || stake.quests.status !== 'live')
-      return res.status(400).json({ error: 'Quest is not live' });
-
-    // collapse duplicate pending requests at the same venue
-    const { data: existing } = await supabase
-      .from('quest_checkins')
-      .select('id')
-      .eq('member_id', member_id).eq('quest_id', quest_id)
-      .eq('provider_id', provider_id).eq('status', 'pending').maybeSingle();
-    if (existing) return res.json({ success: true, checkin_id: existing.id, already_pending: true });
-
-    const { data: checkin, error } = await supabase
-      .from('quest_checkins')
-      .insert({ member_id, quest_id, provider_id, status: 'pending' })
-      .select().single();
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true, checkin_id: checkin.id });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// GET /api/quests/checkin/:id — poll status (drives the member waiting → approved screen)
-app.get('/api/quests/checkin/:id', async (req, res) => {
-  try {
-    const { data: checkin, error } = await supabase
-      .from('quest_checkins')
-      .select('id, quest_id, member_id, provider_id, status, approved_at')
-      .eq('id', req.params.id).single();
-    if (error || !checkin) return res.status(404).json({ error: 'Check-in not found' });
-    res.json({ success: true, checkin });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// POST /api/quests/checkin/:id/decline — provider declines a pending request
-app.post('/api/quests/checkin/:id/decline', async (req, res) => {
-  try {
-    const { error } = await supabase
-      .from('quest_checkins')
-      .update({ status: 'declined' })
-      .eq('id', req.params.id).eq('status', 'pending');
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// POST /api/quests/checkin/:id/approve  { approved_by } — THE AWARD TRANSACTION.
-// Provider approves a pending check-in: stamps the step, and on completion awards
-// the stamp, claims a prize slot if first-N, and recomputes tier. Server-side only.
-app.post('/api/quests/checkin/:id/approve', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { approved_by } = req.body || {};
-
-    const { data: ci, error: ciErr } = await supabase
-      .from('quest_checkins')
-      .select('id, quest_id, member_id, provider_id, status')
-      .eq('id', id).single();
-    if (ciErr || !ci) return res.status(404).json({ error: 'Check-in not found' });
-    if (ci.status !== 'pending') return res.status(409).json({ error: 'Check-in already ' + ci.status });
-
-    const { data: quest, error: qErr } = await supabase
-      .from('quests').select('*').eq('id', ci.quest_id).single();
-    if (qErr || !quest) return res.status(404).json({ error: 'Quest not found' });
-
-    // distinct-venue rule: reject a repeat approved check-in at the same venue
-    if (quest.require_distinct_venues) {
-      const { data: dup } = await supabase
-        .from('quest_checkins')
-        .select('id')
-        .eq('quest_id', ci.quest_id).eq('member_id', ci.member_id)
-        .eq('provider_id', ci.provider_id).eq('status', 'approved').maybeSingle();
-      if (dup) {
-        await supabase.from('quest_checkins').update({ status: 'declined' }).eq('id', id);
-        return res.status(409).json({ error: 'Already stamped at this venue (distinct-venue quest)' });
-      }
-    }
-
-    // 1) approve the check-in
-    await supabase
-      .from('quest_checkins')
-      .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: approved_by || null })
-      .eq('id', id);
-
-    // 2) advance progress (+1 step)
-    const { data: prog } = await supabase
-      .from('quest_progress')
-      .select('id, completed_count')
-      .eq('quest_id', ci.quest_id).eq('member_id', ci.member_id).maybeSingle();
-    let completed_count = 1;
-    if (prog) {
-      completed_count = (prog.completed_count || 0) + 1;
-      await supabase.from('quest_progress')
-        .update({ completed_count, updated_at: new Date().toISOString() })
-        .eq('id', prog.id);
-    } else {
-      await supabase.from('quest_progress')
-        .insert({ member_id: ci.member_id, quest_id: ci.quest_id, completed_count: 1, status: 'in_progress' });
-    }
-
-    let completed = false, stamp_awarded = false, prize_won = false;
-
-    // 3) completion
-    if (completed_count >= quest.target_count) {
-      completed = true;
-      await supabase.from('quest_progress')
-        .update({ status: 'completed', completed_at: new Date().toISOString() })
-        .eq('quest_id', ci.quest_id).eq('member_id', ci.member_id);
-
-      // award the stamp (one per quest; idempotent)
-      const { error: msErr } = await supabase.from('member_stamps')
-        .upsert(
-          { member_id: ci.member_id, stamp_id: quest.stamp_id, quest_id: ci.quest_id, earned_at: new Date().toISOString() },
-          { onConflict: 'member_id,quest_id' }
-        );
-      if (!msErr) stamp_awarded = true;
-
-      // claim a prize slot if first-N and not already a winner
-      if (quest.reward_type === 'prize') {
-        const { data: alreadyWon } = await supabase.from('prize_winners')
-          .select('quest_id').eq('quest_id', ci.quest_id).eq('member_id', ci.member_id).maybeSingle();
-        if (!alreadyWon && (quest.prize_remaining || 0) > 0) {
-          const { error: pwErr } = await supabase.from('prize_winners')
-            .insert({ quest_id: ci.quest_id, member_id: ci.member_id });
-          if (!pwErr) {
-            prize_won = true;
-            await supabase.from('quests')
-              .update({ prize_remaining: quest.prize_remaining - 1 }).eq('id', quest.id);
-          }
-        }
-      }
-    }
-
-    // 4) recompute tier from total stamps
-    const { count: stampCount } = await supabase
-      .from('member_stamps')
-      .select('quest_id', { count: 'exact', head: true })
-      .eq('member_id', ci.member_id);
-    const tier = questTier(stampCount || 0);
-
-    res.json({
-      success: true, completed, completed_count, target: quest.target_count,
-      stamp_awarded, prize_won, stamps_total: stampCount || 0, tier
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-// ───────────────────────────────────────────────────────────────────────
-
-
-// GET /api/quests/provider/:provider_id/checkins?status=pending — enriched list for
-// the provider portal. Service-role read (RLS hides other members from the provider),
-// so it can return member names + quest titles the provider dashboard can't fetch directly.
-app.get('/api/quests/provider/:provider_id/checkins', async (req, res) => {
-  try {
-    const { provider_id } = req.params;
-    const status = req.query.status || 'pending';
-    const { data: rows, error } = await supabase
-      .from('quest_checkins')
-      .select('id, quest_id, member_id, provider_id, status, requested_at, approved_at, members(full_name, given_names, photo_url), quests(title, target_count, reward_type)')
-      .eq('provider_id', provider_id)
-      .eq('status', status)
-      .order('requested_at', { ascending: true })
-      .limit(100);
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true, checkins: rows || [] });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// GET /api/quests/provider/:provider_id/stats — aggregated quest-visitor analytics for
-// the provider portal. Service-role read so member gender can be tallied server-side
-// (providers can't read other members directly). Returns only aggregates, no PII.
-app.get('/api/quests/provider/:provider_id/stats', async (req, res) => {
-  try {
-    const { provider_id } = req.params;
-    const { data: rows, error } = await supabase
-      .from('quest_checkins')
-      .select('member_id, quests(title), members(gender)')
-      .eq('provider_id', provider_id)
-      .eq('status', 'approved')
-      .limit(5000);
-    if (error) return res.status(500).json({ error: error.message });
-    const list = rows || [];
-
-    const total = list.length;
-    const memberGender = {};   // unique member -> gender (last seen)
-    const byQuest = {};
-    list.forEach((r) => {
-      memberGender[r.member_id] = (r.members && r.members.gender) || null;
-      const t = (r.quests && r.quests.title) || 'Quest';
-      byQuest[t] = (byQuest[t] || 0) + 1;
-    });
-
-    const gender = { male: 0, female: 0, other: 0 };
-    Object.keys(memberGender).forEach((mid) => {
-      const g = memberGender[mid];
-      if (g === 'Male') gender.male++;
-      else if (g === 'Female') gender.female++;
-      else gender.other++;
-    });
-
-    const top_quests = Object.keys(byQuest)
-      .map((t) => ({ title: t, count: byQuest[t] }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 5);
-
-    res.json({
-      success: true,
-      total_checkins: total,
-      unique_visitors: Object.keys(memberGender).length,
-      gender: gender,
-      top_quests: top_quests
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// GET /api/members/:id/matches?limit= — "people like you". Sports/skills from
-// profile_meta.skills. Scores shared skills + same city + similar age. Returns
-// photo + connection status so the strip can show photos + a Request-to-connect button.
-app.get('/api/members/:id/matches', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const limit = parseInt(req.query.limit, 10) || 12;
-
-    const meRes = await supabase.from('members').select('*').eq('id', id).single();
-    if (meRes.error || !meRes.data) return res.status(404).json({ error: 'Member not found' });
-    const me = meRes.data;
-
-    function parseSkills(v) {
-      if (!v) return [];
-      if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { return v.split(',').map(function (s) { return s.trim(); }).filter(Boolean); } }
-      if (Array.isArray(v)) return v.map(function (x) { return (x && typeof x === 'object') ? (x.name || x.skill || x.sport || '') : String(x); }).filter(Boolean);
-      if (typeof v === 'object') return Object.keys(v);
-      return [];
-    }
-    function displayName(o) { if (o.given_names) return o.given_names + (o.surname ? ' ' + o.surname.charAt(0).toUpperCase() + '.' : ''); return o.full_name || 'Member'; }
-    function titleCase(s) { return String(s).replace(/\b\w/g, function (c) { return c.toUpperCase(); }); }
-    function ageFrom(dob) { if (!dob) return ''; const d = new Date(dob); if (isNaN(d.getTime())) return ''; const t = new Date(); let a = t.getFullYear() - d.getFullYear(); const mm = t.getMonth() - d.getMonth(); if (mm < 0 || (mm === 0 && t.getDate() < d.getDate())) a--; return (a > 0 && a < 120) ? a : ''; }
-    function genderShort(g) { if (g === 'Male') return 'male'; if (g === 'Female') return 'female'; return ''; }
-
-    const meMeta = await supabase.from('profile_meta').select('skills').eq('member_id', id).maybeSingle();
-    const mySet = new Set(parseSkills(meMeta.data && meMeta.data.skills).map(function (s) { return s.toLowerCase(); }));
-    const myAge = ageFrom(me.date_of_birth);
-
-    const othRes = await supabase.from('members')
-      .select('id, full_name, given_names, surname, city, date_of_birth, gender, photo_url, verified, created_at, status, profile_complete')
-      .neq('id', id).eq('status', 'active').eq('profile_complete', true).limit(500);
-    const others = othRes.data || [];
-
-    const ids = others.map(function (o) { return o.id; });
-    const skillMap = {}, trustMap = {};
-    if (ids.length) {
-      const pm = await supabase.from('profile_meta').select('member_id, skills, reliability_score').in('member_id', ids);
-      (pm.data || []).forEach(function (p) { skillMap[p.member_id] = parseSkills(p.skills); if (p.reliability_score != null) trustMap[p.member_id] = Number(p.reliability_score); });
-    }
-
-    // connection status with me
-    const cmap = {};
-    const cRows = await supabase.from('member_connections').select('requester_id, addressee_id, status')
-      .or('requester_id.eq.' + id + ',addressee_id.eq.' + id);
-    (cRows.data || []).forEach(function (c) {
-      const other = c.requester_id === id ? c.addressee_id : c.requester_id;
-      cmap[other] = c.status === 'accepted' ? 'connected' : (c.requester_id === id ? 'requested' : 'incoming');
-    });
-
-    const scored = others.map(function (o) {
-      const theirSkills = skillMap[o.id] || [];
-      const shared = theirSkills.filter(function (s) { return mySet.has(s.toLowerCase()); });
-      const cityMatch = (me.city && o.city && me.city.toLowerCase() === o.city.toLowerCase());
-      const theirAge = ageFrom(o.date_of_birth);
-      const ageClose = (myAge && theirAge && Math.abs(myAge - theirAge) <= 6);
-      const sc = shared.length;
-      const pct = Math.min(99, Math.round((sc > 0 ? 50 + sc * 12 : 22) + (cityMatch ? 10 : 0) + (ageClose ? 6 : 0)));
-      const sportsList = theirSkills.map(function (s) { return { name: titleCase(s), level: 'All levels', shared: mySet.has(s.toLowerCase()) }; });
-      const matchSports = shared.map(function (s) { return { sport: titleCase(s), pct: 80, points: [{ l: 'Shared', v: 'You both do ' + titleCase(s) }] }; });
-      const matchOther = [];
-      if (cityMatch) matchOther.push({ l: 'Same city', v: o.city });
-      if (ageClose) matchOther.push({ l: 'Similar age', v: theirAge + ' yrs' });
-      return {
-        id: o.id, name: displayName(o), letter: (o.given_names || o.full_name || 'M').charAt(0).toUpperCase(),
-        photo: o.photo_url || null,
-        age: theirAge, city: o.city || '', gender: genderShort(o.gender), verified: !!o.verified,
-        bio: (shared.length ? ('Into ' + shared.slice(0, 3).map(titleCase).join(', ') + '.') : 'FFP member.'),
-        joined: o.created_at || new Date().toISOString(), memberType: 'member', profession: '',
-        trust: trustMap[o.id] != null ? trustMap[o.id] : 9.0, meetups: 0, hosted: 0,
-        match: pct, sports: sportsList, matchSports: matchSports, matchOther: matchOther,
-        connection: cmap[o.id] || 'none', _shared: sc
-      };
-    });
-    scored.sort(function (a, b) { return b.match - a.match || b._shared - a._shared; });
-    res.json({ success: true, matches: scored.slice(0, limit) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── CONNECTIONS (friends) ──────────────────────────────────────────────
-// POST /api/connections/request { member_id, target_id } — request to connect.
-// If the other person already requested you, this accepts it (you're now connected).
-app.post('/api/connections/request', async (req, res) => {
-  try {
-    const { member_id, target_id } = req.body || {};
-    if (!member_id || !target_id || member_id === target_id) return res.status(400).json({ error: 'member_id and target_id required' });
-    const rev = await supabase.from('member_connections').select('id, status').eq('requester_id', target_id).eq('addressee_id', member_id).maybeSingle();
-    if (rev.data) {
-      if (rev.data.status !== 'accepted') await supabase.from('member_connections').update({ status: 'accepted', updated_at: new Date().toISOString() }).eq('id', rev.data.id);
-      return res.json({ success: true, status: 'connected' });
-    }
-    const fwd = await supabase.from('member_connections').select('id, status').eq('requester_id', member_id).eq('addressee_id', target_id).maybeSingle();
-    if (fwd.data) return res.json({ success: true, status: fwd.data.status === 'accepted' ? 'connected' : 'requested' });
-    const ins = await supabase.from('member_connections').insert({ requester_id: member_id, addressee_id: target_id, status: 'pending' });
-    if (ins.error) return res.status(500).json({ error: ins.error.message });
-    res.json({ success: true, status: 'requested' });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// POST /api/connections/respond { member_id, requester_id, accept } — accept/decline an incoming request.
-app.post('/api/connections/respond', async (req, res) => {
-  try {
-    const { member_id, requester_id, accept } = req.body || {};
-    if (!member_id || !requester_id) return res.status(400).json({ error: 'member_id and requester_id required' });
-    const r = await supabase.from('member_connections')
-      .update({ status: accept ? 'accepted' : 'declined', updated_at: new Date().toISOString() })
-      .eq('requester_id', requester_id).eq('addressee_id', member_id).eq('status', 'pending');
-    if (r.error) return res.status(500).json({ error: r.error.message });
-    res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// GET /api/connections/:member_id — friends (accepted) + incoming requests, enriched.
-app.get('/api/connections/:member_id', async (req, res) => {
-  try {
-    const id = req.params.member_id;
-    const rows = await supabase.from('member_connections').select('*').or('requester_id.eq.' + id + ',addressee_id.eq.' + id);
-    const data = rows.data || [];
-    const otherIds = Array.from(new Set(data.map(function (c) { return c.requester_id === id ? c.addressee_id : c.requester_id; })));
-    const nameMap = {};
-    if (otherIds.length) {
-      const mm = await supabase.from('members').select('id, full_name, given_names, surname, photo_url, city').in('id', otherIds);
-      (mm.data || []).forEach(function (m) { nameMap[m.id] = m; });
-    }
-    function shape(m) { if (!m) return null; return { id: m.id, name: (m.given_names || m.full_name || 'Member'), photo: m.photo_url || null, city: m.city || '' }; }
-    const friends = [], incoming = [];
-    data.forEach(function (c) {
-      const otherId = c.requester_id === id ? c.addressee_id : c.requester_id;
-      if (c.status === 'accepted') friends.push(shape(nameMap[otherId]));
-      else if (c.status === 'pending' && c.addressee_id === id) incoming.push(shape(nameMap[otherId]));
-    });
-    res.json({ success: true, friends: friends.filter(Boolean), incoming: incoming.filter(Boolean) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 module.exports = app;
