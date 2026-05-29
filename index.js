@@ -1,4 +1,6 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v24
+// FFP Passport — Express Server (Vercel, CommonJS) — v25
+// v25: GET /api/members/:id/matches — "people like you" scored by shared sports/
+//      interests + city + fitness level. Powers the Meet & Move match strip.
 // v24: quest_venues.task returned in GET /api/quests/:id (what to do at each venue).
 // v23: GET /api/quests/provider/:provider_id/stats — aggregated quest-visitor
 //      analytics (total check-ins, unique visitors, gender breakdown, top quests)
@@ -1409,6 +1411,84 @@ app.get('/api/quests/provider/:provider_id/stats', async (req, res) => {
       gender: gender,
       top_quests: top_quests
     });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/members/:id/matches?limit= — "people like you". Scores other active,
+// profile-complete members by shared sports/interests (robust to whichever column
+// holds them), same city, and fitness level. Returns match-card-ready shape.
+app.get('/api/members/:id/matches', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const limit = parseInt(req.query.limit, 10) || 12;
+
+    const meRes = await supabase.from('members').select('*').eq('id', id).single();
+    if (meRes.error || !meRes.data) return res.status(404).json({ error: 'Member not found' });
+    const me = meRes.data;
+
+    function tokens(m) {
+      const set = new Set();
+      ['sports', 'interests', 'skills'].forEach(function (f) {
+        let v = m[f];
+        if (!v) return;
+        if (typeof v === 'string') {
+          try { const p = JSON.parse(v); if (Array.isArray(p)) v = p; } catch (e) {}
+        }
+        if (Array.isArray(v)) {
+          v.forEach(function (x) {
+            const n = (x && typeof x === 'object') ? (x.name || x.sport || x.title) : x;
+            if (n) set.add(String(n).toLowerCase().trim());
+          });
+        } else if (typeof v === 'string') {
+          v.split(',').forEach(function (s) { if (s.trim()) set.add(s.toLowerCase().trim()); });
+        }
+      });
+      return set;
+    }
+    function displayName(o) {
+      if (o.given_names) return o.given_names + (o.surname ? ' ' + o.surname.charAt(0).toUpperCase() + '.' : '');
+      return o.full_name || 'Member';
+    }
+    function titleCase(s) { return s.replace(/\b\w/g, function (c) { return c.toUpperCase(); }); }
+    function ageFrom(dob) {
+      if (!dob) return '';
+      const d = new Date(dob); if (isNaN(d.getTime())) return '';
+      const t = new Date(); let a = t.getFullYear() - d.getFullYear();
+      const mm = t.getMonth() - d.getMonth();
+      if (mm < 0 || (mm === 0 && t.getDate() < d.getDate())) a--;
+      return a > 0 && a < 120 ? a : '';
+    }
+
+    const mine = tokens(me);
+
+    const othRes = await supabase.from('members')
+      .select('id, full_name, given_names, surname, city, date_of_birth, fitness_level, photo_url, sports, interests, skills, status, profile_complete')
+      .neq('id', id).eq('status', 'active').eq('profile_complete', true).limit(500);
+    const others = othRes.data || [];
+
+    const scored = others.map(function (o) {
+      const their = tokens(o);
+      const shared = [];
+      their.forEach(function (t) { if (mine.has(t)) shared.push(t); });
+      const sc = shared.length;
+      const cityMatch = (me.city && o.city && me.city.toLowerCase() === o.city.toLowerCase()) ? 1 : 0;
+      const levelMatch = (me.fitness_level && o.fitness_level && me.fitness_level === o.fitness_level) ? 1 : 0;
+      const pct = Math.min(99, Math.round((sc > 0 ? 50 + sc * 12 : 18) + cityMatch * 8 + levelMatch * 5));
+      return {
+        id: o.id,
+        name: displayName(o),
+        letter: (o.given_names || o.full_name || 'M').charAt(0).toUpperCase(),
+        age: ageFrom(o.date_of_birth),
+        city: o.city || '',
+        sports: shared.slice(0, 3).map(function (s) { return { name: titleCase(s) }; }),
+        match: pct,
+        trust: 9.0,
+        _shared: sc
+      };
+    });
+
+    scored.sort(function (a, b) { return b.match - a.match || b._shared - a._shared; });
+    res.json({ success: true, matches: scored.slice(0, limit) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
