@@ -1,4 +1,6 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v27
+// FFP Passport — Express Server (Vercel, CommonJS) — v28
+// v28: matches return photo + connection status; + member_connections endpoints
+//      (request / respond / list) — the friends layer behind Meet & Move.
 // v27: matching reads profile_meta.skills (real storage) — members has no
 //      sports/interests/bio/fitness_level cols. Scores shared skills + city + age.
 // v26: match endpoint enriched — returns full profile shape (sports, why-you-match,
@@ -1418,9 +1420,9 @@ app.get('/api/quests/provider/:provider_id/stats', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// GET /api/members/:id/matches?limit= — "people like you". Sports/skills live in
-// profile_meta.skills (jsonb); members has city, date_of_birth, gender, verified.
-// Scores by shared skills + same city + similar age. Returns match-card + profile shape.
+// GET /api/members/:id/matches?limit= — "people like you". Sports/skills from
+// profile_meta.skills. Scores shared skills + same city + similar age. Returns
+// photo + connection status so the strip can show photos + a Request-to-connect button.
 app.get('/api/members/:id/matches', async (req, res) => {
   try {
     const { id } = req.params;
@@ -1433,48 +1435,39 @@ app.get('/api/members/:id/matches', async (req, res) => {
     function parseSkills(v) {
       if (!v) return [];
       if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { return v.split(',').map(function (s) { return s.trim(); }).filter(Boolean); } }
-      if (Array.isArray(v)) {
-        return v.map(function (x) { return (x && typeof x === 'object') ? (x.name || x.skill || x.sport || '') : String(x); }).filter(Boolean);
-      }
-      if (typeof v === 'object') { return Object.keys(v); }
+      if (Array.isArray(v)) return v.map(function (x) { return (x && typeof x === 'object') ? (x.name || x.skill || x.sport || '') : String(x); }).filter(Boolean);
+      if (typeof v === 'object') return Object.keys(v);
       return [];
     }
-    function displayName(o) {
-      if (o.given_names) return o.given_names + (o.surname ? ' ' + o.surname.charAt(0).toUpperCase() + '.' : '');
-      return o.full_name || 'Member';
-    }
+    function displayName(o) { if (o.given_names) return o.given_names + (o.surname ? ' ' + o.surname.charAt(0).toUpperCase() + '.' : ''); return o.full_name || 'Member'; }
     function titleCase(s) { return String(s).replace(/\b\w/g, function (c) { return c.toUpperCase(); }); }
-    function ageFrom(dob) {
-      if (!dob) return '';
-      const d = new Date(dob); if (isNaN(d.getTime())) return '';
-      const t = new Date(); let a = t.getFullYear() - d.getFullYear();
-      const mm = t.getMonth() - d.getMonth();
-      if (mm < 0 || (mm === 0 && t.getDate() < d.getDate())) a--;
-      return (a > 0 && a < 120) ? a : '';
-    }
+    function ageFrom(dob) { if (!dob) return ''; const d = new Date(dob); if (isNaN(d.getTime())) return ''; const t = new Date(); let a = t.getFullYear() - d.getFullYear(); const mm = t.getMonth() - d.getMonth(); if (mm < 0 || (mm === 0 && t.getDate() < d.getDate())) a--; return (a > 0 && a < 120) ? a : ''; }
     function genderShort(g) { if (g === 'Male') return 'male'; if (g === 'Female') return 'female'; return ''; }
 
-    // my skills
     const meMeta = await supabase.from('profile_meta').select('skills').eq('member_id', id).maybeSingle();
-    const mySkills = parseSkills(meMeta.data && meMeta.data.skills);
-    const mySet = new Set(mySkills.map(function (s) { return s.toLowerCase(); }));
+    const mySet = new Set(parseSkills(meMeta.data && meMeta.data.skills).map(function (s) { return s.toLowerCase(); }));
     const myAge = ageFrom(me.date_of_birth);
 
     const othRes = await supabase.from('members')
-      .select('id, full_name, given_names, surname, city, date_of_birth, gender, photo_url, verified, created_at, role, status, profile_complete')
+      .select('id, full_name, given_names, surname, city, date_of_birth, gender, photo_url, verified, created_at, status, profile_complete')
       .neq('id', id).eq('status', 'active').eq('profile_complete', true).limit(500);
     const others = othRes.data || [];
 
-    // their skills + trust
     const ids = others.map(function (o) { return o.id; });
     const skillMap = {}, trustMap = {};
     if (ids.length) {
       const pm = await supabase.from('profile_meta').select('member_id, skills, reliability_score').in('member_id', ids);
-      (pm.data || []).forEach(function (p) {
-        skillMap[p.member_id] = parseSkills(p.skills);
-        if (p.reliability_score != null) trustMap[p.member_id] = Number(p.reliability_score);
-      });
+      (pm.data || []).forEach(function (p) { skillMap[p.member_id] = parseSkills(p.skills); if (p.reliability_score != null) trustMap[p.member_id] = Number(p.reliability_score); });
     }
+
+    // connection status with me
+    const cmap = {};
+    const cRows = await supabase.from('member_connections').select('requester_id, addressee_id, status')
+      .or('requester_id.eq.' + id + ',addressee_id.eq.' + id);
+    (cRows.data || []).forEach(function (c) {
+      const other = c.requester_id === id ? c.addressee_id : c.requester_id;
+      cmap[other] = c.status === 'accepted' ? 'connected' : (c.requester_id === id ? 'requested' : 'incoming');
+    });
 
     const scored = others.map(function (o) {
       const theirSkills = skillMap[o.id] || [];
@@ -1484,42 +1477,80 @@ app.get('/api/members/:id/matches', async (req, res) => {
       const ageClose = (myAge && theirAge && Math.abs(myAge - theirAge) <= 6);
       const sc = shared.length;
       const pct = Math.min(99, Math.round((sc > 0 ? 50 + sc * 12 : 22) + (cityMatch ? 10 : 0) + (ageClose ? 6 : 0)));
-
-      const sportsList = theirSkills.map(function (s) {
-        return { name: titleCase(s), level: 'All levels', shared: mySet.has(s.toLowerCase()) };
-      });
-      const matchSports = shared.map(function (s) {
-        return { sport: titleCase(s), pct: 80, points: [{ l: 'Shared', v: 'You both do ' + titleCase(s) }] };
-      });
+      const sportsList = theirSkills.map(function (s) { return { name: titleCase(s), level: 'All levels', shared: mySet.has(s.toLowerCase()) }; });
+      const matchSports = shared.map(function (s) { return { sport: titleCase(s), pct: 80, points: [{ l: 'Shared', v: 'You both do ' + titleCase(s) }] }; });
       const matchOther = [];
       if (cityMatch) matchOther.push({ l: 'Same city', v: o.city });
       if (ageClose) matchOther.push({ l: 'Similar age', v: theirAge + ' yrs' });
-
       return {
-        id: o.id,
-        name: displayName(o),
-        letter: (o.given_names || o.full_name || 'M').charAt(0).toUpperCase(),
-        age: theirAge,
-        city: o.city || '',
-        gender: genderShort(o.gender),
-        verified: !!o.verified,
+        id: o.id, name: displayName(o), letter: (o.given_names || o.full_name || 'M').charAt(0).toUpperCase(),
+        photo: o.photo_url || null,
+        age: theirAge, city: o.city || '', gender: genderShort(o.gender), verified: !!o.verified,
         bio: (shared.length ? ('Into ' + shared.slice(0, 3).map(titleCase).join(', ') + '.') : 'FFP member.'),
-        joined: o.created_at || new Date().toISOString(),
-        memberType: 'member',
-        profession: '',
-        trust: trustMap[o.id] != null ? trustMap[o.id] : 9.0,
-        meetups: 0,
-        hosted: 0,
-        match: pct,
-        sports: sportsList,
-        matchSports: matchSports,
-        matchOther: matchOther,
-        _shared: sc
+        joined: o.created_at || new Date().toISOString(), memberType: 'member', profession: '',
+        trust: trustMap[o.id] != null ? trustMap[o.id] : 9.0, meetups: 0, hosted: 0,
+        match: pct, sports: sportsList, matchSports: matchSports, matchOther: matchOther,
+        connection: cmap[o.id] || 'none', _shared: sc
       };
     });
-
     scored.sort(function (a, b) { return b.match - a.match || b._shared - a._shared; });
     res.json({ success: true, matches: scored.slice(0, limit) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── CONNECTIONS (friends) ──────────────────────────────────────────────
+// POST /api/connections/request { member_id, target_id } — request to connect.
+// If the other person already requested you, this accepts it (you're now connected).
+app.post('/api/connections/request', async (req, res) => {
+  try {
+    const { member_id, target_id } = req.body || {};
+    if (!member_id || !target_id || member_id === target_id) return res.status(400).json({ error: 'member_id and target_id required' });
+    const rev = await supabase.from('member_connections').select('id, status').eq('requester_id', target_id).eq('addressee_id', member_id).maybeSingle();
+    if (rev.data) {
+      if (rev.data.status !== 'accepted') await supabase.from('member_connections').update({ status: 'accepted', updated_at: new Date().toISOString() }).eq('id', rev.data.id);
+      return res.json({ success: true, status: 'connected' });
+    }
+    const fwd = await supabase.from('member_connections').select('id, status').eq('requester_id', member_id).eq('addressee_id', target_id).maybeSingle();
+    if (fwd.data) return res.json({ success: true, status: fwd.data.status === 'accepted' ? 'connected' : 'requested' });
+    const ins = await supabase.from('member_connections').insert({ requester_id: member_id, addressee_id: target_id, status: 'pending' });
+    if (ins.error) return res.status(500).json({ error: ins.error.message });
+    res.json({ success: true, status: 'requested' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/connections/respond { member_id, requester_id, accept } — accept/decline an incoming request.
+app.post('/api/connections/respond', async (req, res) => {
+  try {
+    const { member_id, requester_id, accept } = req.body || {};
+    if (!member_id || !requester_id) return res.status(400).json({ error: 'member_id and requester_id required' });
+    const r = await supabase.from('member_connections')
+      .update({ status: accept ? 'accepted' : 'declined', updated_at: new Date().toISOString() })
+      .eq('requester_id', requester_id).eq('addressee_id', member_id).eq('status', 'pending');
+    if (r.error) return res.status(500).json({ error: r.error.message });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/connections/:member_id — friends (accepted) + incoming requests, enriched.
+app.get('/api/connections/:member_id', async (req, res) => {
+  try {
+    const id = req.params.member_id;
+    const rows = await supabase.from('member_connections').select('*').or('requester_id.eq.' + id + ',addressee_id.eq.' + id);
+    const data = rows.data || [];
+    const otherIds = Array.from(new Set(data.map(function (c) { return c.requester_id === id ? c.addressee_id : c.requester_id; })));
+    const nameMap = {};
+    if (otherIds.length) {
+      const mm = await supabase.from('members').select('id, full_name, given_names, surname, photo_url, city').in('id', otherIds);
+      (mm.data || []).forEach(function (m) { nameMap[m.id] = m; });
+    }
+    function shape(m) { if (!m) return null; return { id: m.id, name: (m.given_names || m.full_name || 'Member'), photo: m.photo_url || null, city: m.city || '' }; }
+    const friends = [], incoming = [];
+    data.forEach(function (c) {
+      const otherId = c.requester_id === id ? c.addressee_id : c.requester_id;
+      if (c.status === 'accepted') friends.push(shape(nameMap[otherId]));
+      else if (c.status === 'pending' && c.addressee_id === id) incoming.push(shape(nameMap[otherId]));
+    });
+    res.json({ success: true, friends: friends.filter(Boolean), incoming: incoming.filter(Boolean) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
