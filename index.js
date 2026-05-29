@@ -2,6 +2,11 @@
 // v12: PUT /api/members/:id now accepts `country` and `phone_country_code`
 //      in req.body so the Profile panel Save button can persist them.
 //      Without this, the frontend save would silently drop those fields.
+// v14: GET /api/verify/:passport_no — public endpoint backing the QR
+//      Identity verification flow. Returns only public-safe member fields
+//      (name, photo_url, status, tier, passport_no, member_since), never
+//      email/phone/DOB/address. Uses service key to bypass RLS so anyone
+//      scanning a QR can see verification info without authenticating.
 // v13: JWT bridge for Supabase RLS — /api/auth/signin and /api/onboard/from-stripe
 //      now ALSO return a Supabase-compatible HS256 JWT (signed with SUPABASE_JWT_SECRET).
 //      The frontend stores this and calls supabase.auth.setSession({access_token: jwt,
@@ -846,4 +851,58 @@ app.post('/api/visits/log', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ── v14: PUBLIC verify endpoint (QR scan target) ────────────────────
+// GET /api/verify/:passport_no
+// No auth required — anyone scanning a member's QR can see their
+// identity card. Returns ONLY public-safe fields. Never email/phone/
+// DOB/address/etc. Status is returned regardless of value (active /
+// expired / suspended) so the scanner sees the real state, not just
+// "exists or not".
+app.get('/api/verify/:passport_no', async (req, res) => {
+  try {
+    const passportNo = String(req.params.passport_no || '').trim();
+    if (!passportNo) {
+      return res.status(400).json({ error: 'passport_no required' });
+    }
+    const { data: member, error } = await supabase
+      .from('members')
+      .select('passport_no, given_names, surname, full_name, photo_url, status, tier, country, created_at')
+      .eq('passport_no', passportNo)
+      .maybeSingle();
+    if (error) {
+      console.error('[verify] supabase error:', error);
+      return res.status(500).json({ error: error.message });
+    }
+    if (!member) {
+      return res.status(404).json({ error: 'Member not found', passport_no: passportNo });
+    }
+    // Compute expiry as created_at + 1 year (matches member-dashboard convention)
+    let expiry = null;
+    if (member.created_at) {
+      const d = new Date(member.created_at);
+      d.setFullYear(d.getFullYear() + 1);
+      expiry = d.toISOString().slice(0, 10);
+    }
+    return res.json({
+      success: true,
+      member: {
+        passport_no: member.passport_no,
+        full_name:   member.full_name || ((member.given_names || '') + ' ' + (member.surname || '')).trim(),
+        given_names: member.given_names || '',
+        surname:     member.surname || '',
+        photo_url:   member.photo_url || null,
+        status:      member.status || 'unknown',
+        tier:        member.tier || 'Member',
+        country:     member.country || null,
+        member_since: member.created_at ? String(member.created_at).slice(0, 10) : null,
+        expires:     expiry
+      }
+    });
+  } catch (e) {
+    console.error('[verify] handler error:', e);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = app;
