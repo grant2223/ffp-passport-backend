@@ -10439,7 +10439,7 @@ const Quests = {
     const tierIcon = done >= 12 ? 'travel_explore' : done >= 6 ? 'hiking' : 'explore';
     const nextLbl = done >= 12
       ? 'Top tier reached'
-      : ((done >= 6 ? (12 - done) : (6 - done)) + ' more stamps to ' + (done >= 6 ? 'Navigator' : 'Adventurer'));
+      : ((done >= 6 ? (12 - done) : (6 - done)) + ' more quests to ' + (done >= 6 ? 'Navigator' : 'Adventurer'));
     let pct;
     if (done >= 12) pct = 100;
     else if (done >= 6) pct = Math.round(((done - 6) / 6) * 100);
@@ -10450,7 +10450,7 @@ const Quests = {
         '<div class="hero-tier-badge"><span class="material-icons">' + tierIcon + '</span></div>' +
         '<div class="hero-tier-info" style="min-width:0;">' +
           '<div class="tier-name">' + tierName + '</div>' +
-          '<div class="tier-meta"><b>' + done + '</b> stamps collected</div>' +
+          '<div class="tier-meta"><b>' + done + '</b> quests completed</div>' +
         '</div>' +
         '<div class="quest-tier-prog" style="flex:1; min-width:110px;">' +
           '<div class="chal-progress-bar"><div class="chal-progress-bar-fill" style="width:' + pct + '%;"></div></div>' +
@@ -12262,7 +12262,7 @@ function init() {
   // Picker modal click-outside is wired inside the Picker module
   document.getElementById('city-search').addEventListener('input', e => renderCityList(e.target.value));
   renderAll();
-  console.log('FFP Dashboard v31 - log activity fixes');
+  console.log('FFP Dashboard v32 - quests completed label');
 }
 
 // ===== APPLE WALLET INTEGRATION =====
