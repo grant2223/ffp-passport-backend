@@ -2,6 +2,12 @@
 // v12: PUT /api/members/:id now accepts `country` and `phone_country_code`
 //      in req.body so the Profile panel Save button can persist them.
 //      Without this, the frontend save would silently drop those fields.
+// v18: /api/verify/:passport_no response now ALSO returns full passport-
+//      card fields: given_names, surname, nationality, gender, dob,
+//      referral_code. Enables verify.html v2 to render the actual
+//      FFP passport card (marketing-grade page where any scanner sees
+//      the card + CTA to get their own, with the viewed member's
+//      referral_code automatically attributed on signup).
 // v17: /api/referrer/:code response now ALSO returns photo_url,
 //      passport_no, tier, and full_name. Used by homepage v5 banner
 //      to show a richer 'Invited by [name] [avatar]' card with a
@@ -911,7 +917,7 @@ app.get('/api/verify/:passport_no', async (req, res) => {
     }
     const { data: member, error } = await supabase
       .from('members')
-      .select('passport_no, given_names, surname, full_name, photo_url, status, tier, country, created_at, verified')
+      .select('passport_no, given_names, surname, full_name, photo_url, status, tier, country, nationality, gender, date_of_birth, created_at, verified, referral_code')
       .eq('passport_no', passportNo)
       .maybeSingle();
     if (error) {
@@ -931,17 +937,21 @@ app.get('/api/verify/:passport_no', async (req, res) => {
     return res.json({
       success: true,
       member: {
-        passport_no: member.passport_no,
-        full_name:   member.full_name || ((member.given_names || '') + ' ' + (member.surname || '')).trim(),
-        given_names: member.given_names || '',
-        surname:     member.surname || '',
-        photo_url:   member.photo_url || null,
-        status:      member.status || 'unknown',
-        tier:        member.tier || 'Member',
-        country:     member.country || null,
-        member_since: member.created_at ? String(member.created_at).slice(0, 10) : null,
-        expires:     expiry,
-        verified:    !!member.verified
+        passport_no:   member.passport_no,
+        full_name:     member.full_name || ((member.given_names || '') + ' ' + (member.surname || '')).trim(),
+        given_names:   member.given_names || '',
+        surname:       member.surname || '',
+        photo_url:     member.photo_url || null,
+        status:        member.status || 'unknown',
+        tier:          member.tier || 'Member',
+        country:       member.country || null,
+        nationality:   member.nationality || null,
+        gender:        member.gender || null,
+        date_of_birth: member.date_of_birth || null,
+        member_since:  member.created_at ? String(member.created_at).slice(0, 10) : null,
+        expires:       expiry,
+        verified:      !!member.verified,
+        referral_code: member.referral_code || null
       }
     });
   } catch (e) {
