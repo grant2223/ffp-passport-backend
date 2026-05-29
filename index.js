@@ -1,4 +1,14 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v12
+// FFP Passport — Express Server (Vercel, CommonJS) — v21
+// v21: QUESTS. Adds quest endpoints (additive — no existing route touched):
+//      GET  /api/quests                      list live quests + member progress
+//      GET  /api/quests/:id                  one quest + staked venues + progress
+//      GET  /api/quests/venue/:provider_id   member's live quests at a venue (picker)
+//      POST /api/quests/checkin              member creates a pending check-in request
+//      GET  /api/quests/checkin/:id          poll status (waiting -> approved)
+//      POST /api/quests/checkin/:id/approve  provider approves -> AWARD TRANSACTION
+//      POST /api/quests/checkin/:id/decline  provider declines
+//      Award: distinct-venue dedup -> +1 step -> on completion award stamp,
+//      claim prize slot if first-N, recompute tier. Service-role client.
 // v12: PUT /api/members/:id now accepts `country` and `phone_country_code`
 //      in req.body so the Profile panel Save button can persist them.
 //      Without this, the frontend save would silently drop those fields.
@@ -1064,5 +1074,268 @@ async function creditReferrer(newMember, refCode) {
     console.warn('[referral v16] creditReferrer threw:', e.message);
   }
 }
+
+// ── QUESTS (v21) ───────────────────────────────────────────────────────
+// Member reads + check-in request, and the provider approve/decline award
+// transaction. Uses the service-role `supabase` client (bypasses RLS);
+// member/provider identity is passed explicitly, same as the other endpoints.
+
+// Tier ladder by total stamps collected.
+function questTier(stampCount) {
+  if (stampCount >= 12) return 'Navigator';
+  if (stampCount >= 6)  return 'Adventurer';
+  return 'Explorer';
+}
+
+// GET /api/quests?member_id=&scope=&category= — live quests + this member's progress
+app.get('/api/quests', async (req, res) => {
+  try {
+    const { member_id, scope, category } = req.query;
+    let query = supabase
+      .from('quests')
+      .select('*, sponsors(name, logo)')
+      .eq('status', 'live');
+    if (scope)    query = query.eq('scope', scope);
+    if (category) query = query.eq('category', category);
+    const { data: quests, error } = await query.order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+
+    const progressByQuest = {};
+    if (member_id) {
+      const { data: prog } = await supabase
+        .from('quest_progress')
+        .select('quest_id, completed_count, status, completed_at')
+        .eq('member_id', member_id);
+      (prog || []).forEach((p) => { progressByQuest[p.quest_id] = p; });
+    }
+    const withProgress = (quests || []).map((q) => ({
+      ...q,
+      progress: progressByQuest[q.id] || { completed_count: 0, status: 'not_started' }
+    }));
+    res.json({ success: true, quests: withProgress });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/quests/:id?member_id= — one quest + staked venues + member progress + checkins
+app.get('/api/quests/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { member_id } = req.query;
+    const { data: quest, error } = await supabase
+      .from('quests')
+      .select('*, sponsors(name, logo)')
+      .eq('id', id)
+      .single();
+    if (error || !quest) return res.status(404).json({ error: 'Quest not found' });
+
+    const { data: venues } = await supabase
+      .from('quest_venues')
+      .select('provider_id, providers(business_name, letter_mark)')
+      .eq('quest_id', id);
+
+    let progress = { completed_count: 0, status: 'not_started' };
+    let checkins = [];
+    if (member_id) {
+      const { data: p } = await supabase
+        .from('quest_progress')
+        .select('completed_count, status, completed_at')
+        .eq('quest_id', id).eq('member_id', member_id).maybeSingle();
+      if (p) progress = p;
+      const { data: c } = await supabase
+        .from('quest_checkins')
+        .select('id, provider_id, status, approved_at')
+        .eq('quest_id', id).eq('member_id', member_id);
+      checkins = c || [];
+    }
+    res.json({ success: true, quest, venues: venues || [], progress, checkins });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/quests/venue/:provider_id?member_id= — member's live quests staked to this
+// venue (powers the post-scan picker)
+app.get('/api/quests/venue/:provider_id', async (req, res) => {
+  try {
+    const { provider_id } = req.params;
+    const { member_id } = req.query;
+    const { data: stakes, error } = await supabase
+      .from('quest_venues')
+      .select('quest_id, quests!inner(id, title, category, scope, target_count, reward_type, status)')
+      .eq('provider_id', provider_id);
+    if (error) return res.status(500).json({ error: error.message });
+    let quests = (stakes || []).map((s) => s.quests).filter((q) => q && q.status === 'live');
+
+    if (member_id && quests.length) {
+      const ids = quests.map((q) => q.id);
+      const { data: prog } = await supabase
+        .from('quest_progress')
+        .select('quest_id, completed_count, status')
+        .eq('member_id', member_id).in('quest_id', ids);
+      const byId = {};
+      (prog || []).forEach((p) => { byId[p.quest_id] = p; });
+      quests = quests.map((q) => ({ ...q, progress: byId[q.id] || { completed_count: 0, status: 'not_started' } }));
+    }
+    res.json({ success: true, provider_id, quests });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/quests/checkin  { member_id, quest_id, provider_id } — create a pending request
+app.post('/api/quests/checkin', async (req, res) => {
+  try {
+    const { member_id, quest_id, provider_id } = req.body || {};
+    if (!member_id || !quest_id || !provider_id)
+      return res.status(400).json({ error: 'member_id, quest_id and provider_id required' });
+
+    // venue must be staked into this quest, and the quest must be live
+    const { data: stake } = await supabase
+      .from('quest_venues')
+      .select('quest_id, quests!inner(status)')
+      .eq('quest_id', quest_id).eq('provider_id', provider_id).maybeSingle();
+    if (!stake) return res.status(400).json({ error: 'This venue is not part of that quest' });
+    if (!stake.quests || stake.quests.status !== 'live')
+      return res.status(400).json({ error: 'Quest is not live' });
+
+    // collapse duplicate pending requests at the same venue
+    const { data: existing } = await supabase
+      .from('quest_checkins')
+      .select('id')
+      .eq('member_id', member_id).eq('quest_id', quest_id)
+      .eq('provider_id', provider_id).eq('status', 'pending').maybeSingle();
+    if (existing) return res.json({ success: true, checkin_id: existing.id, already_pending: true });
+
+    const { data: checkin, error } = await supabase
+      .from('quest_checkins')
+      .insert({ member_id, quest_id, provider_id, status: 'pending' })
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true, checkin_id: checkin.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/quests/checkin/:id — poll status (drives the member waiting → approved screen)
+app.get('/api/quests/checkin/:id', async (req, res) => {
+  try {
+    const { data: checkin, error } = await supabase
+      .from('quest_checkins')
+      .select('id, quest_id, member_id, provider_id, status, approved_at')
+      .eq('id', req.params.id).single();
+    if (error || !checkin) return res.status(404).json({ error: 'Check-in not found' });
+    res.json({ success: true, checkin });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/quests/checkin/:id/decline — provider declines a pending request
+app.post('/api/quests/checkin/:id/decline', async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('quest_checkins')
+      .update({ status: 'declined' })
+      .eq('id', req.params.id).eq('status', 'pending');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/quests/checkin/:id/approve  { approved_by } — THE AWARD TRANSACTION.
+// Provider approves a pending check-in: stamps the step, and on completion awards
+// the stamp, claims a prize slot if first-N, and recomputes tier. Server-side only.
+app.post('/api/quests/checkin/:id/approve', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approved_by } = req.body || {};
+
+    const { data: ci, error: ciErr } = await supabase
+      .from('quest_checkins')
+      .select('id, quest_id, member_id, provider_id, status')
+      .eq('id', id).single();
+    if (ciErr || !ci) return res.status(404).json({ error: 'Check-in not found' });
+    if (ci.status !== 'pending') return res.status(409).json({ error: 'Check-in already ' + ci.status });
+
+    const { data: quest, error: qErr } = await supabase
+      .from('quests').select('*').eq('id', ci.quest_id).single();
+    if (qErr || !quest) return res.status(404).json({ error: 'Quest not found' });
+
+    // distinct-venue rule: reject a repeat approved check-in at the same venue
+    if (quest.require_distinct_venues) {
+      const { data: dup } = await supabase
+        .from('quest_checkins')
+        .select('id')
+        .eq('quest_id', ci.quest_id).eq('member_id', ci.member_id)
+        .eq('provider_id', ci.provider_id).eq('status', 'approved').maybeSingle();
+      if (dup) {
+        await supabase.from('quest_checkins').update({ status: 'declined' }).eq('id', id);
+        return res.status(409).json({ error: 'Already stamped at this venue (distinct-venue quest)' });
+      }
+    }
+
+    // 1) approve the check-in
+    await supabase
+      .from('quest_checkins')
+      .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: approved_by || null })
+      .eq('id', id);
+
+    // 2) advance progress (+1 step)
+    const { data: prog } = await supabase
+      .from('quest_progress')
+      .select('id, completed_count')
+      .eq('quest_id', ci.quest_id).eq('member_id', ci.member_id).maybeSingle();
+    let completed_count = 1;
+    if (prog) {
+      completed_count = (prog.completed_count || 0) + 1;
+      await supabase.from('quest_progress')
+        .update({ completed_count, updated_at: new Date().toISOString() })
+        .eq('id', prog.id);
+    } else {
+      await supabase.from('quest_progress')
+        .insert({ member_id: ci.member_id, quest_id: ci.quest_id, completed_count: 1, status: 'in_progress' });
+    }
+
+    let completed = false, stamp_awarded = false, prize_won = false;
+
+    // 3) completion
+    if (completed_count >= quest.target_count) {
+      completed = true;
+      await supabase.from('quest_progress')
+        .update({ status: 'completed', completed_at: new Date().toISOString() })
+        .eq('quest_id', ci.quest_id).eq('member_id', ci.member_id);
+
+      // award the stamp (one per quest; idempotent)
+      const { error: msErr } = await supabase.from('member_stamps')
+        .upsert(
+          { member_id: ci.member_id, stamp_id: quest.stamp_id, quest_id: ci.quest_id, earned_at: new Date().toISOString() },
+          { onConflict: 'member_id,quest_id' }
+        );
+      if (!msErr) stamp_awarded = true;
+
+      // claim a prize slot if first-N and not already a winner
+      if (quest.reward_type === 'prize') {
+        const { data: alreadyWon } = await supabase.from('prize_winners')
+          .select('quest_id').eq('quest_id', ci.quest_id).eq('member_id', ci.member_id).maybeSingle();
+        if (!alreadyWon && (quest.prize_remaining || 0) > 0) {
+          const { error: pwErr } = await supabase.from('prize_winners')
+            .insert({ quest_id: ci.quest_id, member_id: ci.member_id });
+          if (!pwErr) {
+            prize_won = true;
+            await supabase.from('quests')
+              .update({ prize_remaining: quest.prize_remaining - 1 }).eq('id', quest.id);
+          }
+        }
+      }
+    }
+
+    // 4) recompute tier from total stamps
+    const { count: stampCount } = await supabase
+      .from('member_stamps')
+      .select('quest_id', { count: 'exact', head: true })
+      .eq('member_id', ci.member_id);
+    const tier = questTier(stampCount || 0);
+
+    res.json({
+      success: true, completed, completed_count, target: quest.target_count,
+      stamp_awarded, prize_won, stamps_total: stampCount || 0, tier
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// ───────────────────────────────────────────────────────────────────────
+
 
 module.exports = app;
