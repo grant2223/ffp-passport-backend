@@ -2,6 +2,10 @@
 // v12: PUT /api/members/:id now accepts `country` and `phone_country_code`
 //      in req.body so the Profile panel Save button can persist them.
 //      Without this, the frontend save would silently drop those fields.
+// v15: /api/verify response now includes `verified` boolean (admin-set
+//      identity verification). Separate from `status` which is membership
+//      lifecycle (active/expired/etc). 'Verified' = admin confirmed the
+//      member is a real person. Default false. See [[verification-vs-status]].
 // v14: GET /api/verify/:passport_no — public endpoint backing the QR
 //      Identity verification flow. Returns only public-safe member fields
 //      (name, photo_url, status, tier, passport_no, member_since), never
@@ -867,7 +871,7 @@ app.get('/api/verify/:passport_no', async (req, res) => {
     }
     const { data: member, error } = await supabase
       .from('members')
-      .select('passport_no, given_names, surname, full_name, photo_url, status, tier, country, created_at')
+      .select('passport_no, given_names, surname, full_name, photo_url, status, tier, country, created_at, verified')
       .eq('passport_no', passportNo)
       .maybeSingle();
     if (error) {
@@ -896,7 +900,8 @@ app.get('/api/verify/:passport_no', async (req, res) => {
         tier:        member.tier || 'Member',
         country:     member.country || null,
         member_since: member.created_at ? String(member.created_at).slice(0, 10) : null,
-        expires:     expiry
+        expires:     expiry,
+        verified:    !!member.verified
       }
     });
   } catch (e) {
