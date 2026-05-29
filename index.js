@@ -778,4 +778,47 @@ app.post('/api/visits/log', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// ── NOTIFICATIONS (in-app bell + admin broadcast) ──────────────────────
+// List notifications for a member (broadcasts + targeted) + unread count.
+app.get('/api/notifications/:member_id', async (req, res) => {
+  try {
+    const id = req.params.member_id;
+    const meRes = await supabase.from('members').select('notifications_seen_at').eq('id', id).maybeSingle();
+    const seenAt = meRes.data && meRes.data.notifications_seen_at;
+    const nRes = await supabase.from('notifications')
+      .select('id, title, body, icon, link, created_at, audience, member_id')
+      .or('audience.eq.all,member_id.eq.' + id)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (nRes.error) return res.status(500).json({ error: nRes.error.message });
+    const list = nRes.data || [];
+    const unread = list.filter(function (n) { return !seenAt || new Date(n.created_at) > new Date(seenAt); }).length;
+    res.json({ success: true, notifications: list, unread: unread });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Mark all notifications as seen for a member.
+app.post('/api/notifications/seen', async (req, res) => {
+  try {
+    const { member_id } = req.body || {};
+    if (!member_id) return res.status(400).json({ error: 'member_id required' });
+    const r = await supabase.from('members').update({ notifications_seen_at: new Date().toISOString() }).eq('id', member_id);
+    if (r.error) return res.status(500).json({ error: r.error.message });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin: broadcast a notification to the whole community.
+app.post('/api/notifications/broadcast', async (req, res) => {
+  try {
+    const { title, body, icon, link } = req.body || {};
+    if (!title) return res.status(400).json({ error: 'title required' });
+    const ins = await supabase.from('notifications').insert({
+      audience: 'all', title: title, body: body || null, icon: icon || 'campaign', link: link || null
+    }).select().single();
+    if (ins.error) return res.status(500).json({ error: ins.error.message });
+    res.json({ success: true, notification: ins.data });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = app;
