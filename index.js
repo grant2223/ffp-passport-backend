@@ -2,6 +2,20 @@
 // v12: PUT /api/members/:id now accepts `country` and `phone_country_code`
 //      in req.body so the Profile panel Save button can persist them.
 //      Without this, the frontend save would silently drop those fields.
+// v17: /api/referrer/:code response now ALSO returns photo_url,
+//      passport_no, tier, and full_name. Used by homepage v5 banner
+//      to show a richer 'Invited by [name] [avatar]' card with a
+//      'see their passport' link that opens /verify.html?p={passport_no}.
+//      Photo + passport-card preview = social proof for the visitor.
+// v16: REFERRAL SYSTEM. Adds GET /api/referrer/:code public endpoint
+//      (returns referrer's first name for homepage banner). Adds
+//      creditReferrer() helper called in /api/onboard/from-stripe
+//      after successful member insert — reads Stripe session's
+//      client_reference_id (the referrer's referral_code), looks up
+//      the referrer, inserts referrals + transactions rows crediting
+//      the referrer with tier-based amount (Member 25 / Supporter 50
+//      / Ambassador 100 AED). FFPRealtime push lets the referrer's
+//      Earnings panel update live.
 // v15: /api/verify response now includes `verified` boolean (admin-set
 //      identity verification). Separate from `status` which is membership
 //      lifecycle (active/expired/etc). 'Verified' = admin confirmed the
@@ -407,6 +421,32 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       .select('*')
       .eq('id', memberId)
       .single();
+    // v16: credit the referrer if this signup came via a referral link.
+    // The frontend appends ?client_reference_id={referrer.referral_code} to
+    // the Stripe checkout URL when the buyer clicks the Become A Member CTA
+    // with an active ref code in localStorage. Stripe stores it on the
+    // session; we read it back here. Best-effort — never blocks onboarding.
+    try {
+      let refCode = null;
+      // refCode can arrive directly in req.body (frontend submit) OR via
+      // the Stripe session metadata (webhook path). Check both.
+      if (req.body && req.body.client_reference_id) {
+        refCode = String(req.body.client_reference_id).trim() || null;
+      } else if (session_id) {
+        try {
+          const sess = await stripe.checkout.sessions.retrieve(session_id);
+          refCode = (sess && sess.client_reference_id) ? String(sess.client_reference_id).trim() : null;
+        } catch (e) {
+          console.warn('[onboard v16] could not retrieve Stripe session for refCode:', e.message);
+        }
+      }
+      if (refCode && isNew) {
+        await creditReferrer(finalMember, refCode);
+      }
+    } catch (e) {
+      console.warn('[onboard v16] referral credit step failed (non-blocking):', e.message);
+    }
+
     // v13: mint Supabase-compatible JWT so profile-complete can setSession()
     // and the dashboard it lands on can read RLS-protected loader data.
     const supabaseJwt = mintSupabaseJwt(finalMember);
@@ -909,5 +949,100 @@ app.get('/api/verify/:passport_no', async (req, res) => {
     return res.status(500).json({ error: e.message });
   }
 });
+
+
+// ── v16: REFERRAL SYSTEM ────────────────────────────────────────────
+// Tier-based reward amounts (AED). Member is the default for new signups.
+const REFERRAL_TIER_CREDITS = { Member: 25, Supporter: 50, Ambassador: 100 };
+
+// GET /api/referrer/:code — public, returns referrer's first name only.
+// Used by homepage banner: "Invited by Jamie — welcome to FFP Passport"
+app.get('/api/referrer/:code', async (req, res) => {
+  try {
+    const code = String(req.params.code || '').trim();
+    if (!code) return res.status(400).json({ error: 'code required' });
+    // v17: extended select — homepage banner needs photo + passport_no + tier
+    // to render a personalised card with link to the referrer's verify page.
+    // Public-safe fields only — no email/phone/DOB.
+    const { data: referrer, error } = await supabase
+      .from('members')
+      .select('given_names, surname, full_name, photo_url, passport_no, tier')
+      .eq('referral_code', code)
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!referrer) return res.status(404).json({ error: 'Invalid referral code', code });
+    const firstName = ((referrer.given_names || '').trim().split(/\s+/)[0])
+                   || ((referrer.full_name   || '').trim().split(/\s+/)[0])
+                   || 'a friend';
+    const fullName  = (referrer.full_name && referrer.full_name.trim())
+                   || ((referrer.given_names || '') + ' ' + (referrer.surname || '')).trim()
+                   || firstName;
+    return res.json({
+      success:     true,
+      first_name:  firstName,
+      full_name:   fullName,
+      photo_url:   referrer.photo_url   || null,
+      passport_no: referrer.passport_no || null,
+      tier:        referrer.tier        || 'Member'
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// Credit a referrer based on their tier — called from /api/onboard/from-stripe
+// once a new member has been successfully inserted. refCode comes from the
+// Stripe session's client_reference_id (which we set via the Stripe link URL
+// on the frontend before redirecting the buyer to checkout). Best-effort:
+// any failure here logs + continues — we never want a credit hiccup to
+// break the onboard flow for a paying member.
+async function creditReferrer(newMember, refCode) {
+  if (!refCode || !newMember || !newMember.id) return;
+  try {
+    const { data: referrer } = await supabase
+      .from('members')
+      .select('id, tier, given_names, full_name')
+      .eq('referral_code', refCode)
+      .maybeSingle();
+    if (!referrer) {
+      console.warn('[referral v16] no referrer for code:', refCode);
+      return;
+    }
+    if (referrer.id === newMember.id) {
+      console.warn('[referral v16] self-referral blocked for member:', newMember.id);
+      return;
+    }
+    const amount = REFERRAL_TIER_CREDITS[referrer.tier] || REFERRAL_TIER_CREDITS.Member;
+    const newName = newMember.full_name
+                 || ((newMember.given_names || '') + ' ' + (newMember.surname || '')).trim()
+                 || 'new member';
+
+    // 1) referrals row — tracks the relationship
+    const { error: rErr } = await supabase.from('referrals').insert({
+      referrer_id:        referrer.id,
+      referred_member_id: newMember.id,
+      referral_code:      refCode,
+      credit_amount:      amount,
+      status:             'credited',
+      credited_at:        new Date().toISOString()
+    });
+    if (rErr) console.warn('[referral v16] referrals insert error:', rErr.message);
+
+    // 2) transactions row — surfaces in Earnings panel via existing loader
+    const { error: tErr } = await supabase.from('transactions').insert({
+      member_id:   referrer.id,
+      type:        'credit',
+      category:    'referrals',
+      amount_aed:  amount,
+      description: 'Referral reward — ' + newName + ' joined',
+      status:      'completed'
+    });
+    if (tErr) console.warn('[referral v16] transactions insert error:', tErr.message);
+
+    console.log('[referral v16] credited', amount, 'AED to', referrer.id, '(tier:', (referrer.tier || 'Member') + ')', 'for referring', newMember.id);
+  } catch (e) {
+    console.warn('[referral v16] creditReferrer threw:', e.message);
+  }
+}
 
 module.exports = app;
