@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v21
+// FFP Passport — Express Server (Vercel, CommonJS) — v22
+// v22: Provider portal — GET /api/quests/provider/:provider_id/checkins
+//      Lists a provider's quest check-ins (default pending) enriched with
+//      member name + quest title via service-role read (RLS hides other
+//      members from the provider's own Supabase queries). Additive.
 // v21: QUESTS. Adds quest endpoints (additive — no existing route touched):
 //      GET  /api/quests                      list live quests + member progress
 //      GET  /api/quests/:id                  one quest + staked venues + progress
@@ -1337,5 +1341,24 @@ app.post('/api/quests/checkin/:id/approve', async (req, res) => {
 });
 // ───────────────────────────────────────────────────────────────────────
 
+
+// GET /api/quests/provider/:provider_id/checkins?status=pending — enriched list for
+// the provider portal. Service-role read (RLS hides other members from the provider),
+// so it can return member names + quest titles the provider dashboard can't fetch directly.
+app.get('/api/quests/provider/:provider_id/checkins', async (req, res) => {
+  try {
+    const { provider_id } = req.params;
+    const status = req.query.status || 'pending';
+    const { data: rows, error } = await supabase
+      .from('quest_checkins')
+      .select('id, quest_id, member_id, provider_id, status, requested_at, approved_at, members(full_name, given_names, photo_url), quests(title, target_count, reward_type)')
+      .eq('provider_id', provider_id)
+      .eq('status', status)
+      .order('requested_at', { ascending: true })
+      .limit(100);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true, checkins: rows || [] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 module.exports = app;
