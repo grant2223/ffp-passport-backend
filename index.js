@@ -2,6 +2,12 @@
 // v12: PUT /api/members/:id now accepts `country` and `phone_country_code`
 //      in req.body so the Profile panel Save button can persist them.
 //      Without this, the frontend save would silently drop those fields.
+// v19: Rename /api/verify/:passport_no → /api/passport/:passport_no for
+//      semantic alignment with the page rename (verify.html → my-passport.html).
+//      Both routes registered to the SAME handler so any deployed code
+//      still calling /api/verify keeps working forever. Old QRs scanned
+//      via /verify.html (which Netlify _redirects rewrites to
+//      /my-passport.html) all keep working.
 // v18: /api/verify/:passport_no response now ALSO returns full passport-
 //      card fields: given_names, surname, nationality, gender, dob,
 //      referral_code. Enables verify.html v2 to render the actual
@@ -909,7 +915,7 @@ app.post('/api/visits/log', async (req, res) => {
 // DOB/address/etc. Status is returned regardless of value (active /
 // expired / suspended) so the scanner sees the real state, not just
 // "exists or not".
-app.get('/api/verify/:passport_no', async (req, res) => {
+app.get(['/api/passport/:passport_no', '/api/verify/:passport_no'], async (req, res) => {
   try {
     const passportNo = String(req.params.passport_no || '').trim();
     if (!passportNo) {
