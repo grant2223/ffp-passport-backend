@@ -565,7 +565,7 @@ app.put('/api/members/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      full_name, surname, given_names, email, phone, city, nationality,
+      full_name, surname, given_names, email, phone, city, country, nationality,
       photo_url, bio, interests, fitness_level, date_of_birth, gender, skills, preferences
     } = req.body;
     const { data: member, error } = await supabase
@@ -577,6 +577,7 @@ app.put('/api/members/:id', async (req, res) => {
         email: email || undefined,
         phone: phone || undefined,
         city: city || undefined,
+        country: country || undefined,
         nationality: nationality || undefined,
         photo_url: photo_url || undefined,
         bio: bio || undefined,
