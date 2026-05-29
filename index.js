@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v22
+// FFP Passport — Express Server (Vercel, CommonJS) — v24
+// v24: quest_venues.task returned in GET /api/quests/:id (what to do at each venue).
+// v23: GET /api/quests/provider/:provider_id/stats — aggregated quest-visitor
+//      analytics (total check-ins, unique visitors, gender breakdown, top quests)
+//      for the provider Analytics panel. Service-role aggregate; no PII. Additive.
 // v22: Provider portal — GET /api/quests/provider/:provider_id/checkins
 //      Lists a provider's quest check-ins (default pending) enriched with
 //      member name + quest title via service-role read (RLS hides other
@@ -1134,7 +1138,7 @@ app.get('/api/quests/:id', async (req, res) => {
 
     const { data: venues } = await supabase
       .from('quest_venues')
-      .select('provider_id, providers(business_name, letter_mark)')
+      .select('provider_id, task, providers(business_name, letter_mark)')
       .eq('quest_id', id);
 
     let progress = { completed_count: 0, status: 'not_started' };
@@ -1358,6 +1362,53 @@ app.get('/api/quests/provider/:provider_id/checkins', async (req, res) => {
       .limit(100);
     if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true, checkins: rows || [] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/quests/provider/:provider_id/stats — aggregated quest-visitor analytics for
+// the provider portal. Service-role read so member gender can be tallied server-side
+// (providers can't read other members directly). Returns only aggregates, no PII.
+app.get('/api/quests/provider/:provider_id/stats', async (req, res) => {
+  try {
+    const { provider_id } = req.params;
+    const { data: rows, error } = await supabase
+      .from('quest_checkins')
+      .select('member_id, quests(title), members(gender)')
+      .eq('provider_id', provider_id)
+      .eq('status', 'approved')
+      .limit(5000);
+    if (error) return res.status(500).json({ error: error.message });
+    const list = rows || [];
+
+    const total = list.length;
+    const memberGender = {};   // unique member -> gender (last seen)
+    const byQuest = {};
+    list.forEach((r) => {
+      memberGender[r.member_id] = (r.members && r.members.gender) || null;
+      const t = (r.quests && r.quests.title) || 'Quest';
+      byQuest[t] = (byQuest[t] || 0) + 1;
+    });
+
+    const gender = { male: 0, female: 0, other: 0 };
+    Object.keys(memberGender).forEach((mid) => {
+      const g = memberGender[mid];
+      if (g === 'Male') gender.male++;
+      else if (g === 'Female') gender.female++;
+      else gender.other++;
+    });
+
+    const top_quests = Object.keys(byQuest)
+      .map((t) => ({ title: t, count: byQuest[t] }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    res.json({
+      success: true,
+      total_checkins: total,
+      unique_visitors: Object.keys(memberGender).length,
+      gender: gender,
+      top_quests: top_quests
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
