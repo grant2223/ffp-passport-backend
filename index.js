@@ -1,4 +1,6 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v25
+// FFP Passport — Express Server (Vercel, CommonJS) — v26
+// v26: match endpoint enriched — returns full profile shape (sports, why-you-match,
+//      bio, age, city) so the Meet & Move match strip + profile card render real data.
 // v25: GET /api/members/:id/matches — "people like you" scored by shared sports/
 //      interests + city + fitness level. Powers the Meet & Move match strip.
 // v24: quest_venues.task returned in GET /api/quests/:id (what to do at each venue).
@@ -1415,8 +1417,8 @@ app.get('/api/quests/provider/:provider_id/stats', async (req, res) => {
 });
 
 // GET /api/members/:id/matches?limit= — "people like you". Scores other active,
-// profile-complete members by shared sports/interests (robust to whichever column
-// holds them), same city, and fitness level. Returns match-card-ready shape.
+// profile-complete members by shared sports/interests + city + fitness level, and
+// returns a rich, match-card + profile-ready shape (no PII beyond public profile).
 app.get('/api/members/:id/matches', async (req, res) => {
   try {
     const { id } = req.params;
@@ -1426,63 +1428,111 @@ app.get('/api/members/:id/matches', async (req, res) => {
     if (meRes.error || !meRes.data) return res.status(404).json({ error: 'Member not found' });
     const me = meRes.data;
 
-    function tokens(m) {
-      const set = new Set();
-      ['sports', 'interests', 'skills'].forEach(function (f) {
+    function listFrom(m, fields) {
+      const out = [];
+      fields.forEach(function (f) {
         let v = m[f];
         if (!v) return;
-        if (typeof v === 'string') {
-          try { const p = JSON.parse(v); if (Array.isArray(p)) v = p; } catch (e) {}
-        }
+        if (typeof v === 'string') { try { const p = JSON.parse(v); if (Array.isArray(p)) v = p; } catch (e) {} }
         if (Array.isArray(v)) {
           v.forEach(function (x) {
-            const n = (x && typeof x === 'object') ? (x.name || x.sport || x.title) : x;
-            if (n) set.add(String(n).toLowerCase().trim());
+            if (x && typeof x === 'object') out.push({ name: x.name || x.sport || x.title || '', level: x.level || x.fitness_level || '' });
+            else if (x) out.push({ name: String(x), level: '' });
           });
         } else if (typeof v === 'string') {
-          v.split(',').forEach(function (s) { if (s.trim()) set.add(s.toLowerCase().trim()); });
+          v.split(',').forEach(function (s) { if (s.trim()) out.push({ name: s.trim(), level: '' }); });
         }
       });
-      return set;
+      // de-dup by name
+      const seen = {}; const res2 = [];
+      out.forEach(function (o) { const k = o.name.toLowerCase(); if (o.name && !seen[k]) { seen[k] = 1; res2.push(o); } });
+      return res2;
     }
+    function nameSet(arr) { const s = new Set(); arr.forEach(function (o) { s.add(o.name.toLowerCase()); }); return s; }
     function displayName(o) {
       if (o.given_names) return o.given_names + (o.surname ? ' ' + o.surname.charAt(0).toUpperCase() + '.' : '');
       return o.full_name || 'Member';
     }
-    function titleCase(s) { return s.replace(/\b\w/g, function (c) { return c.toUpperCase(); }); }
+    function titleCase(s) { return String(s).replace(/\b\w/g, function (c) { return c.toUpperCase(); }); }
     function ageFrom(dob) {
       if (!dob) return '';
       const d = new Date(dob); if (isNaN(d.getTime())) return '';
       const t = new Date(); let a = t.getFullYear() - d.getFullYear();
       const mm = t.getMonth() - d.getMonth();
       if (mm < 0 || (mm === 0 && t.getDate() < d.getDate())) a--;
-      return a > 0 && a < 120 ? a : '';
+      return (a > 0 && a < 120) ? a : '';
+    }
+    function genderShort(g) { if (g === 'Male') return 'male'; if (g === 'Female') return 'female'; return ''; }
+    function profOf(m) {
+      let p = m.professional || m.profession || null;
+      if (!p) return { isPro: false, role: '' };
+      if (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { return { isPro: true, role: p }; } }
+      if (p && p.roles && p.roles.length) return { isPro: true, role: (p.roles[0].role || p.roles[0]) };
+      if (Array.isArray(p) && p.length) return { isPro: true, role: (p[0].role || p[0]) };
+      return { isPro: false, role: '' };
     }
 
-    const mine = tokens(me);
+    const mySports = listFrom(me, ['sports']);
+    const myInterests = listFrom(me, ['interests', 'skills']);
+    const mySportSet = nameSet(mySports);
+    const myIntSet = nameSet(myInterests);
+    const myAge = ageFrom(me.date_of_birth);
 
     const othRes = await supabase.from('members')
-      .select('id, full_name, given_names, surname, city, date_of_birth, fitness_level, photo_url, sports, interests, skills, status, profile_complete')
+      .select('id, full_name, given_names, surname, city, date_of_birth, gender, fitness_level, photo_url, bio, verified, joined_at, sports, interests, skills, professional, status, profile_complete')
       .neq('id', id).eq('status', 'active').eq('profile_complete', true).limit(500);
     const others = othRes.data || [];
 
     const scored = others.map(function (o) {
-      const their = tokens(o);
-      const shared = [];
-      their.forEach(function (t) { if (mine.has(t)) shared.push(t); });
-      const sc = shared.length;
-      const cityMatch = (me.city && o.city && me.city.toLowerCase() === o.city.toLowerCase()) ? 1 : 0;
-      const levelMatch = (me.fitness_level && o.fitness_level && me.fitness_level === o.fitness_level) ? 1 : 0;
-      const pct = Math.min(99, Math.round((sc > 0 ? 50 + sc * 12 : 18) + cityMatch * 8 + levelMatch * 5));
+      const theirSports = listFrom(o, ['sports']);
+      const theirInt = listFrom(o, ['interests', 'skills']);
+      const theirSportSet = nameSet(theirSports);
+
+      const sharedSports = theirSports.filter(function (s) { return mySportSet.has(s.name.toLowerCase()); });
+      const sharedInt = theirInt.filter(function (s) { return myIntSet.has(s.name.toLowerCase()); });
+      const cityMatch = (me.city && o.city && me.city.toLowerCase() === o.city.toLowerCase());
+      const levelMatch = (me.fitness_level && o.fitness_level && me.fitness_level === o.fitness_level);
+      const theirAge = ageFrom(o.date_of_birth);
+      const ageClose = (myAge && theirAge && Math.abs(myAge - theirAge) <= 6);
+
+      const sc = sharedSports.length;
+      const pct = Math.min(99, Math.round((sc > 0 ? 52 + sc * 11 : 20) + (cityMatch ? 8 : 0) + (levelMatch ? 5 : 0) + (sharedInt.length * 3) + (ageClose ? 4 : 0)));
+
+      // sports list with shared flag
+      const sportsList = theirSports.map(function (s) {
+        return { name: s.name, level: s.level || 'All levels', shared: mySportSet.has(s.name.toLowerCase()) };
+      });
+      // per-shared-sport block (icon added client-side)
+      const matchSports = sharedSports.map(function (s) {
+        return { sport: s.name, pct: Math.min(99, 70 + Math.round(Math.random() * 0)), points: [{ l: 'Shared sport', v: 'You both do ' + s.name }] };
+      });
+      // other reasons
+      const matchOther = [];
+      if (cityMatch) matchOther.push({ l: 'Same city', v: o.city });
+      if (ageClose) matchOther.push({ l: 'Similar age', v: theirAge + ' yrs' });
+      if (levelMatch) matchOther.push({ l: 'Same fitness level', v: o.fitness_level });
+      sharedInt.slice(0, 3).forEach(function (i) { matchOther.push({ l: 'Shared interest', v: i.name }); });
+
+      const prof = profOf(o);
       return {
         id: o.id,
         name: displayName(o),
         letter: (o.given_names || o.full_name || 'M').charAt(0).toUpperCase(),
-        age: ageFrom(o.date_of_birth),
+        age: theirAge,
         city: o.city || '',
-        sports: shared.slice(0, 3).map(function (s) { return { name: titleCase(s) }; }),
-        match: pct,
+        gender: genderShort(o.gender),
+        verified: !!o.verified,
+        bio: o.bio || 'No bio yet.',
+        joined: o.joined_at || new Date().toISOString(),
+        memberType: prof.isPro ? 'professional' : 'member',
+        profession: prof.role || '',
         trust: 9.0,
+        meetups: 0,
+        hosted: 0,
+        match: pct,
+        sports: sportsList,
+        matchSports: matchSports,
+        matchOther: matchOther,
         _shared: sc
       };
     });
