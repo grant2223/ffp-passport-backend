@@ -498,6 +498,11 @@ app.post('/api/auth/signin', async (req, res) => {
       .single();
     if (error || !member) return res.status(401).json({ error: 'Invalid email or code' });
     if (member.status !== 'active') return res.status(403).json({ error: 'Account suspended' });
+    // v37: login codes expire 10 minutes after they're sent
+    if (member.access_code_set_at) {
+      const _ageMs = Date.now() - new Date(member.access_code_set_at).getTime();
+      if (_ageMs > 10 * 60 * 1000) return res.status(401).json({ error: 'That code has expired \u2014 request a new one.' });
+    }
     const token = crypto.randomBytes(32).toString('hex');
     await supabase.from('members').update({
       last_login: new Date().toISOString()
@@ -541,7 +546,7 @@ app.post('/api/auth/reset', async (req, res) => {
       .single();
     if (!member) return res.json({ success: true, message: 'If that email exists, a new code has been sent.' });
     const { code, hash } = generateCode();
-    await supabase.from('members').update({ access_code: hash }).eq('id', member.id);
+    await supabase.from('members').update({ access_code: hash, access_code_set_at: new Date().toISOString() }).eq('id', member.id);
     await sendCodeEmail(email, member.full_name, code, 'reset');
     res.json({ success: true, message: 'New code sent. Your old code no longer works.' });
   } catch (error) {
