@@ -868,7 +868,7 @@ app.get('/api/members/:id/profile-meta', async (req, res) => {
   try {
     const id = req.params.id;
     const r = await supabase.from('profile_meta')
-      .select('chrono_age, current_weight_kg, sleep_logs, pr_dates, pr_bench_kg, pr_squat_kg, pr_deadlift_kg, pr_5k_seconds, pr_10k_seconds, pr_21k_seconds, pr_marathon_sec, pr_swim1k_sec, vo2_max, body_fat_pct, visceral_fat')
+      .select('chrono_age, current_weight_kg, height_cm, sleep_logs, pr_dates, pr_bench_kg, pr_squat_kg, pr_deadlift_kg, pr_5k_seconds, pr_10k_seconds, pr_21k_seconds, pr_marathon_sec, pr_swim1k_sec, vo2_max, body_fat_pct, visceral_fat, resting_hr, hrv_ms, grip_strength_kg, muscle_mass_kg, waist_cm')
       .eq('member_id', id)
       .maybeSingle();
     if (r.error) return res.status(500).json({ error: r.error.message });
