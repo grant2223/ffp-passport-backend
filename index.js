@@ -855,4 +855,17 @@ app.get('/api/members/:id/activity-logs', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Member profile_meta (Fitness Stats: bio age, weight, PRs, sleep) — service-role read.
+app.get('/api/members/:id/profile-meta', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const r = await supabase.from('profile_meta')
+      .select('chrono_age, current_weight_kg, sleep_logs, pr_dates, pr_bench_kg, pr_squat_kg, pr_deadlift_kg, pr_5k_seconds, pr_10k_seconds, pr_21k_seconds, pr_marathon_sec, pr_swim1k_sec, vo2_max, body_fat_pct, visceral_fat')
+      .eq('member_id', id)
+      .maybeSingle();
+    if (r.error) return res.status(500).json({ error: r.error.message });
+    res.json({ success: true, meta: r.data || null });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = app;
