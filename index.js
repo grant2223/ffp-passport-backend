@@ -543,7 +543,11 @@ app.post('/api/auth/reset', async (req, res) => {
       .single();
     if (!member) return res.json({ success: true, message: 'If that email exists, a new code has been sent.' });
     const { code, hash } = generateCode();
-    await supabase.from('members').update({ access_code: hash, access_code_set_at: new Date().toISOString() }).eq('id', member.id);
+    // v41: store ONLY access_code. Writing access_code_set_at made this UPDATE fail silently
+    // if that column doesn't exist in the live DB → new code never stored → emailed code never
+    // matched → "Unauthorized" on every login. (Expiry was removed in v40, so the column is unused.)
+    const { error: _updErr } = await supabase.from('members').update({ access_code: hash }).eq('id', member.id);
+    if (_updErr) console.error('[reset] access_code update failed:', _updErr.message);
     await sendCodeEmail(email, member.full_name, code, 'reset');
     res.json({ success: true, message: 'New code sent. Your old code no longer works.' });
   } catch (error) {
