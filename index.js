@@ -498,11 +498,7 @@ app.post('/api/auth/signin', async (req, res) => {
       .single();
     if (error || !member) return res.status(401).json({ error: 'Invalid email or code' });
     if (member.status !== 'active') return res.status(403).json({ error: 'Account suspended' });
-    // v37: login codes expire 10 minutes after they're sent
-    if (member.access_code_set_at) {
-      const _ageMs = Date.now() - new Date(member.access_code_set_at).getTime();
-      if (_ageMs > 10 * 60 * 1000) return res.status(401).json({ error: 'That code has expired \u2014 request a new one.' });
-    }
+    // v40: 10-min expiry REMOVED — login uses the PERSISTENT signup code (email says it never expires until reset). Re-add only with a real OTP-per-login flow.
     const token = crypto.randomBytes(32).toString('hex');
     await supabase.from('members').update({
       last_login: new Date().toISOString()
