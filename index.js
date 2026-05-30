@@ -513,14 +513,15 @@ app.post('/api/auth/signin', async (req, res) => {
     // hashed access_code for safety — frontend never needs it.
     const { access_code: _ac, ...memberSafe } = member;
     // v29: attach skills + preferences from profile_meta so the dashboard hydrates them
-    let _metaSkills = [], _metaPrefs = null, _metaPro = null;
+    let _metaSkills = [], _metaPrefs = null, _metaPro = null, _metaHeight = null;
     try {
-      const { data: _meta } = await supabase.from('profile_meta').select('skills, preferences, professional').eq('member_id', member.id).maybeSingle();
-      if (_meta) { _metaSkills = _meta.skills || []; _metaPrefs = _meta.preferences || null; _metaPro = _meta.professional || null; }
+      const { data: _meta } = await supabase.from('profile_meta').select('skills, preferences, professional, height_cm').eq('member_id', member.id).maybeSingle();
+      if (_meta) { _metaSkills = _meta.skills || []; _metaPrefs = _meta.preferences || null; _metaPro = _meta.professional || null; _metaHeight = (_meta.height_cm != null ? _meta.height_cm : null); }
     } catch (e) {}
     memberSafe.skills = _metaSkills;
     memberSafe.preferences = _metaPrefs;
     memberSafe.professional = _metaPro;
+    memberSafe.height_cm = _metaHeight;
     res.json({
       success: true,
       token,
@@ -572,7 +573,7 @@ app.put('/api/members/:id', async (req, res) => {
     const { id } = req.params;
     const {
       full_name, surname, given_names, email, phone, city, country, nationality,
-      photo_url, bio, interests, fitness_level, date_of_birth, gender, skills, preferences, professional
+      photo_url, bio, interests, fitness_level, date_of_birth, gender, skills, preferences, professional, height_cm
     } = req.body;
     const { data: member, error } = await supabase
       .from('members')
@@ -598,11 +599,12 @@ app.put('/api/members/:id', async (req, res) => {
       .single();
     if (error) return res.status(500).json({ error: error.message });
     // v29: persist skills + preferences to profile_meta (matching reads skills here)
-    if (skills !== undefined || preferences !== undefined || professional !== undefined) {
+    if (skills !== undefined || preferences !== undefined || professional !== undefined || height_cm !== undefined) {
       const _metaRow = { member_id: id };
       if (skills !== undefined) _metaRow.skills = skills;
       if (preferences !== undefined) _metaRow.preferences = preferences;
       if (professional !== undefined) _metaRow.professional = professional;
+      if (height_cm !== undefined) _metaRow.height_cm = height_cm;
       const { error: _metaErr } = await supabase.from('profile_meta').upsert(_metaRow, { onConflict: 'member_id' });
       if (_metaErr) console.warn('PUT member: profile_meta upsert failed:', _metaErr.message);
     }
@@ -610,6 +612,7 @@ app.put('/api/members/:id', async (req, res) => {
       if (skills !== undefined) member.skills = skills;
       if (preferences !== undefined) member.preferences = preferences;
       if (professional !== undefined) member.professional = professional;
+      if (height_cm !== undefined) member.height_cm = height_cm;
     }
     res.json({ success: true, message: 'Profile updated', member });
   } catch (error) {
