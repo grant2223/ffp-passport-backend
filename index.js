@@ -1,4 +1,4 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v10
+// FFP Passport — Express Server (Vercel, CommonJS) — v11
 // v10: Mints + returns a Supabase-compatible HS256 JWT (sub = member.id) from
 //      /api/auth/signin and /api/onboard/from-stripe. ffp-api-integration.js
 //      applies it as a Bearer header on window.supabase so Postgres exposes
@@ -908,4 +908,153 @@ app.get('/api/members/:id/meetups-attended', async (req, res) => {
     res.json({ success: true, meetups: meetups });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+// ────────────────────────────────────────────────────────────
+// v11 — PROVIDER PROVISIONING (admin only)
+// ────────────────────────────────────────────────────────────
+// Verify the request carries a valid admin Supabase JWT. Returns the admin's
+// member id if the token is valid AND that id exists in admin_users; else null.
+async function requireAdmin(req) {
+  try {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    if (!token || !SUPABASE_JWT_SECRET) return null;
+    let payload;
+    try { payload = jwt.verify(token, SUPABASE_JWT_SECRET); } catch (e) { return null; }
+    const adminId = payload && payload.sub;
+    if (!adminId) return null;
+    const { data, error } = await supabase.from('admin_users').select('id').eq('id', adminId).maybeSingle();
+    if (error || !data) return null;
+    return adminId;
+  } catch (e) { return null; }
+}
+
+// Provider invite email — sent when an application is approved. (Copy is a
+// sensible default; Grant to refine wording like the member welcome email.)
+async function sendProviderInviteEmail(email, name, code) {
+  const subject = "You're approved — welcome to FFP Passport";
+  const html = `
+    <div style="font-family:Montserrat,sans-serif;max-width:480px;margin:0 auto;background:#081420;color:#fff;padding:32px;border-radius:16px;">
+      <div style="font-size:22px;font-weight:900;letter-spacing:3px;margin-bottom:8px;">FFP <span style="color:#2ba8e0;">PASSPORT</span></div>
+      <div style="font-size:12px;color:#6a90a8;letter-spacing:2px;text-transform:uppercase;margin-bottom:32px;">Provider Partnerships</div>
+      <p style="font-size:18px;color:#fff;font-weight:700;margin:0 0 14px;">Welcome aboard${name ? ', ' + escapeHtml(name) : ''}.</p>
+      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">
+        Your FFP Passport provider account is approved and ready. Sign in to set up your business profile and start posting deals, events and experiences to our members.
+      </p>
+      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 6px;">Here is your 6-digit access code:</p>
+      <div style="background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:12px;padding:24px;text-align:center;margin:14px 0 24px;">
+        <div style="font-size:42px;font-weight:900;letter-spacing:12px;color:#fff;">${code}</div>
+        <div style="font-size:11px;color:#6a90a8;margin-top:8px;text-transform:uppercase;letter-spacing:1px;">Your access code</div>
+      </div>
+      <div style="text-align:center;margin:0 0 24px;">
+        <a href="https://ffppassport.com/login" style="display:inline-block;background:#FFCC00;color:#082335;text-decoration:none;font-weight:800;font-size:14px;padding:14px 32px;border-radius:8px;letter-spacing:.5px;">Sign in to your dashboard</a>
+      </div>
+      <p style="font-size:12px;color:#6a90a8;line-height:1.7;">
+        Sign in with this email + your 6-digit code. The code does not expire until you reset it.
+      </p>
+      <div style="margin-top:32px;padding-top:24px;border-top:1px solid rgba(43,168,224,.1);font-size:11px;color:#6a90a8;">
+        FFP Passport · Provider Partnerships · ffppassport.com
+      </div>
+    </div>
+  `;
+  await mailer.sendMail({
+    from: '"FFP Passport" <noreply@ffppassport.com>',
+    to: email,
+    subject,
+    html
+  });
+}
+
+// Approve a provider application -> provision the provider account.
+app.post('/api/admin/provision-provider', async (req, res) => {
+  try {
+    const adminId = await requireAdmin(req);
+    if (!adminId) return res.status(403).json({ error: 'Admin authorization required' });
+
+    const { application_id, subscription_tier, paid_until, monthly_fee_aed } = req.body || {};
+    if (!application_id) return res.status(400).json({ error: 'application_id required' });
+
+    // 1) Load the application
+    const { data: appRow, error: appErr } = await supabase
+      .from('provider_applications').select('*').eq('id', application_id).single();
+    if (appErr || !appRow) return res.status(404).json({ error: 'Application not found' });
+    if (appRow.status === 'approved') return res.status(409).json({ error: 'Application already approved' });
+
+    const email = (appRow.email || '').toLowerCase().trim();
+    if (!email) return res.status(400).json({ error: 'Application has no email' });
+    const contactName = appRow.contact_name || '';
+    const letterMark = (appRow.business_name || 'P').charAt(0).toUpperCase();
+
+    // 2) Find or create the member as role=provider, with a fresh access code
+    const { code, hash } = generateCode();
+    let memberId;
+    const { data: existingMember } = await supabase
+      .from('members').select('id').eq('email', email).maybeSingle();
+    if (existingMember) {
+      memberId = existingMember.id;
+      const { error: updErr } = await supabase.from('members')
+        .update({ role: 'provider', status: 'active', access_code: hash }).eq('id', memberId);
+      if (updErr) return res.status(500).json({ error: 'Member update failed: ' + updErr.message });
+    } else {
+      const passport_no = `FFP-${new Date().getFullYear()}-${String(Math.floor(Math.random()*9999+1)).padStart(4,'0')}`;
+      const { data: ins, error: insErr } = await supabase.from('members')
+        .insert({ email, full_name: contactName, role: 'provider', status: 'active', access_code: hash, passport_no })
+        .select().single();
+      if (insErr) return res.status(500).json({ error: 'Member create failed: ' + insErr.message });
+      memberId = ins.id;
+    }
+
+    // 3) Create the linked providers row (or re-approve an existing one)
+    let providerId;
+    const { data: existingProv } = await supabase
+      .from('providers').select('id').eq('owner_user_id', memberId).maybeSingle();
+    if (existingProv) {
+      providerId = existingProv.id;
+      await supabase.from('providers').update({
+        status: 'approved',
+        subscription_tier: subscription_tier || 'standard',
+        monthly_fee_aed: (monthly_fee_aed != null ? monthly_fee_aed : null),
+        paid_until: paid_until || null,
+        approved_at: new Date().toISOString(),
+        approved_by: adminId
+      }).eq('id', providerId);
+    } else {
+      const { data: prov, error: provErr } = await supabase.from('providers').insert({
+        owner_user_id: memberId,
+        business_name: appRow.business_name,
+        letter_mark: letterMark,
+        category: appRow.category || null,
+        provider_type: appRow.provider_type || null,
+        city: appRow.city || null,
+        country: appRow.country || null,
+        contact_email: email,
+        contact_phone: appRow.phone || null,
+        website: appRow.website || null,
+        about: appRow.about || null,
+        status: 'approved',
+        subscription_tier: subscription_tier || 'standard',
+        monthly_fee_aed: (monthly_fee_aed != null ? monthly_fee_aed : null),
+        paid_until: paid_until || null,
+        approved_at: new Date().toISOString(),
+        approved_by: adminId
+      }).select().single();
+      if (provErr) return res.status(500).json({ error: 'Provider create failed: ' + provErr.message });
+      providerId = prov.id;
+    }
+
+    // 4) Mark the application approved
+    await supabase.from('provider_applications')
+      .update({ status: 'approved', reviewed_by: adminId, reviewed_at: new Date().toISOString() })
+      .eq('id', application_id);
+
+    // 5) Email the invite (non-blocking - provider is already provisioned)
+    try { await sendProviderInviteEmail(email, contactName, code); }
+    catch (mailErr) { console.warn('Provision: invite email failed (non-blocking):', mailErr.message); }
+
+    res.json({ success: true, provider_id: providerId, member_id: memberId });
+  } catch (error) {
+    console.error('Provision endpoint error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = app;
