@@ -1,4 +1,12 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v9
+// FFP Passport — Express Server (Vercel, CommonJS) — v10
+// v10: Mints + returns a Supabase-compatible HS256 JWT (sub = member.id) from
+//      /api/auth/signin and /api/onboard/from-stripe. ffp-api-integration.js
+//      applies it as a Bearer header on window.supabase so Postgres exposes
+//      auth.uid() = member.id inside RLS — which is what makes admin approvals,
+//      provider profile saves, and member writes actually work. Requires env
+//      var SUPABASE_JWT_SECRET (Supabase → Settings → API → JWT Secret; same
+//      key that signs the anon key). Additive: existing service-role reads are
+//      unchanged. Adds the `jsonwebtoken` dependency.
 // v9: /api/auth/signin now returns the FULL member object (excluding the
 //     hashed access_code for safety) instead of only 7 hand-picked fields.
 //     Previously the signin response stripped surname, given_names,
@@ -52,6 +60,7 @@ const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const Stripe = require('stripe');
+const jwt = require('jsonwebtoken');
 const app = express();
 // CORS - Handle preflight
 app.options('*', (req, res) => {
@@ -72,6 +81,26 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
+// ────────────────────────────────────────────────────────────
+// v10 — Supabase JWT bridge.
+// Mints an HS256 JWT signed with the project's JWT secret so the frontend
+// can authenticate window.supabase as this member. Postgres decodes the
+// `sub` claim and exposes it as auth.uid() inside RLS policies. Members are
+// custom-auth (not in auth.users); auth.uid() does NOT require the user to
+// exist in auth.users, so a self-minted JWT with sub = member.id is enough.
+// ────────────────────────────────────────────────────────────
+const SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET;
+function mintSupabaseJwt(memberId) {
+  if (!SUPABASE_JWT_SECRET) {
+    console.warn('[jwt] SUPABASE_JWT_SECRET not set — RLS bridge disabled');
+    return null;
+  }
+  return jwt.sign(
+    { sub: memberId, role: 'authenticated', aud: 'authenticated' },
+    SUPABASE_JWT_SECRET,
+    { expiresIn: '30d' }
+  );
+}
 // ────────────────────────────────────────────────────────────
 // STRIPE WEBHOOK — must be defined BEFORE express.json()
 // ────────────────────────────────────────────────────────────
@@ -324,6 +353,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       .single();
     return res.json({
       success: true,
+      jwt: mintSupabaseJwt(memberId),   // v10: Supabase RLS bridge
       member: finalMember,
       is_new: isNew
     });
@@ -390,44 +420,35 @@ async function sendWelcomeEmail(email, firstName, city) {
     <div style="font-family:Montserrat,sans-serif;max-width:480px;margin:0 auto;background:#081420;color:#fff;padding:32px;border-radius:16px;">
       <div style="font-size:22px;font-weight:900;letter-spacing:3px;margin-bottom:8px;">FFP <span style="color:#2ba8e0;">PASSPORT</span></div>
       <div style="font-size:12px;color:#6a90a8;letter-spacing:2px;text-transform:uppercase;margin-bottom:32px;">Find Fit People</div>
-
       <p style="font-size:18px;color:#fff;font-weight:700;margin:0 0 14px;">Hey, ${safeName}.</p>
-
       <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">
         You are now officially an FFP Passport holder - so cool!
       </p>
-
       <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 18px;">
         As a new member of the community, let's get you set up and connected with the best experiences:
       </p>
-
       <!-- Step 1 -->
       <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:10px;">
         <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;">1. Complete your profile</div>
         <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">This one matters most &mdash; your profile helps match you. Add: location, gender, age, interests + level, a few words.</div>
       </div>
-
       <!-- Step 2 -->
       <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:10px;">
         <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;">2. Open the Meet &amp; Move panel</div>
         <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">Where you'll see your matches and can start connecting with your people.</div>
       </div>
-
       <!-- Step 3 -->
       <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:18px;">
         <div style="font-size:13px;font-weight:800;color:#fff;">3. Join a Meet, or host your own</div>
       </div>
-
       <!-- What's a Meet? -->
       <div style="padding:14px 16px;background:rgba(255,204,0,.06);border:1px solid rgba(255,204,0,.2);border-radius:10px;margin-bottom:24px;">
         <div style="font-size:11px;font-weight:800;color:#FFCC00;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:6px;">What's a Meet?</div>
         <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">They are small active meet ups (max 8 persons) to connect you to people with the same skill + ability. Eg; Yoga - beginner, Tennis - intermediate, Powerlifting - Advanced, etc.</div>
       </div>
-
       <div style="text-align:center;margin:24px 0 28px;">
         <a href="https://ffppassport.com/ffp-member-dashboard.html#profile" style="display:inline-block;background:#2ba8e0;color:#081420;text-decoration:none;font-weight:800;font-size:14px;padding:14px 32px;border-radius:8px;letter-spacing:.5px;">Go To Dashboard</a>
       </div>
-
       <div style="margin-top:32px;padding-top:24px;border-top:1px solid rgba(43,168,224,.1);font-size:11px;color:#6a90a8;">
         FFP Passport · UAE 2026 · ffppassport.com
       </div>
@@ -521,6 +542,7 @@ app.post('/api/auth/signin', async (req, res) => {
     res.json({
       success: true,
       token,
+      jwt: mintSupabaseJwt(member.id),   // v10: Supabase RLS bridge — auth.uid() = member.id
       member: memberSafe,
       redirect: member.profile_complete
         ? (member.role === 'admin' ? '/ffp-admin.html'
@@ -638,7 +660,6 @@ app.get('/api/members', async (req, res) => {
 app.post('/api/meetups', async (req, res) => {
   try {
     const { creator_id, title, description, location, date_time, max_attendees = 20 } = req.body;
-
     if (!creator_id || !title || !location || !date_time) {
       return res.status(400).json({ error: 'creator_id, title, location, and date_time required' });
     }
@@ -807,7 +828,6 @@ app.get('/api/notifications/:member_id', async (req, res) => {
     res.json({ success: true, notifications: list, unread: unread });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
 // Mark all notifications as seen for a member.
 app.post('/api/notifications/seen', async (req, res) => {
   try {
@@ -818,7 +838,6 @@ app.post('/api/notifications/seen', async (req, res) => {
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
 // Admin: broadcast a notification to the whole community.
 app.post('/api/notifications/broadcast', async (req, res) => {
   try {
@@ -831,7 +850,6 @@ app.post('/api/notifications/broadcast', async (req, res) => {
     res.json({ success: true, notification: ins.data });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
 // Member tier stats — real counts for the Ambassador progression bars.
 app.get('/api/members/:id/stats', async (req, res) => {
   try {
@@ -851,7 +869,6 @@ app.get('/api/members/:id/stats', async (req, res) => {
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
 // Member activity logs (for the Passport journey/map) — service-role read.
 app.get('/api/members/:id/activity-logs', async (req, res) => {
   try {
@@ -865,7 +882,6 @@ app.get('/api/members/:id/activity-logs', async (req, res) => {
     res.json({ success: true, logs: r.data || [] });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
 // Member profile_meta (Fitness Stats: bio age, weight, PRs, sleep) — service-role read.
 app.get('/api/members/:id/profile-meta', async (req, res) => {
   try {
@@ -878,7 +894,6 @@ app.get('/api/members/:id/profile-meta', async (req, res) => {
     res.json({ success: true, meta: r.data || null });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
 // Member's attended Meet & Move events (for the Passport "Meets" tile, period-filtered client-side).
 app.get('/api/members/:id/meetups-attended', async (req, res) => {
   try {
@@ -893,5 +908,4 @@ app.get('/api/members/:id/meetups-attended', async (req, res) => {
     res.json({ success: true, meetups: meetups });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
 module.exports = app;
