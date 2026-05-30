@@ -1,4 +1,5 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v11
+// FFP Passport — Express Server (Vercel, CommonJS) — v12
+// v12: finalised provider invite email copy (sendProviderInviteEmail).
 // v10: Mints + returns a Supabase-compatible HS256 JWT (sub = member.id) from
 //      /api/auth/signin and /api/onboard/from-stripe. ffp-api-integration.js
 //      applies it as a Bearer header on window.supabase so Postgres exposes
@@ -931,16 +932,15 @@ async function requireAdmin(req) {
 // Provider invite email — sent when an application is approved. (Copy is a
 // sensible default; Grant to refine wording like the member welcome email.)
 async function sendProviderInviteEmail(email, name, code) {
-  const subject = "You're approved — welcome to FFP Passport";
+  const firstName = (name || '').trim().split(/\s+/)[0] || '';
+  const subject = "You're in — your FFP Passport provider account is ready";
   const html = `
     <div style="font-family:Montserrat,sans-serif;max-width:480px;margin:0 auto;background:#081420;color:#fff;padding:32px;border-radius:16px;">
       <div style="font-size:22px;font-weight:900;letter-spacing:3px;margin-bottom:8px;">FFP <span style="color:#2ba8e0;">PASSPORT</span></div>
       <div style="font-size:12px;color:#6a90a8;letter-spacing:2px;text-transform:uppercase;margin-bottom:32px;">Provider Partnerships</div>
-      <p style="font-size:18px;color:#fff;font-weight:700;margin:0 0 14px;">Welcome aboard${name ? ', ' + escapeHtml(name) : ''}.</p>
-      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">
-        Your FFP Passport provider account is approved and ready. Sign in to set up your business profile and start posting deals, events and experiences to our members.
-      </p>
-      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 6px;">Here is your 6-digit access code:</p>
+      <p style="font-size:18px;color:#fff;font-weight:700;margin:0 0 14px;">Welcome aboard${firstName ? ', ' + escapeHtml(firstName) : ''}.</p>
+      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">Your application's approved &mdash; you're officially an FFP Passport provider.</p>
+      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 6px;">Here's your 6-digit access code to sign in:</p>
       <div style="background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:12px;padding:24px;text-align:center;margin:14px 0 24px;">
         <div style="font-size:42px;font-weight:900;letter-spacing:12px;color:#fff;">${code}</div>
         <div style="font-size:11px;color:#6a90a8;margin-top:8px;text-transform:uppercase;letter-spacing:1px;">Your access code</div>
@@ -948,9 +948,8 @@ async function sendProviderInviteEmail(email, name, code) {
       <div style="text-align:center;margin:0 0 24px;">
         <a href="https://ffppassport.com/login" style="display:inline-block;background:#FFCC00;color:#082335;text-decoration:none;font-weight:800;font-size:14px;padding:14px 32px;border-radius:8px;letter-spacing:.5px;">Sign in to your dashboard</a>
       </div>
-      <p style="font-size:12px;color:#6a90a8;line-height:1.7;">
-        Sign in with this email + your 6-digit code. The code does not expire until you reset it.
-      </p>
+      <p style="font-size:13px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">Once you're in, you can set up your business profile, post events, experiences and challenges, and manage member check-ins.</p>
+      <p style="font-size:12px;color:#6a90a8;line-height:1.7;">Sign in any time with this email + your code &mdash; it doesn't expire until you reset it.</p>
       <div style="margin-top:32px;padding-top:24px;border-top:1px solid rgba(43,168,224,.1);font-size:11px;color:#6a90a8;">
         FFP Passport · Provider Partnerships · ffppassport.com
       </div>
