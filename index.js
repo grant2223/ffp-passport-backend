@@ -1,4 +1,7 @@
 // FFP Passport — Express Server (Vercel, CommonJS) — v9
+// v43: /api/members/:id PUT now persists `preferences` (jsonb) so member preference toggles
+//      (notifications, newsletter, public profile, hide DOB on card) actually save. Also
+//      relies on the new members.skills + members.preferences jsonb columns.
 // v42: /api/onboard/from-stripe now persists gender, skills (to members.skills) and
 //      photo_url directly on the member row, so the passport card renders gender,
 //      sports and the photo correctly on the very first dashboard entry (previously
@@ -568,7 +571,7 @@ app.put('/api/members/:id', async (req, res) => {
     const { id } = req.params;
     const {
       full_name, surname, given_names, email, phone, city, nationality,
-      photo_url, bio, interests, fitness_level, date_of_birth, gender, skills
+      photo_url, bio, interests, fitness_level, date_of_birth, gender, skills, preferences
     } = req.body;
     const { data: member, error } = await supabase
       .from('members')
@@ -587,6 +590,7 @@ app.put('/api/members/:id', async (req, res) => {
         date_of_birth: date_of_birth || undefined,
         gender: gender || undefined,
         skills: skills || undefined,
+        preferences: preferences || undefined,
         profile_complete: true
       })
       .eq('id', id)
