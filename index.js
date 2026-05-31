@@ -1,13 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v12
-// v12: finalised provider invite email copy (sendProviderInviteEmail).
-// v10: Mints + returns a Supabase-compatible HS256 JWT (sub = member.id) from
-//      /api/auth/signin and /api/onboard/from-stripe. ffp-api-integration.js
-//      applies it as a Bearer header on window.supabase so Postgres exposes
-//      auth.uid() = member.id inside RLS — which is what makes admin approvals,
-//      provider profile saves, and member writes actually work. Requires env
-//      var SUPABASE_JWT_SECRET (Supabase → Settings → API → JWT Secret; same
-//      key that signs the anon key). Additive: existing service-role reads are
-//      unchanged. Adds the `jsonwebtoken` dependency.
+// FFP Passport — Express Server (Vercel, CommonJS) — v9
+// v42: /api/onboard/from-stripe now persists gender, skills (to members.skills) and
+//      photo_url directly on the member row, so the passport card renders gender,
+//      sports and the photo correctly on the very first dashboard entry (previously
+//      gender was dropped and skills went only to profile_meta -> card blank).
 // v9: /api/auth/signin now returns the FULL member object (excluding the
 //     hashed access_code for safety) instead of only 7 hand-picked fields.
 //     Previously the signin response stripped surname, given_names,
@@ -61,7 +56,6 @@ const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const Stripe = require('stripe');
-const jwt = require('jsonwebtoken');
 const app = express();
 // CORS - Handle preflight
 app.options('*', (req, res) => {
@@ -82,26 +76,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
-// ────────────────────────────────────────────────────────────
-// v10 — Supabase JWT bridge.
-// Mints an HS256 JWT signed with the project's JWT secret so the frontend
-// can authenticate window.supabase as this member. Postgres decodes the
-// `sub` claim and exposes it as auth.uid() inside RLS policies. Members are
-// custom-auth (not in auth.users); auth.uid() does NOT require the user to
-// exist in auth.users, so a self-minted JWT with sub = member.id is enough.
-// ────────────────────────────────────────────────────────────
-const SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET;
-function mintSupabaseJwt(memberId) {
-  if (!SUPABASE_JWT_SECRET) {
-    console.warn('[jwt] SUPABASE_JWT_SECRET not set — RLS bridge disabled');
-    return null;
-  }
-  return jwt.sign(
-    { sub: memberId, role: 'authenticated', aud: 'authenticated' },
-    SUPABASE_JWT_SECRET,
-    { expiresIn: '30d' }
-  );
-}
 // ────────────────────────────────────────────────────────────
 // STRIPE WEBHOOK — must be defined BEFORE express.json()
 // ────────────────────────────────────────────────────────────
@@ -205,7 +179,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
   try {
     const {
       session_id, surname, given_names, date_of_birth,
-      nationality, country, city, skills
+      nationality, country, city, skills, gender, photo_url
     } = req.body;
     if (!session_id) {
       return res.status(400).json({ error: 'session_id required' });
@@ -255,6 +229,9 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           nationality: nationality || null,
           country: country || null,
           city: city || null,
+          gender: gender || null,
+          skills: (Array.isArray(skills) && skills.length) ? skills : null,
+          photo_url: photo_url || null,
           paid: true,
           stripe_session_id: session_id,
           stripe_customer_id: customerId,
@@ -283,6 +260,9 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           nationality: nationality || null,
           country: country || null,
           city: city || null,
+          gender: gender || null,
+          skills: (Array.isArray(skills) && skills.length) ? skills : null,
+          photo_url: photo_url || null,
           passport_no,
           access_code: generated.hash,
           role: 'member',
@@ -354,7 +334,6 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       .single();
     return res.json({
       success: true,
-      jwt: mintSupabaseJwt(memberId),   // v10: Supabase RLS bridge
       member: finalMember,
       is_new: isNew
     });
@@ -421,35 +400,44 @@ async function sendWelcomeEmail(email, firstName, city) {
     <div style="font-family:Montserrat,sans-serif;max-width:480px;margin:0 auto;background:#081420;color:#fff;padding:32px;border-radius:16px;">
       <div style="font-size:22px;font-weight:900;letter-spacing:3px;margin-bottom:8px;">FFP <span style="color:#2ba8e0;">PASSPORT</span></div>
       <div style="font-size:12px;color:#6a90a8;letter-spacing:2px;text-transform:uppercase;margin-bottom:32px;">Find Fit People</div>
+
       <p style="font-size:18px;color:#fff;font-weight:700;margin:0 0 14px;">Hey, ${safeName}.</p>
+
       <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">
         You are now officially an FFP Passport holder - so cool!
       </p>
+
       <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 18px;">
         As a new member of the community, let's get you set up and connected with the best experiences:
       </p>
+
       <!-- Step 1 -->
       <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:10px;">
         <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;">1. Complete your profile</div>
         <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">This one matters most &mdash; your profile helps match you. Add: location, gender, age, interests + level, a few words.</div>
       </div>
+
       <!-- Step 2 -->
       <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:10px;">
         <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;">2. Open the Meet &amp; Move panel</div>
         <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">Where you'll see your matches and can start connecting with your people.</div>
       </div>
+
       <!-- Step 3 -->
       <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:18px;">
         <div style="font-size:13px;font-weight:800;color:#fff;">3. Join a Meet, or host your own</div>
       </div>
+
       <!-- What's a Meet? -->
       <div style="padding:14px 16px;background:rgba(255,204,0,.06);border:1px solid rgba(255,204,0,.2);border-radius:10px;margin-bottom:24px;">
         <div style="font-size:11px;font-weight:800;color:#FFCC00;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:6px;">What's a Meet?</div>
         <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">They are small active meet ups (max 8 persons) to connect you to people with the same skill + ability. Eg; Yoga - beginner, Tennis - intermediate, Powerlifting - Advanced, etc.</div>
       </div>
+
       <div style="text-align:center;margin:24px 0 28px;">
         <a href="https://ffppassport.com/ffp-member-dashboard.html#profile" style="display:inline-block;background:#2ba8e0;color:#081420;text-decoration:none;font-weight:800;font-size:14px;padding:14px 32px;border-radius:8px;letter-spacing:.5px;">Go To Dashboard</a>
       </div>
+
       <div style="margin-top:32px;padding-top:24px;border-top:1px solid rgba(43,168,224,.1);font-size:11px;color:#6a90a8;">
         FFP Passport · UAE 2026 · ffppassport.com
       </div>
@@ -520,7 +508,6 @@ app.post('/api/auth/signin', async (req, res) => {
       .single();
     if (error || !member) return res.status(401).json({ error: 'Invalid email or code' });
     if (member.status !== 'active') return res.status(403).json({ error: 'Account suspended' });
-    // v40: 10-min expiry REMOVED — login uses the PERSISTENT signup code (email says it never expires until reset). Re-add only with a real OTP-per-login flow.
     const token = crypto.randomBytes(32).toString('hex');
     await supabase.from('members').update({
       last_login: new Date().toISOString()
@@ -530,20 +517,9 @@ app.post('/api/auth/signin', async (req, res) => {
     // nationality, country, city, gender, photo_url, etc.). Strip the
     // hashed access_code for safety — frontend never needs it.
     const { access_code: _ac, ...memberSafe } = member;
-    // v29: attach skills + preferences from profile_meta so the dashboard hydrates them
-    let _metaSkills = [], _metaPrefs = null, _metaPro = null, _metaHeight = null;
-    try {
-      const { data: _meta } = await supabase.from('profile_meta').select('skills, preferences, professional, height_cm').eq('member_id', member.id).maybeSingle();
-      if (_meta) { _metaSkills = _meta.skills || []; _metaPrefs = _meta.preferences || null; _metaPro = _meta.professional || null; _metaHeight = (_meta.height_cm != null ? _meta.height_cm : null); }
-    } catch (e) {}
-    memberSafe.skills = _metaSkills;
-    memberSafe.preferences = _metaPrefs;
-    memberSafe.professional = _metaPro;
-    memberSafe.height_cm = _metaHeight;
     res.json({
       success: true,
       token,
-      jwt: mintSupabaseJwt(member.id),   // v10: Supabase RLS bridge — auth.uid() = member.id
       member: memberSafe,
       redirect: member.profile_complete
         ? (member.role === 'admin' ? '/ffp-admin.html'
@@ -566,11 +542,7 @@ app.post('/api/auth/reset', async (req, res) => {
       .single();
     if (!member) return res.json({ success: true, message: 'If that email exists, a new code has been sent.' });
     const { code, hash } = generateCode();
-    // v41: store ONLY access_code. Writing access_code_set_at made this UPDATE fail silently
-    // if that column doesn't exist in the live DB → new code never stored → emailed code never
-    // matched → "Unauthorized" on every login. (Expiry was removed in v40, so the column is unused.)
-    const { error: _updErr } = await supabase.from('members').update({ access_code: hash }).eq('id', member.id);
-    if (_updErr) console.error('[reset] access_code update failed:', _updErr.message);
+    await supabase.from('members').update({ access_code: hash }).eq('id', member.id);
     await sendCodeEmail(email, member.full_name, code, 'reset');
     res.json({ success: true, message: 'New code sent. Your old code no longer works.' });
   } catch (error) {
@@ -595,8 +567,8 @@ app.put('/api/members/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      full_name, surname, given_names, email, phone, city, country, nationality,
-      photo_url, bio, interests, fitness_level, date_of_birth, gender, skills, preferences, professional, height_cm
+      full_name, surname, given_names, email, phone, city, nationality,
+      photo_url, bio, interests, fitness_level, date_of_birth, gender, skills
     } = req.body;
     const { data: member, error } = await supabase
       .from('members')
@@ -607,7 +579,6 @@ app.put('/api/members/:id', async (req, res) => {
         email: email || undefined,
         phone: phone || undefined,
         city: city || undefined,
-        country: country || undefined,
         nationality: nationality || undefined,
         photo_url: photo_url || undefined,
         bio: bio || undefined,
@@ -615,28 +586,13 @@ app.put('/api/members/:id', async (req, res) => {
         fitness_level: fitness_level || undefined,
         date_of_birth: date_of_birth || undefined,
         gender: gender || undefined,
+        skills: skills || undefined,
         profile_complete: true
       })
       .eq('id', id)
       .select()
       .single();
     if (error) return res.status(500).json({ error: error.message });
-    // v29: persist skills + preferences to profile_meta (matching reads skills here)
-    if (skills !== undefined || preferences !== undefined || professional !== undefined || height_cm !== undefined) {
-      const _metaRow = { member_id: id };
-      if (skills !== undefined) _metaRow.skills = skills;
-      if (preferences !== undefined) _metaRow.preferences = preferences;
-      if (professional !== undefined) _metaRow.professional = professional;
-      if (height_cm !== undefined) _metaRow.height_cm = height_cm;
-      const { error: _metaErr } = await supabase.from('profile_meta').upsert(_metaRow, { onConflict: 'member_id' });
-      if (_metaErr) console.warn('PUT member: profile_meta upsert failed:', _metaErr.message);
-    }
-    if (member) {
-      if (skills !== undefined) member.skills = skills;
-      if (preferences !== undefined) member.preferences = preferences;
-      if (professional !== undefined) member.professional = professional;
-      if (height_cm !== undefined) member.height_cm = height_cm;
-    }
     res.json({ success: true, message: 'Profile updated', member });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -661,6 +617,7 @@ app.get('/api/members', async (req, res) => {
 app.post('/api/meetups', async (req, res) => {
   try {
     const { creator_id, title, description, location, date_time, max_attendees = 20 } = req.body;
+
     if (!creator_id || !title || !location || !date_time) {
       return res.status(400).json({ error: 'creator_id, title, location, and date_time required' });
     }
@@ -811,249 +768,4 @@ app.post('/api/visits/log', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-// ── NOTIFICATIONS (in-app bell + admin broadcast) ──────────────────────
-// List notifications for a member (broadcasts + targeted) + unread count.
-app.get('/api/notifications/:member_id', async (req, res) => {
-  try {
-    const id = req.params.member_id;
-    const meRes = await supabase.from('members').select('notifications_seen_at').eq('id', id).maybeSingle();
-    const seenAt = meRes.data && meRes.data.notifications_seen_at;
-    const nRes = await supabase.from('notifications')
-      .select('id, title, body, icon, link, created_at, audience, member_id')
-      .or('audience.eq.all,member_id.eq.' + id)
-      .order('created_at', { ascending: false })
-      .limit(50);
-    if (nRes.error) return res.status(500).json({ error: nRes.error.message });
-    const list = nRes.data || [];
-    const unread = list.filter(function (n) { return !seenAt || new Date(n.created_at) > new Date(seenAt); }).length;
-    res.json({ success: true, notifications: list, unread: unread });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-// Mark all notifications as seen for a member.
-app.post('/api/notifications/seen', async (req, res) => {
-  try {
-    const { member_id } = req.body || {};
-    if (!member_id) return res.status(400).json({ error: 'member_id required' });
-    const r = await supabase.from('members').update({ notifications_seen_at: new Date().toISOString() }).eq('id', member_id);
-    if (r.error) return res.status(500).json({ error: r.error.message });
-    res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-// Admin: broadcast a notification to the whole community.
-app.post('/api/notifications/broadcast', async (req, res) => {
-  try {
-    const { title, body, icon, link } = req.body || {};
-    if (!title) return res.status(400).json({ error: 'title required' });
-    const ins = await supabase.from('notifications').insert({
-      audience: 'all', title: title, body: body || null, icon: icon || 'campaign', link: link || null
-    }).select().single();
-    if (ins.error) return res.status(500).json({ error: ins.error.message });
-    res.json({ success: true, notification: ins.data });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-// Member tier stats — real counts for the Ambassador progression bars.
-app.get('/api/members/:id/stats', async (req, res) => {
-  try {
-    const id = req.params.id;
-    const results = await Promise.all([
-      supabase.from('referrals').select('*', { count: 'exact', head: true }).eq('referrer_id', id),
-      supabase.from('quest_progress').select('*', { count: 'exact', head: true }).eq('member_id', id).eq('status', 'completed'),
-      supabase.from('visit_logs').select('*', { count: 'exact', head: true }).eq('member_id', id),
-      supabase.from('activity_logs').select('*', { count: 'exact', head: true }).eq('member_id', id)
-    ]);
-    res.json({
-      success: true,
-      referrals:        results[0].count || 0,
-      quests_completed: results[1].count || 0,
-      providers:        results[2].count || 0,
-      activities:       results[3].count || 0
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-// Member activity logs (for the Passport journey/map) — service-role read.
-app.get('/api/members/:id/activity-logs', async (req, res) => {
-  try {
-    const id = req.params.id;
-    const r = await supabase.from('activity_logs')
-      .select('activity, city, country, duration_min, calories, logged_at')
-      .eq('member_id', id)
-      .order('logged_at', { ascending: false })
-      .limit(500);
-    if (r.error) return res.status(500).json({ error: r.error.message });
-    res.json({ success: true, logs: r.data || [] });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-// Member profile_meta (Fitness Stats: bio age, weight, PRs, sleep) — service-role read.
-app.get('/api/members/:id/profile-meta', async (req, res) => {
-  try {
-    const id = req.params.id;
-    const r = await supabase.from('profile_meta')
-      .select('chrono_age, current_weight_kg, height_cm, sleep_logs, pr_dates, pr_bench_kg, pr_squat_kg, pr_deadlift_kg, pr_5k_seconds, pr_10k_seconds, pr_21k_seconds, pr_marathon_sec, pr_swim1k_sec, vo2_max, body_fat_pct, visceral_fat, resting_hr, hrv_ms, grip_strength_kg, muscle_mass_kg, waist_cm')
-      .eq('member_id', id)
-      .maybeSingle();
-    if (r.error) return res.status(500).json({ error: r.error.message });
-    res.json({ success: true, meta: r.data || null });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-// Member's attended Meet & Move events (for the Passport "Meets" tile, period-filtered client-side).
-app.get('/api/members/:id/meetups-attended', async (req, res) => {
-  try {
-    const id = req.params.id;
-    const ar = await supabase.from('meetup_attendees').select('meetup_id, status').eq('member_id', id).in('status', ['joined', 'attended']);
-    const ids = (ar.data || []).map(function (r) { return r.meetup_id; });
-    let meetups = [];
-    if (ids.length) {
-      const mr = await supabase.from('meetups').select('id, meets_at').in('id', ids);
-      meetups = (mr.data || []).map(function (m) { return { meets_at: m.meets_at }; });
-    }
-    res.json({ success: true, meetups: meetups });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-// ────────────────────────────────────────────────────────────
-// v11 — PROVIDER PROVISIONING (admin only)
-// ────────────────────────────────────────────────────────────
-// Verify the request carries a valid admin Supabase JWT. Returns the admin's
-// member id if the token is valid AND that id exists in admin_users; else null.
-async function requireAdmin(req) {
-  try {
-    const auth = req.headers.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-    if (!token || !SUPABASE_JWT_SECRET) return null;
-    let payload;
-    try { payload = jwt.verify(token, SUPABASE_JWT_SECRET); } catch (e) { return null; }
-    const adminId = payload && payload.sub;
-    if (!adminId) return null;
-    const { data, error } = await supabase.from('admin_users').select('id').eq('id', adminId).maybeSingle();
-    if (error || !data) return null;
-    return adminId;
-  } catch (e) { return null; }
-}
-
-// Provider invite email — sent when an application is approved. (Copy is a
-// sensible default; Grant to refine wording like the member welcome email.)
-async function sendProviderInviteEmail(email, name, code) {
-  const firstName = (name || '').trim().split(/\s+/)[0] || '';
-  const subject = "You're in — your FFP Passport provider account is ready";
-  const html = `
-    <div style="font-family:Montserrat,sans-serif;max-width:480px;margin:0 auto;background:#081420;color:#fff;padding:32px;border-radius:16px;">
-      <div style="font-size:22px;font-weight:900;letter-spacing:3px;margin-bottom:8px;">FFP <span style="color:#2ba8e0;">PASSPORT</span></div>
-      <div style="font-size:12px;color:#6a90a8;letter-spacing:2px;text-transform:uppercase;margin-bottom:32px;">Provider Partnerships</div>
-      <p style="font-size:18px;color:#fff;font-weight:700;margin:0 0 14px;">Welcome aboard${firstName ? ', ' + escapeHtml(firstName) : ''}.</p>
-      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">Your application's approved &mdash; you're officially an FFP Passport provider.</p>
-      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 6px;">Here's your 6-digit access code to sign in:</p>
-      <div style="background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:12px;padding:24px;text-align:center;margin:14px 0 24px;">
-        <div style="font-size:42px;font-weight:900;letter-spacing:12px;color:#fff;">${code}</div>
-        <div style="font-size:11px;color:#6a90a8;margin-top:8px;text-transform:uppercase;letter-spacing:1px;">Your access code</div>
-      </div>
-      <div style="text-align:center;margin:0 0 24px;">
-        <a href="https://ffppassport.com/login" style="display:inline-block;background:#FFCC00;color:#082335;text-decoration:none;font-weight:800;font-size:14px;padding:14px 32px;border-radius:8px;letter-spacing:.5px;">Sign in to your dashboard</a>
-      </div>
-      <p style="font-size:13px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">Once you're in, you can set up your business profile, post events, experiences and challenges, and manage member check-ins.</p>
-      <p style="font-size:12px;color:#6a90a8;line-height:1.7;">Sign in any time with this email + your code &mdash; it doesn't expire until you reset it.</p>
-      <div style="margin-top:32px;padding-top:24px;border-top:1px solid rgba(43,168,224,.1);font-size:11px;color:#6a90a8;">
-        FFP Passport · Provider Partnerships · ffppassport.com
-      </div>
-    </div>
-  `;
-  await mailer.sendMail({
-    from: '"FFP Passport" <noreply@ffppassport.com>',
-    to: email,
-    subject,
-    html
-  });
-}
-
-// Approve a provider application -> provision the provider account.
-app.post('/api/admin/provision-provider', async (req, res) => {
-  try {
-    const adminId = await requireAdmin(req);
-    if (!adminId) return res.status(403).json({ error: 'Admin authorization required' });
-
-    const { application_id, subscription_tier, paid_until, monthly_fee_aed } = req.body || {};
-    if (!application_id) return res.status(400).json({ error: 'application_id required' });
-
-    // 1) Load the application
-    const { data: appRow, error: appErr } = await supabase
-      .from('provider_applications').select('*').eq('id', application_id).single();
-    if (appErr || !appRow) return res.status(404).json({ error: 'Application not found' });
-    if (appRow.status === 'approved') return res.status(409).json({ error: 'Application already approved' });
-
-    const email = (appRow.email || '').toLowerCase().trim();
-    if (!email) return res.status(400).json({ error: 'Application has no email' });
-    const contactName = appRow.contact_name || '';
-    const letterMark = (appRow.business_name || 'P').charAt(0).toUpperCase();
-
-    // 2) Find or create the member as role=provider, with a fresh access code
-    const { code, hash } = generateCode();
-    let memberId;
-    const { data: existingMember } = await supabase
-      .from('members').select('id').eq('email', email).maybeSingle();
-    if (existingMember) {
-      memberId = existingMember.id;
-      const { error: updErr } = await supabase.from('members')
-        .update({ role: 'provider', status: 'active', access_code: hash }).eq('id', memberId);
-      if (updErr) return res.status(500).json({ error: 'Member update failed: ' + updErr.message });
-    } else {
-      const passport_no = `FFP-${new Date().getFullYear()}-${String(Math.floor(Math.random()*9999+1)).padStart(4,'0')}`;
-      const { data: ins, error: insErr } = await supabase.from('members')
-        .insert({ email, full_name: contactName, role: 'provider', status: 'active', access_code: hash, passport_no })
-        .select().single();
-      if (insErr) return res.status(500).json({ error: 'Member create failed: ' + insErr.message });
-      memberId = ins.id;
-    }
-
-    // 3) Create the linked providers row (or re-approve an existing one)
-    let providerId;
-    const { data: existingProv } = await supabase
-      .from('providers').select('id').eq('owner_user_id', memberId).maybeSingle();
-    if (existingProv) {
-      providerId = existingProv.id;
-      await supabase.from('providers').update({
-        status: 'approved',
-        subscription_tier: subscription_tier || 'standard',
-        monthly_fee_aed: (monthly_fee_aed != null ? monthly_fee_aed : null),
-        paid_until: paid_until || null,
-        approved_at: new Date().toISOString(),
-        approved_by: adminId
-      }).eq('id', providerId);
-    } else {
-      const { data: prov, error: provErr } = await supabase.from('providers').insert({
-        owner_user_id: memberId,
-        business_name: appRow.business_name,
-        letter_mark: letterMark,
-        category: appRow.category || null,
-        provider_type: appRow.provider_type || null,
-        city: appRow.city || null,
-        country: appRow.country || null,
-        contact_email: email,
-        contact_phone: appRow.phone || null,
-        website: appRow.website || null,
-        about: appRow.about || null,
-        status: 'approved',
-        subscription_tier: subscription_tier || 'standard',
-        monthly_fee_aed: (monthly_fee_aed != null ? monthly_fee_aed : null),
-        paid_until: paid_until || null,
-        approved_at: new Date().toISOString(),
-        approved_by: adminId
-      }).select().single();
-      if (provErr) return res.status(500).json({ error: 'Provider create failed: ' + provErr.message });
-      providerId = prov.id;
-    }
-
-    // 4) Mark the application approved
-    await supabase.from('provider_applications')
-      .update({ status: 'approved', reviewed_by: adminId, reviewed_at: new Date().toISOString() })
-      .eq('id', application_id);
-
-    // 5) Email the invite (non-blocking - provider is already provisioned)
-    try { await sendProviderInviteEmail(email, contactName, code); }
-    catch (mailErr) { console.warn('Provision: invite email failed (non-blocking):', mailErr.message); }
-
-    res.json({ success: true, provider_id: providerId, member_id: memberId });
-  } catch (error) {
-    console.error('Provision endpoint error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 module.exports = app;
