@@ -1,4 +1,8 @@
 // FFP Passport — Express Server (Vercel, CommonJS) — v9
+// v44: Referral loop wired — onboard now generates members.referral_code for new members,
+//      reads `ref` (referrer's code) and on a match sets referred_by + inserts a pending
+//      referrals row (tier-based reward_aed). New GET /api/referrer/:code powers the
+//      landing-page invite banner. So every member can refer from their first second.
 // v43: /api/members/:id PUT now persists `preferences` (jsonb) so member preference toggles
 //      (notifications, newsletter, public profile, hide DOB on card) actually save. Also
 //      relies on the new members.skills + members.preferences jsonb columns.
@@ -178,11 +182,37 @@ app.use(express.json({ limit: '50mb' }));
 // v4 addition: sends a welcome email exactly once per member, on the
 // first time they complete profile-complete. Distinct from the 6-digit
 // access code email (which is still sent for brand new inserts only).
+// v44: referral code generator — e.g. "GRANT" + 4 hex => GRANT5A91 (matches existing style)
+function genReferralCode(name) {
+  const base = String(name || 'FFP').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5) || 'FFP';
+  const rand = Math.random().toString(16).slice(2, 6).toUpperCase().padEnd(4, '0');
+  return base + rand;
+}
+
+// v44: public referrer lookup — the landing page calls this with ?ref=CODE to render the
+// "<name> invited you" banner. Returns just the public-safe name + photo.
+app.get('/api/referrer/:code', async (req, res) => {
+  try {
+    const code = String(req.params.code || '').trim();
+    if (!code) return res.json({ success: false });
+    const { data: m } = await supabase
+      .from('members')
+      .select('given_names, full_name, photo_url')
+      .ilike('referral_code', code)
+      .maybeSingle();
+    if (!m) return res.json({ success: false });
+    const first = (m.given_names || String(m.full_name || '').split(/\s+/)[0] || 'a friend');
+    return res.json({ success: true, first_name: first, full_name: m.full_name || first, photo_url: m.photo_url || null });
+  } catch (e) {
+    return res.json({ success: false });
+  }
+});
+
 app.post('/api/onboard/from-stripe', async (req, res) => {
   try {
     const {
       session_id, surname, given_names, date_of_birth,
-      nationality, country, city, skills, gender, photo_url
+      nationality, country, city, skills, gender, photo_url, ref
     } = req.body;
     if (!session_id) {
       return res.status(400).json({ error: 'session_id required' });
@@ -267,6 +297,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           skills: (Array.isArray(skills) && skills.length) ? skills : null,
           photo_url: photo_url || null,
           passport_no,
+          referral_code: genReferralCode(given_names || fullName),
           access_code: generated.hash,
           role: 'member',
           paid: true,
@@ -283,6 +314,44 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       }
       memberId = inserted.id;
     }
+
+    // 3b) Referral attribution (non-blocking): if this signup came through someone's
+    //     referral link, credit them. ref = the referrer's referral_code (from the
+    //     landing page's ffp_ref, passed by profile-complete).
+    if (ref) {
+      try {
+        const { data: referrer } = await supabase
+          .from('members')
+          .select('id, tier')
+          .ilike('referral_code', String(ref).trim())
+          .maybeSingle();
+        if (referrer && referrer.id && referrer.id !== memberId) {
+          // Set referred_by only if not already attributed
+          await supabase.from('members')
+            .update({ referred_by: referrer.id })
+            .eq('id', memberId)
+            .is('referred_by', null);
+          // Tier-based reward (pct of $99 membership, converted to AED)
+          const pct = ({ member: 5, supporter: 10, ambassador: 20 })[String(referrer.tier || 'member').toLowerCase()] || 5;
+          const rewardAed = Math.round((pct / 100) * 99 * 3.6725 * 100) / 100;
+          // One referral row per referred member
+          const { data: dup } = await supabase.from('referrals')
+            .select('id').eq('referred_member_id', memberId).maybeSingle();
+          if (!dup) {
+            await supabase.from('referrals').insert({
+              referrer_id: referrer.id,
+              referred_email: email,
+              referred_member_id: memberId,
+              status: 'pending',
+              reward_aed: rewardAed
+            });
+          }
+        }
+      } catch (refErr) {
+        console.warn('Onboard: referral attribution failed (non-blocking):', refErr.message);
+      }
+    }
+
     // 4) Upsert skills / chronological age into profile_meta (non-blocking on failure)
     if (Array.isArray(skills) && skills.length > 0) {
       let chronoAge = null;
