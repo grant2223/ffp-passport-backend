@@ -1,4 +1,6 @@
 // FFP Passport — Express Server (Vercel, CommonJS) — v9
+// v46: PUT now also persists phone_country_code + country (were silently dropped, so the
+//      phone country code and home country never saved). v45: height_cm.
 // v45: /api/members/:id PUT now persists height_cm (column added) so member Height saves.
 // v44: Referral loop wired — onboard now generates members.referral_code for new members,
 //      reads `ref` (referrer's code) and on a match sets referred_by + inserts a pending
@@ -640,7 +642,7 @@ app.put('/api/members/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      full_name, surname, given_names, email, phone, city, nationality,
+      full_name, surname, given_names, email, phone, phone_country_code, city, country, nationality,
       photo_url, bio, interests, fitness_level, date_of_birth, gender, skills, preferences, height_cm
     } = req.body;
     const { data: member, error } = await supabase
@@ -651,7 +653,9 @@ app.put('/api/members/:id', async (req, res) => {
         given_names: given_names || undefined,
         email: email || undefined,
         phone: phone || undefined,
+        phone_country_code: phone_country_code || undefined,
         city: city || undefined,
+        country: country || undefined,
         nationality: nationality || undefined,
         photo_url: photo_url || undefined,
         bio: bio || undefined,
