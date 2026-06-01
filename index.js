@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v48
+// FFP Passport — Express Server (Vercel, CommonJS) — v49
+// v49 (2026-06-01): provider self-signup is now INSTANT + self-serve — the providers row is
+//      created status='approved' (no admin account-approval step). Account is usable immediately
+//      after email confirm + login. (Individual listings still save as 'pending' per their own flow.)
 // v48 (2026-06-01): provider signup trimmed — category no longer required (set later).
 // v47 (2026-06-01): PROVIDER SELF-SIGNUP (Phase 1). Added POST /api/provider/signup
 //      (creates member role=provider/status=active/verified=false + providers row
@@ -637,8 +640,8 @@ app.post('/api/auth/reset', async (req, res) => {
 // verified=false) + a PROVIDERS row (owner_user_id = member.id, status='pending').
 // We email a verification link; clicking it marks the member verified and sends
 // them to the login page, where they sign in with the normal email→code flow.
-// Listings they create stay 'pending' until an admin approves them — so signup is
-// safe + free during the research-preview phase. Phase 2 hooks paid_until/tier.
+// The account is INSTANT + self-serve (providers row status='approved') — there is NO
+// admin account-approval step. Free during the research-preview phase. Phase 2 hooks paid_until/tier.
 // ─────────────────────────────────────────────────────────────────────────────
 const SITE_URL = process.env.SITE_URL || 'https://ffppassport.com';
 const VERIFY_SECRET = process.env.SUPABASE_SERVICE_KEY || 'ffp-fallback-secret';
@@ -741,7 +744,8 @@ app.post('/api/provider/signup', async (req, res) => {
         provider_type: provider_type || null, country, city,
         contact_email: cleanEmail,
         contact_phone: (phone_country_code && phone) ? (phone_country_code + ' ' + phone) : (phone || null),
-        website: website || null, about: about || null, status: 'pending'
+        website: website || null, about: about || null,
+        status: 'approved', approved_at: new Date().toISOString() // instant, self-serve account — no admin approval step
       });
     if (pErr) {
       console.error('[provider/signup] provider insert:', pErr);
