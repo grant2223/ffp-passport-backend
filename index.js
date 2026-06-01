@@ -1,4 +1,10 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v9
+// FFP Passport — Express Server (Vercel, CommonJS) — v48
+// v48 (2026-06-01): provider signup trimmed — category no longer required (set later).
+// v47 (2026-06-01): PROVIDER SELF-SIGNUP (Phase 1). Added POST /api/provider/signup
+//      (creates member role=provider/status=active/verified=false + providers row
+//      status='pending' + emails a verify link) and GET /api/provider/verify
+//      (HMAC-signed token → sets members.verified=true → 302 to /login?verified=1).
+//      Helpers: signProviderToken/verifyProviderToken, sendProviderVerifyEmail.
 // v46: PUT now also persists phone_country_code + country (were silently dropped, so the
 //      phone country code and home country never saved). v45: height_cm.
 // v45: /api/members/:id PUT now persists height_cm (column added) so member Height saves.
@@ -624,6 +630,155 @@ app.post('/api/auth/reset', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROVIDER SELF-SIGNUP — Phase 1 ("Try for free")  [added 2026-06-01]
+// A provider self-registers → we create a MEMBER (role=provider, status=active,
+// verified=false) + a PROVIDERS row (owner_user_id = member.id, status='pending').
+// We email a verification link; clicking it marks the member verified and sends
+// them to the login page, where they sign in with the normal email→code flow.
+// Listings they create stay 'pending' until an admin approves them — so signup is
+// safe + free during the research-preview phase. Phase 2 hooks paid_until/tier.
+// ─────────────────────────────────────────────────────────────────────────────
+const SITE_URL = process.env.SITE_URL || 'https://ffppassport.com';
+const VERIFY_SECRET = process.env.SUPABASE_SERVICE_KEY || 'ffp-fallback-secret';
+
+function b64url(s) {
+  return Buffer.from(s).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function signProviderToken(memberId) {
+  const payload = `${memberId}.${Date.now() + 7 * 24 * 60 * 60 * 1000}`; // 7-day expiry
+  const sig = crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex');
+  return b64url(payload) + '.' + sig;
+}
+function verifyProviderToken(token) {
+  try {
+    const parts = String(token).split('.');
+    if (parts.length !== 2) return null;
+    const payload = Buffer.from(parts[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const expect = crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex');
+    const a = Buffer.from(parts[1]); const b = Buffer.from(expect);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const [memberId, expStr] = payload.split('.');
+    if (!memberId || Number(expStr) < Date.now()) return null;
+    return memberId;
+  } catch (_) { return null; }
+}
+async function sendProviderVerifyEmail(email, businessName, contactName, verifyUrl) {
+  const html = `
+    <div style="font-family:Montserrat,sans-serif;max-width:480px;margin:0 auto;background:#081420;color:#fff;padding:32px;border-radius:16px;">
+      <div style="font-size:22px;font-weight:900;letter-spacing:3px;margin-bottom:8px;">FFP <span style="color:#2ba8e0;">PASSPORT</span></div>
+      <div style="font-size:12px;color:#6a90a8;letter-spacing:2px;text-transform:uppercase;margin-bottom:28px;">Provider Partnerships</div>
+      <p style="font-size:18px;color:#fff;font-weight:700;margin:0 0 14px;">Welcome, ${escapeHtml(contactName || businessName || 'there')}.</p>
+      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">
+        Your provider account for <strong style="color:#fff;">${escapeHtml(businessName || '')}</strong> is ready. Confirm your email to activate it and head to your dashboard.
+      </p>
+      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 8px;">
+        You can build Events, Experiences and Challenges right away. They stay private until our team approves them to go live &mdash; free while we're in preview.
+      </p>
+      <div style="text-align:center;margin:26px 0 22px;">
+        <a href="${verifyUrl}" style="display:inline-block;background:#FFCC00;color:#082335;text-decoration:none;font-weight:800;font-size:14px;padding:14px 34px;border-radius:8px;letter-spacing:.4px;">Confirm email &amp; log in</a>
+      </div>
+      <p style="font-size:12px;color:#6a90a8;line-height:1.7;">
+        After confirming you'll land on the login page &mdash; enter your email, we'll send you a 6-digit code, and you're in.
+      </p>
+      <div style="margin-top:30px;padding-top:22px;border-top:1px solid rgba(43,168,224,.1);font-size:11px;color:#6a90a8;">
+        FFP Passport · ffppassport.com · If you didn't request this, you can ignore this email.
+      </div>
+    </div>
+  `;
+  await mailer.sendMail({
+    from: '"FFP Passport" <noreply@ffppassport.com>',
+    to: email,
+    subject: 'Confirm your FFP Passport provider account',
+    html
+  });
+}
+
+app.post('/api/provider/signup', async (req, res) => {
+  try {
+    const {
+      business_name, contact_name, email,
+      country, city, category, provider_type,
+      phone, phone_country_code, website, about
+    } = req.body || {};
+
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const biz = String(business_name || '').trim();
+    const contact = String(contact_name || '').trim();
+    if (!biz || !contact || !cleanEmail || !country || !city) {
+      return res.status(400).json({ error: 'Please fill in business name, contact name, email, country and city.' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+
+    const { data: existing } = await supabase
+      .from('members').select('id').eq('email', cleanEmail).maybeSingle();
+    if (existing) {
+      return res.status(409).json({ error: 'An account already exists for this email. Please log in instead.' });
+    }
+
+    const { hash } = generateCode(); // placeholder; replaced when they request a code at login
+    const passport_no = `FFP-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9999 + 1)).padStart(4, '0')}`;
+    const { data: member, error: mErr } = await supabase
+      .from('members')
+      .insert({
+        email: cleanEmail, full_name: contact, access_code: hash,
+        role: 'provider', status: 'active', verified: false, passport_no,
+        phone: phone || null, phone_country_code: phone_country_code || null
+      })
+      .select('id').single();
+    if (mErr) {
+      console.error('[provider/signup] member insert:', mErr);
+      return res.status(500).json({ error: 'Could not create your account. Please try again.' });
+    }
+
+    const { error: pErr } = await supabase
+      .from('providers')
+      .insert({
+        owner_user_id: member.id, business_name: biz, category: category || null,
+        provider_type: provider_type || null, country, city,
+        contact_email: cleanEmail,
+        contact_phone: (phone_country_code && phone) ? (phone_country_code + ' ' + phone) : (phone || null),
+        website: website || null, about: about || null, status: 'pending'
+      });
+    if (pErr) {
+      console.error('[provider/signup] provider insert:', pErr);
+      await supabase.from('members').delete().eq('id', member.id); // roll back so they can retry
+      return res.status(500).json({ error: 'Could not create your provider profile. Please try again.' });
+    }
+
+    const apiBase = `https://${req.get('host')}`;
+    const verifyUrl = `${apiBase}/api/provider/verify?token=${encodeURIComponent(signProviderToken(member.id))}`;
+    try {
+      await sendProviderVerifyEmail(cleanEmail, biz, contact, verifyUrl);
+    } catch (e) {
+      console.error('[provider/signup] email failed:', e);
+      return res.json({ success: true, email: cleanEmail, email_sent: false });
+    }
+    res.json({ success: true, email: cleanEmail, email_sent: true });
+  } catch (error) {
+    console.error('[provider/signup] error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/provider/verify', async (req, res) => {
+  const memberId = verifyProviderToken(req.query.token);
+  if (!memberId) return res.redirect(302, `${SITE_URL}/login.html?verify=expired`);
+  try {
+    const { data: member } = await supabase
+      .from('members').select('id, email').eq('id', memberId).single();
+    if (!member) return res.redirect(302, `${SITE_URL}/login.html?verify=expired`);
+    await supabase.from('members').update({ verified: true }).eq('id', memberId);
+    return res.redirect(302, `${SITE_URL}/login.html?verified=1&email=${encodeURIComponent(member.email)}`);
+  } catch (e) {
+    console.error('[provider/verify] error:', e);
+    return res.redirect(302, `${SITE_URL}/login.html?verify=error`);
+  }
+});
+
 app.get('/api/members/:id', async (req, res) => {
   try {
     const { id } = req.params;
