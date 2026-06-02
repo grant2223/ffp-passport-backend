@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v51
+// FFP Passport — Express Server (Vercel, CommonJS) — v52
+// v52 (2026-06-02): /api/auth/reset now returns an `exists` boolean. The login screen uses it
+//      on the sign-in flow to notify "no account found" and stay on the email step instead of
+//      advancing to the code screen for an unregistered email. (Code is still only sent if the
+//      account exists — no email enumeration via the code itself.)
 // v51 (2026-06-02): GET /api/members/:id/activity-logs — returns a member's activity_logs
 //      (passport "journey"). The member dashboard's loadJourneyLogs() relies on this; without
 //      it the passport can't show saved logs or venue check-ins. Service-role read.
@@ -630,11 +634,13 @@ app.post('/api/auth/reset', async (req, res) => {
       .select('id, full_name')
       .eq('email', email)
       .single();
-    if (!member) return res.json({ success: true, message: 'If that email exists, a new code has been sent.' });
+    // v52: return an `exists` flag so the login screen can tell the member their
+    // email isn't registered (sign-in flow) instead of advancing to the code screen.
+    if (!member) return res.json({ success: true, exists: false, message: 'No account found for that email.' });
     const { code, hash } = generateCode();
     await supabase.from('members').update({ access_code: hash }).eq('id', member.id);
     await sendCodeEmail(email, member.full_name, code, 'reset');
-    res.json({ success: true, message: 'New code sent. Your old code no longer works.' });
+    res.json({ success: true, exists: true, message: 'New code sent. Your old code no longer works.' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
