@@ -1,4 +1,6 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v52
+// FFP Passport — Express Server (Vercel, CommonJS) — v53
+// v53 (2026-06-02): /api/members/:id/activity-logs also returns checkin_lat/checkin_lng so the
+//      passport "Your journey" Leaflet map can drop exact pins for venue check-ins.
 // v52 (2026-06-02): /api/auth/reset now returns an `exists` boolean. The login screen uses it
 //      on the sign-in flow to notify "no account found" and stay on the email step instead of
 //      advancing to the code screen for an unregistered email. (Code is still only sent if the
@@ -856,7 +858,7 @@ app.get('/api/members/:id/activity-logs', async (req, res) => {
     const { id } = req.params;
     const { data: logs, error } = await supabase
       .from('activity_logs')
-      .select('id, activity, category, venue, provider_id, duration_min, intensity, calories, notes, logged_at, city, country, verified')
+      .select('id, activity, category, venue, provider_id, duration_min, intensity, calories, notes, logged_at, city, country, verified, checkin_lat, checkin_lng')
       .eq('member_id', id)
       .order('logged_at', { ascending: false })
       .limit(500);
