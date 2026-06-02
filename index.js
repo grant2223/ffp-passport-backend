@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v50
+// FFP Passport — Express Server (Vercel, CommonJS) — v51
+// v51 (2026-06-02): GET /api/members/:id/activity-logs — returns a member's activity_logs
+//      (passport "journey"). The member dashboard's loadJourneyLogs() relies on this; without
+//      it the passport can't show saved logs or venue check-ins. Service-role read.
 // v50 (2026-06-02): GET /api/geo/resolve?url= — follows a Google Maps short-link redirect
 //      and extracts lat/lng (parseLatLng). Used by the provider profile to set the venue pin
 //      from a pasted Maps link (member check-in GPS verification + member Directions).
@@ -835,6 +838,24 @@ app.get('/api/members/:id', async (req, res) => {
       .single();
     if (error || !member) return res.status(404).json({ error: 'Member not found' });
     res.json({ success: true, member });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+// v51: member's activity logs (passport "journey"). The member dashboard's
+// loadJourneyLogs() fetches this; without it the passport can't show saved logs
+// or venue check-ins. Service-role read so it works for member sessions.
+app.get('/api/members/:id/activity-logs', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: logs, error } = await supabase
+      .from('activity_logs')
+      .select('id, activity, category, venue, provider_id, duration_min, intensity, calories, notes, logged_at, city, country, verified')
+      .eq('member_id', id)
+      .order('logged_at', { ascending: false })
+      .limit(500);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true, logs: logs || [] });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
