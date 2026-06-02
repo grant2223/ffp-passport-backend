@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v49
+// FFP Passport — Express Server (Vercel, CommonJS) — v50
+// v50 (2026-06-02): GET /api/geo/resolve?url= — follows a Google Maps short-link redirect
+//      and extracts lat/lng (parseLatLng). Used by the provider profile to set the venue pin
+//      from a pasted Maps link (member check-in GPS verification + member Directions).
 // v49 (2026-06-01): provider self-signup is now INSTANT + self-serve — the providers row is
 //      created status='approved' (no admin account-approval step). Account is usable immediately
 //      after email confirm + login. (Individual listings still save as 'pending' per their own flow.)
@@ -780,6 +783,45 @@ app.get('/api/provider/verify', async (req, res) => {
   } catch (e) {
     console.error('[provider/verify] error:', e);
     return res.redirect(302, `${SITE_URL}/login.html?verify=error`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GEO — resolve a Google Maps link (short or full) to lat/lng  [added 2026-06-02]
+// Provider pastes their Google Maps link in their profile; we follow any short-link
+// redirect server-side and extract the venue pin used for member check-in GPS verification.
+// ─────────────────────────────────────────────────────────────────────────────
+function parseLatLng(s) {
+  if (!s) return null; s = String(s);
+  var m = s.match(/@(-?\d{1,3}\.\d{3,}),(-?\d{1,3}\.\d{3,})/)
+       || s.match(/!3d(-?\d{1,3}\.\d{3,})!4d(-?\d{1,3}\.\d{3,})/)
+       || s.match(/[?&](?:q|query|ll|center|daddr|destination)=(-?\d{1,3}\.\d{3,}),(-?\d{1,3}\.\d{3,})/)
+       || s.match(/\/(-?\d{1,3}\.\d{3,}),(-?\d{1,3}\.\d{3,})/);
+  if (!m) return null;
+  var lat = parseFloat(m[1]), lng = parseFloat(m[2]);
+  if (isNaN(lat) || isNaN(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat: lat, lng: lng };
+}
+app.get('/api/geo/resolve', async (req, res) => {
+  try {
+    var url = req.query.url;
+    if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'A Google Maps link is required.' });
+    if (!/(google\.[a-z.]+\/maps|maps\.app\.goo\.gl|goo\.gl\/maps|maps\.google|g\.co\/kgs)/i.test(url)) {
+      return res.status(400).json({ error: 'That doesn’t look like a Google Maps link.' });
+    }
+    var coords = parseLatLng(url);
+    var finalUrl = url;
+    if (!coords) {
+      var r = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0 (compatible; FFPbot/1.0)' } });
+      finalUrl = r.url || url;
+      coords = parseLatLng(finalUrl);
+      if (!coords) { try { var body = await r.text(); coords = parseLatLng(body); } catch (e) {} }
+    }
+    if (!coords) return res.status(422).json({ error: 'Couldn’t find a map pin in that link. Open the place in Google Maps and copy the link again.', resolved_url: finalUrl });
+    res.json({ lat: coords.lat, lng: coords.lng, resolved_url: finalUrl });
+  } catch (e) {
+    console.error('[geo/resolve]', e);
+    res.status(500).json({ error: 'Could not resolve that link — please try again.' });
   }
 });
 
