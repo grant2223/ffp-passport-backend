@@ -1,11 +1,11 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v59
-// v59 (2026-06-03): REFERRAL → WALLET CREDITING. A confirmed paid signup through a referral link
-//      now (a) marks the referrals row 'paid' (= earned/credited) and (b) inserts an 'in' transaction
-//      (category 'referrals', status 'paid') so the referrer's Available Balance reflects the reward
-//      immediately. Balance = sum(in.paid) − sum(out paid/pending); payouts already add 'out' rows on
-//      execution, so the balance now adjusts BOTH as earnings come in and as payouts go out. (Grant)
-//      (Existing pending referrals were back-filled into transactions via SQL.) NOTE: amounts stored
-//      in AED; dashboard converts to USD for display (platform = USD, payouts = local currency).
+// FFP Passport — Express Server (Vercel, CommonJS) — v61
+// v61 (2026-06-03): REFERRAL CREDITING — AUTOMATED (Grant: "I want things automated, not waiting for
+//      admin"). On a confirmed paid signup via a referral link we now credit the referrer immediately:
+//      referral 'paid' + an 'in' wallet transaction, and email the holder "You have a new referral — +$X
+//      added — your balance is $Y" (sendReferralEmail now takes rewardUsd + balanceUsd; payout-at-$250
+//      line included). Balance = sum(in.paid) − sum(out paid/pending). The admin Referrals panel is now a
+//      record + an 'Invalid' clawback (admin_invalidate_referral removes the credit). (v60's admin-gated
+//      model was per Grant's later call to automate; admin_verify_referral kept for any edge 'pending'.)
 // v58 (2026-06-03): SUNDAY SUMMARY redesigned to the approved DARK FFP brand (matches the homepage +
 // v58 (2026-06-03): SUNDAY SUMMARY redesigned to the approved DARK FFP brand (matches the homepage +
 //      FFP-SUNDAY-SUMMARY mockup): bold yellow status banner up top, "My fitness stats" rank rows,
@@ -410,10 +410,10 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           const { data: dup } = await supabase.from('referrals')
             .select('id').eq('referred_member_id', memberId).maybeSingle();
           if (!dup) {
-            // v59: this onboard fires on a CONFIRMED paid signup, so the referral reward is
-            // EARNED now. Mark the referral 'paid' (= credited/earned) AND mirror it into the
-            // wallet ledger as an 'in' transaction so the member's Available Balance reflects it.
-            // (Balance = sum(in.paid) − sum(out paid/pending); payouts add 'out' rows on execution.)
+            // v61: AUTOMATED crediting (Grant: "I want things automated, not waiting for admin").
+            // This onboard fires on a CONFIRMED paid signup, so credit the referrer immediately:
+            // referral 'paid' + an 'in' wallet transaction. Then email the holder with the amount
+            // added + their new balance. (Admin Referrals panel is now a record + 'Invalid' clawback.)
             await supabase.from('referrals').insert({
               referrer_id: referrer.id,
               referred_email: email,
@@ -423,18 +423,25 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
               paid_at: new Date().toISOString()
             });
             const { error: refTxErr } = await supabase.from('transactions').insert({
-              member_id: referrer.id,
-              type: 'in',
-              amount_aed: rewardAed,
-              source: 'Referral — ' + (fullName || email),
-              category: 'referrals',
-              status: 'paid',
-              related_id: memberId
+              member_id: referrer.id, type: 'in', amount_aed: rewardAed,
+              source: 'Referral — ' + (fullName || email), category: 'referrals',
+              status: 'paid', related_id: memberId
             });
             if (refTxErr) console.warn('Onboard: referral wallet credit failed (non-blocking):', refTxErr.message);
-            // Tell the passport holder they earned a referral (non-blocking)
+            // Compute the referrer's new USD balance for the email (sum in.paid − out paid/pending)
+            let balanceUsd = 0;
+            try {
+              const { data: txs } = await supabase.from('transactions').select('type, amount_aed, status').eq('member_id', referrer.id);
+              let aed = 0;
+              (txs || []).forEach(function (t) {
+                if (t.type === 'in' && t.status === 'paid') aed += Number(t.amount_aed) || 0;
+                else if (t.type === 'out' && (t.status === 'paid' || t.status === 'pending')) aed -= Number(t.amount_aed) || 0;
+              });
+              balanceUsd = Math.round(aed / 3.6725 * 100) / 100;
+            } catch (e) {}
+            const rewardUsd = Math.round(rewardAed / 3.6725 * 100) / 100;
             if (referrer.email) {
-              try { await sendReferralEmail(referrer.email, referrer.full_name, fullName); }
+              try { await sendReferralEmail(referrer.email, referrer.full_name, fullName, rewardUsd, balanceUsd); }
               catch (e) { console.warn('Onboard: referral email failed (non-blocking):', e.message); }
             }
           }
@@ -652,10 +659,20 @@ async function sendAdminNewSignupEmail(m) {
    +'</td></tr></table>';
   await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: ADMIN_EMAIL, subject: 'New FFP signup: ' + (m.full_name || m.email || ''), html: brandEmail('New signup', body) });
 }
-async function sendReferralEmail(toEmail, referrerName, newMemberName) {
+async function sendReferralEmail(toEmail, referrerName, newMemberName, rewardUsd, balanceUsd) {
+  var hasReward = (typeof rewardUsd === 'number' && rewardUsd > 0);
+  var fUsd = function (n) { n = Number(n) || 0; return (Math.round(n * 100) % 100 === 0) ? String(Math.round(n)) : n.toFixed(2); };
+  var statBlock = hasReward
+    ? '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:4px 0 18px;"><tr>'
+      + '<td width="50%" style="padding:0 5px 0 0;"><table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e7eef4;border-radius:12px;"><tr><td style="padding:14px 16px;"><div style="font-size:10px;color:#8196a6;text-transform:uppercase;letter-spacing:1.2px;font-weight:700;">Added</div><div style="font-size:22px;font-weight:900;color:#22a06b;margin-top:4px;">+$'+fUsd(rewardUsd)+'</div></td></tr></table></td>'
+      + '<td width="50%" style="padding:0 0 0 5px;"><table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e7eef4;border-radius:12px;"><tr><td style="padding:14px 16px;"><div style="font-size:10px;color:#8196a6;text-transform:uppercase;letter-spacing:1.2px;font-weight:700;">Your balance</div><div style="font-size:22px;font-weight:900;color:#0f2c47;margin-top:4px;">$'+fUsd(balanceUsd)+'</div></td></tr></table></td>'
+      + '</tr></table>'
+    : '';
   var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">You have a new referral</div>'
-   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 18px;">Nice work'+(referrerName?(', '+escapeHtml(referrerName)):'')+'. <strong style="color:#0f2c47;">'+escapeHtml(newMemberName||'Someone')+'</strong> just joined FFP Passport using your referral link.</p>'
-   +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html#referrals" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">View your referrals</a></td></tr></table>';
+   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 18px;">Nice work'+(referrerName?(', '+escapeHtml(referrerName)):'')+'. <strong style="color:#0f2c47;">'+escapeHtml(newMemberName||'Someone')+'</strong> just joined FFP Passport using your referral link'+(hasReward?' — your reward has been added to your balance.':'.')+'</p>'
+   + statBlock
+   +'<p style="font-size:13px;color:#5b7186;line-height:1.6;margin:0 0 14px;">You can request a payout once your balance reaches <strong style="color:#0f2c47;">$250 USD</strong>.</p>'
+   +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html#referrals" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">View your earnings</a></td></tr></table>';
   await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'You have a new referral on FFP Passport', html: brandEmail('Referral', body) });
 }
 
