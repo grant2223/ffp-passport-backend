@@ -1,4 +1,10 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v53
+// FFP Passport — Express Server (Vercel, CommonJS) — v54
+// v54 (2026-06-03): SUNDAY SUMMARY weekly digest email. GET /api/cron/sunday-summary (secured by
+//      CRON_SECRET — Vercel Cron sends Authorization: Bearer; ?secret= for manual tests) loops active
+//      members, calls member_weekly_digest RPC, renders the all-8-areas email (renderSundaySummary,
+//      no emojis, per FFP-EMAIL-STANDARD) and sends via the existing Resend mailer. Skips opted-out
+//      (preferences.no_weekly_email) + members with zero activity that week. Scheduled in vercel.json
+//      ('0 4 * * 0' = Sun 08:00 UAE). Needs env CRON_SECRET. (Weekly cron requires Vercel Pro.)
 // v53 (2026-06-02): /api/members/:id/activity-logs also returns checkin_lat/checkin_lng so the
 //      passport "Your journey" Leaflet map can drop exact pins for venue check-ins.
 // v52 (2026-06-02): /api/auth/reset now returns an `exists` boolean. The login screen uses it
@@ -1077,4 +1083,92 @@ app.post('/api/visits/log', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// ============================================================
+// v54: SUNDAY SUMMARY — weekly digest email (cron-triggered).
+// One email per active member, all 8 areas + City/Gender/Age-group benchmarks,
+// rendered per FFP-EMAIL-STANDARD (no emojis). Data from member_weekly_digest RPC.
+// ============================================================
+function ss_fmtMin(m){ m=Math.round(m||0); var h=Math.floor(m/60), mm=m%60; return h ? (h+'h'+(mm?(' '+mm+'m'):'')) : (mm+'m'); }
+function ss_pct(you, avg){ you=Number(you)||0; if(!avg||avg<=0) return ''; var dd=Math.round((you/avg-1)*100); var col=dd>=0?'#1f8fd0':'#d65a5a'; return ' <span style="color:'+col+';font-weight:700;">'+(dd>=0?'+':'')+dd+'%</span>'; }
+function ss_bench(you, b){
+  function c(v){ return (v==null)?'—':v; }
+  return '<table role="presentation" width="100%" style="margin-top:12px;font-size:11px;color:#44586a;"><tr>'
+   + '<td style="padding:4px 0;"><span style="color:#8196a6;">City</span><br><span style="color:#0f2c47;font-weight:700;">avg '+c(b.city)+'</span>'+ss_pct(you,b.city)+'</td>'
+   + '<td style="padding:4px 0;"><span style="color:#8196a6;">Gender</span><br><span style="color:#0f2c47;font-weight:700;">avg '+c(b.gender)+'</span>'+ss_pct(you,b.gender)+'</td>'
+   + '<td style="padding:4px 0;"><span style="color:#8196a6;">Age group</span><br><span style="color:#0f2c47;font-weight:700;">avg '+c(b.age)+'</span>'+ss_pct(you,b.age)+'</td>'
+   + '</tr></table>';
+}
+function ss_cell(label, big, sub){ return '<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e4ebf1;border-radius:12px;"><tr><td style="padding:14px 16px;"><div style="font-size:11px;color:#8196a6;text-transform:uppercase;letter-spacing:1px;">'+label+'</div><div style="font-size:18px;font-weight:800;color:#0f2c47;margin-top:4px;">'+big+'</div>'+(sub?'<div style="font-size:11px;color:#8196a6;">'+sub+'</div>':'')+'</td></tr></table>'; }
+function renderSundaySummary(name, d){
+  var a=d.activity||{}, f=d.food||{}, e=d.earnings||{}, mu=d.meetups||{}, cn=d.connections||{}, q=d.quests||{}, ev=d.events||{}, ch=d.challenges||{}, ab=(d.benchmarks||{}).activities||{};
+  return ''
+  +'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:24px;">'
+  +'<table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;width:100%;background:#ffffff;border:1px solid #e4ebf1;border-radius:16px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
+  +'<tr><td style="background:#0f2c47;padding:22px 32px;text-align:center;"><img src="https://ffppassport.com/assets/ffp-logo.png" alt="FFP Passport" width="120" style="display:inline-block;border:0;"><div style="font-size:10px;color:#8fb8d6;letter-spacing:2px;text-transform:uppercase;margin-top:8px;">Sunday Summary · '+d.week_start+' to '+d.week_end+'</div></td></tr>'
+  +'<tr><td style="padding:26px 32px 0;">'
+  +'<div style="font-size:20px;font-weight:800;color:#0f2c47;margin-bottom:6px;">Your week, '+name+' — start the next one stronger</div>'
+  +'<p style="font-size:14px;color:#44586a;line-height:1.7;margin:0 0 20px;">Everything you did this week, and how it stacks up against people like you.</p>'
+  +'<table role="presentation" width="100%" style="background:#f1f7fc;border:1px solid #d9e7f2;border-radius:12px;margin-bottom:12px;"><tr><td style="padding:16px 18px;">'
+  +'<table role="presentation" width="100%"><tr><td style="font-size:12px;color:#8196a6;text-transform:uppercase;letter-spacing:1px;">Activity</td><td align="right" style="font-size:13px;color:#44586a;">'+(a.sessions||0)+' sessions · '+ss_fmtMin(a.minutes)+(a.top_activity?(' · top: '+a.top_activity):'')+'</td></tr></table>'
+  + ss_bench(ab.you||0, {city:ab.city,gender:ab.gender,age:ab.age})
+  +'</td></tr></table>'
+  +'<table role="presentation" width="100%" style="background:#fff8e1;border:1px solid #f3e2a8;border-radius:12px;margin-bottom:12px;"><tr><td style="padding:14px 18px;">'
+  +'<table role="presentation" width="100%"><tr><td style="font-size:12px;color:#8196a6;text-transform:uppercase;letter-spacing:1px;">Food logged</td><td align="right" style="font-size:13px;color:#44586a;">'+(f.days_logged||0)+' days · avg '+(f.avg_kcal||0)+' kcal · '+(f.avg_protein||0)+'g protein</td></tr></table>'
+  +'</td></tr></table>'
+  +'<table role="presentation" width="100%"><tr>'
+  +'<td width="50%" style="padding:0 6px 12px 0;">'+ss_cell('Earnings','$'+(e.week_aed||0)+' this week','Balance $'+(e.balance_aed||0))+'</td>'
+  +'<td width="50%" style="padding:0 0 12px 6px;">'+ss_cell('Meet-ups',(mu.hosted||0)+' hosted',(mu.joined||0)+' joined')+'</td>'
+  +'</tr><tr>'
+  +'<td width="50%" style="padding:0 6px 12px 0;">'+ss_cell('Connections',(cn.new_this_week||0)+' new',(cn.total||0)+' total')+'</td>'
+  +'<td width="50%" style="padding:0 0 12px 6px;">'+ss_cell('Quests',(q.completed_this_week||0)+' completed',(q.stamps_earned||0)+' stamps')+'</td>'
+  +'</tr><tr>'
+  +'<td width="50%" style="padding:0 6px 0 0;">'+ss_cell('Events',(ev.checkins||0)+' check-ins','')+'</td>'
+  +'<td width="50%" style="padding:0 0 0 6px;">'+ss_cell('Challenges',(ch.entries||0)+' entries',(ch.verified||0)+' verified')+'</td>'
+  +'</tr></table>'
+  +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:22px 0 4px;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">Open your passport</a></td></tr></table>'
+  +'</td></tr>'
+  +'<tr><td style="padding:24px 32px 28px;"><div style="border-top:1px solid #eef2f6;padding-top:18px;font-size:11px;color:#8196a6;line-height:1.7;">FFP Passport · UAE 2026 · <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div></td></tr>'
+  +'</table></td></tr></table>';
+}
+// Cron endpoint (Vercel Cron sends Authorization: Bearer ${CRON_SECRET}). Also accepts ?secret= for manual test runs.
+app.get('/api/cron/sunday-summary', async (req, res) => {
+  var secret = process.env.CRON_SECRET || '';
+  var auth = req.headers['authorization'] || '';
+  var ok = secret && (auth === ('Bearer ' + secret) || req.query.secret === secret);
+  if (!ok) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    var { data: members, error } = await supabase
+      .from('members')
+      .select('id, full_name, given_names, email, preferences')
+      .eq('role', 'member').eq('status', 'active').eq('profile_complete', true);
+    if (error) throw error;
+    var sent = 0, skipped = 0;
+    for (var i = 0; i < (members || []).length; i++) {
+      var m = members[i];
+      if (!m.email) { skipped++; continue; }
+      var prefs = m.preferences || {};
+      if (prefs.no_weekly_email === true) { skipped++; continue; }   // honours unsubscribe
+      var dg = await supabase.rpc('member_weekly_digest', { p_me: m.id });
+      if (dg.error || !dg.data) { skipped++; continue; }
+      var d = dg.data;
+      var any = (d.activity && d.activity.sessions) || (d.food && d.food.days_logged)
+        || (d.meetups && ((d.meetups.joined || 0) + (d.meetups.hosted || 0)))
+        || (d.connections && d.connections.new_this_week) || (d.quests && d.quests.completed_this_week)
+        || (d.events && d.events.checkins) || (d.challenges && d.challenges.entries);
+      if (!any) { skipped++; continue; }   // don't email members who did nothing this week
+      var first = String(m.given_names || m.full_name || 'there').split(' ')[0];
+      try {
+        await mailer.sendMail({
+          from: '"FFP Passport" <noreply@ffppassport.com>',
+          to: m.email,
+          subject: 'Your FFP Sunday Summary',
+          html: renderSundaySummary(first, d)
+        });
+        sent++;
+      } catch (e) { skipped++; }
+    }
+    res.json({ success: true, sent: sent, skipped: skipped, total: (members || []).length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = app;
