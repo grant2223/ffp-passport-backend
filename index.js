@@ -1,4 +1,12 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v57
+// FFP Passport — Express Server (Vercel, CommonJS) — v58
+// v58 (2026-06-03): SUNDAY SUMMARY redesigned to the approved DARK FFP brand (matches the homepage +
+//      FFP-SUNDAY-SUMMARY mockup): bold yellow status banner up top, "My fitness stats" rank rows,
+//      "Your passport" metric rows (places/cities/connections/meet-ups/activities with weekly ▲ deltas
+//      where real), passport-status progress bar, blue CTA. Replaced the rejected light/radar layout.
+//      Email-safe (tables + inline styles), no icon fonts, no emojis (geometric ▲ only). Uses the SAME
+//      data the cron already gathers (rankings/places/connections/tier_progress). NOTE: per-stat
+//      City/Gender/Age cohorts + week-over-week fitness deltas shown in the mockup need a ranking-data
+//      build (member_stat_rankings currently returns one rank); rendered as single city rank for now.
 // v57 (2026-06-03): AUTH FIX — admin dashboard (and all RLS-gated reads/writes) showed NO DATA
 //      because the client was never given a Supabase JWT: /api/auth/signin returned {token, member}
 //      but NO `jwt`, so window.supabase ran as anon for everyone and auth.uid() was always null
@@ -1220,30 +1228,56 @@ function renderSundaySummary(name, d){
   var tp = d.tier_progress || {};
   var curTier = String(d.tier||'member').toLowerCase();
 
-  // ---- PILLAR 1 — your fitness vs the community ----
+  var tierName = curTier.charAt(0).toUpperCase()+curTier.slice(1);
+  // v58: DARK FFP-brand layout (matches homepage + approved FFP-SUNDAY-SUMMARY mockup).
+  // Email-safe: tables + inline styles, no icon fonts, no emojis (geometric arrows only).
+  var C = { accent:'#2ba8e0', yellow:'#FFCC00', white:'#ffffff', soft:'#b8d4e0', mut:'#9dbdd0', dim:'#6a90a8', green:'#22c55e', cell:'#0f1e2e', line:'rgba(43,168,224,.20)' };
+  function ssEye(t){ return '<span style="display:inline-block;background:rgba(43,168,224,.12);border:1px solid rgba(43,168,224,.35);border-radius:100px;padding:6px 15px;font-size:10px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;color:'+C.accent+';">'+t+'</span>'; }
+  function ssRule(){ return '<div style="height:2px;background:rgba(43,168,224,.45);border-radius:2px;margin:12px 0 0;"></div>'; }
+  function ssMetric(label, value, delta, dCol, last){
+    return '<table role="presentation" width="100%"'+(last?'':' style="border-bottom:1px solid rgba(43,168,224,.16);"')+'><tr><td style="padding:16px 0;">'
+      +'<table role="presentation" width="100%"><tr>'
+      +'<td valign="top"><div style="font-size:15px;font-weight:800;color:'+C.white+';letter-spacing:.5px;text-transform:uppercase;">'+label+'</div>'
+      +(delta?('<div style="font-size:12px;font-weight:800;color:'+(dCol||C.green)+';margin-top:5px;">'+delta+'</div>'):'')+'</td>'
+      +'<td align="right" valign="top"><div style="font-size:30px;font-weight:900;color:'+C.white+';letter-spacing:-1px;line-height:1;">'+value+'</div></td>'
+      +'</tr></table></td></tr></table>';
+  }
+  function ssRankRow(label, value, rankTxt, last){
+    return '<table role="presentation" width="100%"'+(last?'':' style="border-bottom:1px solid rgba(43,168,224,.16);"')+'><tr><td style="padding:16px 0;">'
+      +'<table role="presentation" width="100%"><tr>'
+      +'<td valign="top"><div style="font-size:15px;font-weight:800;color:'+C.white+';letter-spacing:.5px;text-transform:uppercase;">'+label+'</div>'
+      +'<div style="margin-top:7px;"><span style="background:rgba(43,168,224,.14);color:'+C.accent+';font-size:11px;font-weight:800;padding:4px 10px;border-radius:100px;">'+rankTxt+'</span></div></td>'
+      +'<td align="right" valign="top"><div style="font-size:30px;font-weight:900;color:'+C.white+';letter-spacing:-1px;line-height:1;">'+value+'</div></td>'
+      +'</tr></table></td></tr></table>';
+  }
+  function ssBarDark(pct){ pct=Math.max(0,Math.min(100,Math.round(pct))); return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;"><tr><td width="'+pct+'%" style="background:'+C.yellow+';height:8px;font-size:0;line-height:8px;border-radius:5px 0 0 5px;">&nbsp;</td><td width="'+(100-pct)+'%" style="background:rgba(255,255,255,.10);height:8px;font-size:0;line-height:8px;border-radius:0 5px 5px 0;">&nbsp;</td></tr></table>'; }
+
+  // ---- MY FITNESS STATS — real per-stat rank (City/Gender/Age cohorts pending a ranking-data build) ----
   var fitHtml;
-  if (rankings.length >= 3) {
-    var rl = rankings.map(function(r){ return r.label; });
-    var rs = rankings.map(function(r){ var sc=ss_score(r); return sc==null?0:sc; });
-    var cfgR = {type:'radar',data:{labels:rl,datasets:[{label:'You',data:rs,borderColor:'#2ba8e0',backgroundColor:'rgba(43,168,224,0.22)',borderWidth:2,pointRadius:0}]},options:{plugins:{legend:{display:false}},scales:{r:{min:0,max:100,ticks:{display:false,stepSize:25},grid:{color:'#e7eef4'},angleLines:{color:'#e7eef4'},pointLabels:{font:{size:11},color:'#44586a'}}}}};
-    fitHtml = ssH('Your fitness'+(grp.city?(' — vs '+grp.city):''))
-      + ssImg(qc(cfgR, 380, 300), 'Your fitness profile', 360)
-      + '<div style="font-size:13px;color:#44586a;line-height:2;margin-top:6px;">'
-      + rankings.map(function(r){ var rk=(r.total>=3)?('#'+r.rank+' of '+r.total):'your best'; return '<span style="color:#8196a6;">'+r.label+'</span> &nbsp;<strong style="color:#0f2c47;">'+r.display+'</strong> &nbsp;<span style="color:#1f8fd0;font-weight:700;">'+rk+'</span>'; }).join('<br>')
-      + '</div>';
+  if (rankings.length >= 1) {
+    var fr = rankings.map(function(r, i){
+      var rk = (r.total>=3) ? ('#'+r.rank+' of '+r.total+(grp.city?(' in '+grp.city):'')) : 'Your personal best';
+      return ssRankRow(r.label, r.display, rk, i===rankings.length-1);
+    }).join('');
+    fitHtml = '<tr><td style="padding:28px 30px 0;">'+ssEye('My fitness stats')+'<div style="font-size:12px;color:'+C.dim+';margin:11px 0 0;font-weight:700;">how you rank'+(grp.city?(' in '+grp.city):' in the community')+'</div>'+ssRule()+'</td></tr>'
+      +'<tr><td style="padding:0 30px;">'+fr+'</td></tr>';
   } else {
-    fitHtml = ssH('Your fitness') + '<table role="presentation" width="100%" style="background:#f1f7fc;border:1px solid #d9e7f2;border-radius:12px;"><tr><td style="padding:18px 20px;font-size:13px;color:#44586a;line-height:1.6;">Add your numbers — VO2, bench, 5km, body fat — to unlock your fitness profile and see how you stack up against the FFP community. <a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:#2ba8e0;font-weight:700;text-decoration:none;">Update your records</a></td></tr></table>';
+    fitHtml = '<tr><td style="padding:28px 30px 0;">'+ssEye('My fitness stats')+ssRule()
+      +'<table role="presentation" width="100%" style="background:'+C.cell+';border:1px solid '+C.line+';border-radius:14px;margin-top:14px;"><tr><td style="padding:18px 20px;font-size:13px;color:'+C.soft+';line-height:1.6;">Add your numbers — VO2, bench, 5km, body fat — to see how you rank in the FFP community. <a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:'+C.accent+';font-weight:700;text-decoration:none;">Update your records</a></td></tr></table></td></tr>';
   }
 
-  // ---- PILLAR 2 — your world: places & people ----
-  var worldHtml = ssH('Your world — places &amp; people')
-    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-    + '<td width="33%" style="padding:0 5px 0 0;vertical-align:top;">'+ss_cell('Cities', (places.cities_total||0), ((places.cities_new||0)>0?('+'+places.cities_new+' this week'):'active in'))+'</td>'
-    + '<td width="33%" style="padding:0 5px;vertical-align:top;">'+ss_cell('Venues', (places.venues_total||0), ((places.venues_new||0)>0?('+'+places.venues_new+' this week'):'checked in'))+'</td>'
-    + '<td width="34%" style="padding:0 0 0 5px;vertical-align:top;">'+ss_cell('People', (cn.total||0), ((cn.new_this_week||0)>0?('+'+cn.new_this_week+' this week'):'connections'))+'</td>'
-    + '</tr></table>';
+  // ---- YOUR PASSPORT — real places / people / activity (weekly deltas where we have them) ----
+  var meetTotal = (mu.hosted||0)+(mu.joined||0);
+  var pv = ''
+    + ssMetric('Places visited', (places.venues_total||0), ((places.venues_new||0)>0?('&#9650; +'+places.venues_new+' this week'):''), C.green)
+    + ssMetric('Cities', (places.cities_total||0), ((places.cities_new||0)>0?('&#9650; +'+places.cities_new+' this week'):''), C.green)
+    + ssMetric('Connections made', (cn.total||0), ((cn.new_this_week||0)>0?('&#9650; +'+cn.new_this_week+' this week'):''), C.green)
+    + ssMetric('Meet-ups', meetTotal, '')
+    + ssMetric('Activities logged', (tp.activities_logged||0), 'last 30 days', C.dim, true);
+  var worldHtml = '<tr><td style="padding:26px 30px 0;">'+ssEye('Your passport')+'<div style="font-size:12px;color:'+C.dim+';margin:11px 0 0;font-weight:700;">places, people &amp; activity</div>'+ssRule()+'</td></tr>'
+    +'<tr><td style="padding:0 30px;">'+pv+'</td></tr>';
 
-  // ---- PILLAR 3 — your passport status ----
+  // ---- PASSPORT STATUS — tier progress toward the next tier ----
   var statusHtml;
   var nextTier = curTier==='member' ? 'Supporter' : (curTier==='supporter' ? 'Ambassador' : null);
   if (nextTier) {
@@ -1252,37 +1286,34 @@ function renderSundaySummary(name, d){
     Object.keys(SS_TARGETS).forEach(function(k){ var tgt=SS_TARGETS[k][goal], have=tp[k]||0; if(have>=tgt) met++; else { var rem=tgt-have; closest.push({rem:rem, txt:rem+' more '+SS_TARGETS[k].u+(rem>1?'s':'')}); } });
     closest.sort(function(a,b){ return a.rem-b.rem; });
     var pct = Math.min(100, Math.round(met/4*100));
-    statusHtml = ssH('Your Passport Status')
-      + '<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e7eef4;border-radius:12px;"><tr><td style="padding:16px 18px;">'
-      + '<table role="presentation" width="100%"><tr><td style="font-size:14px;color:#0f2c47;font-weight:800;text-transform:capitalize;">'+curTier+'</td><td align="right" style="font-size:12px;color:#8196a6;font-weight:600;">'+met+' of 4 sections toward '+nextTier+'</td></tr></table>'
-      + ss_bar(pct, '#FFCC00')
-      + (closest.length ? '<div style="font-size:12px;color:#44586a;margin-top:12px;line-height:1.5;">Closest to '+nextTier+': <strong style="color:#0f2c47;">'+closest.slice(0,2).map(function(c){return c.txt;}).join(' · ')+'</strong></div>' : '<div style="font-size:12px;color:#22c55e;font-weight:700;margin-top:12px;">Every section is at '+nextTier+' level — you’re there.</div>')
-      + '</td></tr></table>';
+    statusHtml = '<tr><td style="padding:26px 30px 0;">'+ssEye('Passport status')+ssRule()
+      + '<table role="presentation" width="100%" style="background:'+C.cell+';border:1px solid '+C.line+';border-radius:14px;margin-top:14px;"><tr><td style="padding:16px 18px;">'
+      + '<table role="presentation" width="100%"><tr><td style="font-size:15px;color:'+C.white+';font-weight:800;">'+tierName+'</td><td align="right" style="font-size:12px;color:'+C.mut+';font-weight:600;">'+met+' of 4 toward '+nextTier+'</td></tr></table>'
+      + ssBarDark(pct)
+      + (closest.length ? '<div style="font-size:12px;color:'+C.soft+';margin-top:12px;line-height:1.5;">Closest to '+nextTier+': <strong style="color:'+C.white+';">'+closest.slice(0,2).map(function(c){return c.txt;}).join(' &middot; ')+'</strong></div>' : '<div style="font-size:12px;color:'+C.green+';font-weight:700;margin-top:12px;">Every section is at '+nextTier+' level — you are there.</div>')
+      + '</td></tr></table></td></tr>';
   } else {
-    statusHtml = ssH('Your Passport Status')
-      + '<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e7eef4;border-radius:12px;"><tr><td style="padding:16px 18px;font-size:13px;color:#0f2c47;line-height:1.6;"><strong>Ambassador</strong> — the top tier. Keep your sections active over the next 30 days to hold your status and your 20% referral rewards.</td></tr></table>';
+    statusHtml = '<tr><td style="padding:26px 30px 0;">'+ssEye('Passport status')+ssRule()
+      + '<table role="presentation" width="100%" style="background:'+C.cell+';border:1px solid '+C.line+';border-radius:14px;margin-top:14px;"><tr><td style="padding:16px 18px;font-size:13px;color:'+C.soft+';line-height:1.6;"><strong style="color:'+C.white+';">Ambassador</strong> — the top tier. Keep your sections active over the next 30 days to hold your status and your 20% referral rewards.</td></tr></table></td></tr>';
   }
 
-  var didStuff = rankings.length || (places.venues_new||0) || (places.cities_new||0) || (cn.new_this_week||0) || ((mu.hosted||0)+(mu.joined||0)) || (tp.activities_logged||0);
-  var greet = didStuff ? ('Well done, '+name) : ('Hey, '+name);
+  var didStuff = rankings.length || (places.venues_new||0) || (places.cities_new||0) || (cn.new_this_week||0) || meetTotal || (tp.activities_logged||0);
+  var greet = (didStuff ? ('Well done, '+name) : ('Hey, '+name)) + '.';
   var sub = didStuff
-    ? ('Here’s your passport this week — your fitness, your world, and your status.')
-    : 'A fresh week starts today — the perfect time to get moving, connect with people, and climb your passport. Here’s where you stand.';
+    ? 'Here is your week — your fitness, your world, and your status.'
+    : 'A fresh week starts today — get moving, connect with people, and climb your passport.';
 
   return ''
-  +'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:24px;">'
-  +'<table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;width:100%;background:#ffffff;border:1px solid #e4ebf1;border-radius:16px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
-  +'<tr><td style="padding:30px 32px 0;text-align:center;"><img src="https://ffppassport.com/assets/ffp-logo.png" alt="FFP Passport" width="132" style="display:inline-block;border:0;"></td></tr>'
-  +'<tr><td style="padding:14px 32px 0;text-align:center;"><div style="height:3px;width:46px;background:#2ba8e0;border-radius:2px;margin:0 auto;"></div><div style="font-size:10px;color:#8196a6;letter-spacing:2.5px;text-transform:uppercase;margin-top:14px;">Sunday Summary &nbsp;·&nbsp; '+ss_date(d.week_start)+' – '+ss_date(d.week_end)+'</div></td></tr>'
-  +'<tr><td style="padding:22px 32px 4px;">'
-  +'<div style="font-size:25px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.4px;">'+greet+'</div>'
-  +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 8px;">'+sub+'</p>'
+  +'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#050d16;"><tr><td align="center" style="padding:24px 14px;">'
+  +'<table role="presentation" width="500" cellpadding="0" cellspacing="0" style="max-width:500px;width:100%;background:#081420;border:1px solid rgba(43,168,224,.25);border-radius:18px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
+  +'<tr><td style="padding:32px 30px 0;text-align:center;"><img src="https://ffppassport.com/assets/ffp-emblem.png" alt="FFP" width="60" style="display:inline-block;border:0;"><div style="font-size:11px;color:'+C.accent+';letter-spacing:2.5px;text-transform:uppercase;font-weight:800;margin-top:14px;">Sunday Summary &nbsp;&middot;&nbsp; '+ss_date(d.week_start)+' &ndash; '+ss_date(d.week_end)+'</div></td></tr>'
+  +'<tr><td style="padding:24px 30px 0;text-align:center;"><div style="font-size:11px;color:'+C.mut+';letter-spacing:2px;text-transform:uppercase;font-weight:700;">Your current status</div><div style="font-size:42px;font-weight:900;color:'+C.yellow+';letter-spacing:-1px;line-height:1;margin-top:8px;">'+tierName+'</div><div style="height:3px;width:46px;background:rgba(43,168,224,.5);border-radius:2px;margin:16px auto 0;"></div></td></tr>'
+  +'<tr><td style="padding:24px 30px 0;"><div style="display:inline-block;font-size:25px;font-weight:900;color:'+C.white+';letter-spacing:-.5px;border-bottom:3px solid '+C.yellow+';padding-bottom:6px;">'+greet+'</div><div style="font-size:14px;color:'+C.soft+';line-height:1.6;margin-top:12px;">'+sub+'</div></td></tr>'
   + fitHtml
   + worldHtml
   + statusHtml
-  +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0 4px;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">Open your passport</a></td></tr></table>'
-  +'</td></tr>'
-  +'<tr><td style="padding:24px 32px 28px;"><div style="border-top:1px solid #eef2f6;padding-top:18px;font-size:11px;color:#8196a6;line-height:1.7;">FFP Passport · UAE 2026 · <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div></td></tr>'
+  +'<tr><td style="padding:30px 30px 6px;text-align:center;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;background:'+C.accent+';color:#fff;text-decoration:none;font-size:16px;font-weight:800;padding:16px 44px;border-radius:12px;letter-spacing:.3px;">Open your passport</a></td></tr>'
+  +'<tr><td style="padding:24px 30px 30px;text-align:center;"><div style="border-top:1px solid rgba(43,168,224,.12);padding-top:18px;font-size:12px;color:'+C.mut+';font-weight:600;">FFP Passport &middot; UAE 2026 &middot; ffppassport.com</div></td></tr>'
   +'</table></td></tr></table>';
 }
 // Cron endpoint (Vercel Cron sends Authorization: Bearer ${CRON_SECRET}). Also accepts ?secret= for manual test runs.
