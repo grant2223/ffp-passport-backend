@@ -1,4 +1,16 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v61
+// FFP Passport — Express Server (Vercel, CommonJS) — v63
+// v63 (2026-06-03): USD-ONLY wallet (Grant: "platform is only USD, stop the AED"). Referral reward is
+//      now computed in USD (pct × $99, no ×3.6725) and stored directly in reward_aed/amount_aed (legacy
+//      column names now hold USD). Email balance summed directly (no /3.6725). admin_referral_leaderboard
+//      earned_usd = sum(reward) directly. DB wallet columns (transactions/referrals/payouts/members/
+//      content_submissions) had their values converted AED→USD once. No peg/conversion anywhere now.
+// v62 (2026-06-03): MEET & MOVE lifecycle emails. New senders sendMeetupConfirmEmail / ReminderEmail /
+//      CancelEmail (brandEmail, no emojis, meet-up detail card + Maps link, Dubai time). Event-driven via
+//      POST /api/meetups/notify {kind:'confirm'|'cancel', meetup_id, member_id} — the meet-move loader
+//      (v18) calls it after join_meetup (confirm to that member) and after cancel_meetup (cancel to all
+//      attendees). Time-based reminder via GET /api/cron/meetup-reminders (secret-gated): meet-ups within
+//      24h email each attendee once (new meetup_attendees.reminder_sent_at flag). vercel.json cron added
+//      ("0 3 * * *"; sub-daily needs Vercel Pro).
 // v61 (2026-06-03): REFERRAL CREDITING — AUTOMATED (Grant: "I want things automated, not waiting for
 //      admin"). On a confirmed paid signup via a referral link we now credit the referrer immediately:
 //      referral 'paid' + an 'in' wallet transaction, and email the holder "You have a new referral — +$X
@@ -403,43 +415,40 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
             .update({ referred_by: referrer.id })
             .eq('id', memberId)
             .is('referred_by', null);
-          // Tier-based reward (pct of $99 membership, converted to AED)
+          // Tier-based reward = pct of the $99 membership, in USD (platform is USD-only; no AED).
           const pct = ({ member: 5, supporter: 10, ambassador: 20 })[String(referrer.tier || 'member').toLowerCase()] || 5;
-          const rewardAed = Math.round((pct / 100) * 99 * 3.6725 * 100) / 100;
+          const rewardUsd = Math.round((pct / 100) * 99 * 100) / 100;
           // One referral row per referred member
           const { data: dup } = await supabase.from('referrals')
             .select('id').eq('referred_member_id', memberId).maybeSingle();
           if (!dup) {
-            // v61: AUTOMATED crediting (Grant: "I want things automated, not waiting for admin").
-            // This onboard fires on a CONFIRMED paid signup, so credit the referrer immediately:
-            // referral 'paid' + an 'in' wallet transaction. Then email the holder with the amount
-            // added + their new balance. (Admin Referrals panel is now a record + 'Invalid' clawback.)
+            // v63: AUTOMATED crediting, USD-only. Confirmed paid signup → credit the referrer now:
+            // referral 'paid' + an 'in' wallet transaction (amounts stored in USD; the *_aed column
+            // names are legacy and now hold USD — no conversion anywhere). Then email the holder.
             await supabase.from('referrals').insert({
               referrer_id: referrer.id,
               referred_email: email,
               referred_member_id: memberId,
               status: 'paid',
-              reward_aed: rewardAed,
+              reward_aed: rewardUsd,
               paid_at: new Date().toISOString()
             });
             const { error: refTxErr } = await supabase.from('transactions').insert({
-              member_id: referrer.id, type: 'in', amount_aed: rewardAed,
+              member_id: referrer.id, type: 'in', amount_aed: rewardUsd,
               source: 'Referral — ' + (fullName || email), category: 'referrals',
               status: 'paid', related_id: memberId
             });
             if (refTxErr) console.warn('Onboard: referral wallet credit failed (non-blocking):', refTxErr.message);
-            // Compute the referrer's new USD balance for the email (sum in.paid − out paid/pending)
+            // Referrer's new USD balance for the email (sum in.paid − out paid/pending) — values already USD
             let balanceUsd = 0;
             try {
               const { data: txs } = await supabase.from('transactions').select('type, amount_aed, status').eq('member_id', referrer.id);
-              let aed = 0;
               (txs || []).forEach(function (t) {
-                if (t.type === 'in' && t.status === 'paid') aed += Number(t.amount_aed) || 0;
-                else if (t.type === 'out' && (t.status === 'paid' || t.status === 'pending')) aed -= Number(t.amount_aed) || 0;
+                if (t.type === 'in' && t.status === 'paid') balanceUsd += Number(t.amount_aed) || 0;
+                else if (t.type === 'out' && (t.status === 'paid' || t.status === 'pending')) balanceUsd -= Number(t.amount_aed) || 0;
               });
-              balanceUsd = Math.round(aed / 3.6725 * 100) / 100;
+              balanceUsd = Math.round(balanceUsd * 100) / 100;
             } catch (e) {}
-            const rewardUsd = Math.round(rewardAed / 3.6725 * 100) / 100;
             if (referrer.email) {
               try { await sendReferralEmail(referrer.email, referrer.full_name, fullName, rewardUsd, balanceUsd); }
               catch (e) { console.warn('Onboard: referral email failed (non-blocking):', e.message); }
@@ -861,6 +870,103 @@ async function sendProviderVerifyEmail(email, businessName, contactName, verifyU
     html
   });
 }
+
+// ── v62: MEET & MOVE lifecycle emails (brandEmail wrapper, no emojis) ──────────
+function mtgWhen(iso) {
+  try { return new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Dubai' }); }
+  catch (e) { return iso || ''; }
+}
+function mtgDetailBlock(m) {
+  var loc = [m.venue, m.city].filter(Boolean).join(' · ');
+  var maps = m.maps_url ? ('<div style="margin-top:8px;"><a href="' + m.maps_url + '" style="color:#2ba8e0;font-weight:700;text-decoration:none;font-size:13px;">Open in Maps</a></div>') : '';
+  return '<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e7eef4;border-radius:12px;margin:4px 0 18px;"><tr><td style="padding:16px 18px;">'
+    + '<div style="font-size:17px;font-weight:800;color:#0f2c47;">' + escapeHtml(m.title || m.sport || 'Meet-up') + '</div>'
+    + (m.sport ? ('<div style="font-size:12px;color:#8196a6;font-weight:700;text-transform:uppercase;letter-spacing:.6px;margin-top:3px;">' + escapeHtml(m.sport) + '</div>') : '')
+    + '<div style="font-size:14px;color:#44586a;margin-top:10px;"><strong style="color:#0f2c47;">When:</strong> ' + escapeHtml(mtgWhen(m.meets_at)) + '</div>'
+    + (loc ? ('<div style="font-size:14px;color:#44586a;margin-top:4px;"><strong style="color:#0f2c47;">Where:</strong> ' + escapeHtml(loc) + '</div>') : '')
+    + maps
+    + '</td></tr></table>';
+}
+function mtgCta(label) {
+  return '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html#meetmove" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">' + label + '</a></td></tr></table>';
+}
+async function sendMeetupConfirmEmail(toEmail, name, m, hostName) {
+  var hi = name ? ('Hi ' + escapeHtml(name) + '. ') : '';
+  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">You’re going</div>'
+   + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + 'You’re confirmed for this meet-up' + (hostName ? (' hosted by <strong style="color:#0f2c47;">' + escapeHtml(hostName) + '</strong>') : '') + '. See you there.</p>'
+   + mtgDetailBlock(m) + mtgCta('View meet-up');
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'You’re going: ' + (m.title || m.sport || 'FFP meet-up'), html: brandEmail('Meet & Move', body) });
+}
+async function sendMeetupReminderEmail(toEmail, name, m, hostName) {
+  var hi = name ? ('Hi ' + escapeHtml(name) + '. ') : '';
+  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">Coming up soon</div>'
+   + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + 'A meet-up you joined is happening soon' + (hostName ? (' — hosted by <strong style="color:#0f2c47;">' + escapeHtml(hostName) + '</strong>') : '') + '. Here are the details.</p>'
+   + mtgDetailBlock(m) + mtgCta('View meet-up');
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'Reminder: ' + (m.title || m.sport || 'your FFP meet-up') + ' is coming up', html: brandEmail('Meet & Move', body) });
+}
+async function sendMeetupCancelEmail(toEmail, name, m) {
+  var hi = name ? ('Hi ' + escapeHtml(name) + '. ') : '';
+  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">Meet-up cancelled</div>'
+   + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + 'Unfortunately this meet-up has been cancelled by the host. Sorry for any inconvenience.</p>'
+   + mtgDetailBlock(m)
+   + '<p style="font-size:13px;color:#5b7186;line-height:1.6;margin:0 0 6px;">Plenty more happening on FFP — find another or host your own.</p>'
+   + mtgCta('Find a meet-up');
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'Cancelled: ' + (m.title || m.sport || 'FFP meet-up'), html: brandEmail('Meet & Move', body) });
+}
+
+// Event-driven notify: confirmation on RSVP, cancellation on host-cancel (client calls after the RPC).
+app.post('/api/meetups/notify', async (req, res) => {
+  try {
+    var kind = (req.body && req.body.kind) || '';
+    var meetupId = req.body && req.body.meetup_id;
+    var memberId = req.body && req.body.member_id;
+    if (!meetupId || !kind) return res.status(400).json({ error: 'kind and meetup_id required' });
+    const { data: m } = await supabase.from('meetups').select('*').eq('id', meetupId).maybeSingle();
+    if (!m) return res.status(404).json({ error: 'meetup not found' });
+    let hostName = null;
+    if (m.host_member_id) { const { data: h } = await supabase.from('members').select('full_name').eq('id', m.host_member_id).maybeSingle(); hostName = h && h.full_name; }
+    if (kind === 'confirm') {
+      if (!memberId) return res.status(400).json({ error: 'member_id required' });
+      const { data: mem } = await supabase.from('members').select('email, full_name').eq('id', memberId).maybeSingle();
+      if (mem && mem.email) { try { await sendMeetupConfirmEmail(mem.email, mem.full_name, m, hostName); } catch (e) { console.warn('meetup confirm email:', e.message); } }
+      return res.json({ success: true });
+    }
+    if (kind === 'cancel') {
+      const { data: atts } = await supabase.from('meetup_attendees').select('member_id, member:member_id(email, full_name)').eq('meetup_id', meetupId);
+      let sent = 0;
+      for (const a of (atts || [])) {
+        const em = a.member && a.member.email;
+        if (em) { try { await sendMeetupCancelEmail(em, a.member.full_name, m); sent++; } catch (e) { console.warn('meetup cancel email:', e.message); } }
+      }
+      return res.json({ success: true, emailed: sent });
+    }
+    return res.status(400).json({ error: 'unknown kind' });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// Reminder cron — meet-ups starting within 24h, email each attendee once (reminder_sent_at flag).
+app.get('/api/cron/meetup-reminders', async (req, res) => {
+  var secret = process.env.CRON_SECRET || '';
+  var auth = req.headers['authorization'] || '';
+  var ok = secret && (auth === ('Bearer ' + secret) || req.query.secret === secret);
+  if (!ok) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const nowIso = new Date().toISOString();
+    const soonIso = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const { data: ms } = await supabase.from('meetups').select('*').gte('meets_at', nowIso).lte('meets_at', soonIso).neq('status', 'cancelled');
+    let total = 0;
+    for (const m of (ms || [])) {
+      let hostName = null;
+      if (m.host_member_id) { const { data: h } = await supabase.from('members').select('full_name').eq('id', m.host_member_id).maybeSingle(); hostName = h && h.full_name; }
+      const { data: atts } = await supabase.from('meetup_attendees').select('id, member:member_id(email, full_name)').eq('meetup_id', m.id).is('reminder_sent_at', null);
+      for (const a of (atts || [])) {
+        const em = a.member && a.member.email;
+        if (em) { try { await sendMeetupReminderEmail(em, a.member.full_name, m, hostName); await supabase.from('meetup_attendees').update({ reminder_sent_at: new Date().toISOString() }).eq('id', a.id); total++; } catch (e) { console.warn('meetup reminder:', e.message); } }
+      }
+    }
+    return res.json({ success: true, reminded: total });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
 
 app.post('/api/provider/signup', async (req, res) => {
   try {
