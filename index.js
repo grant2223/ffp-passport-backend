@@ -1,4 +1,12 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v54
+// FFP Passport — Express Server (Vercel, CommonJS) — v55
+// v55 (2026-06-03): Sunday Summary upgrades + signup emails. (a) Rankings now render as REAL CHARTS
+//      (QuickChart PNGs: horizontal "where you rank" bar, active-minutes-vs-peers bar, macros doughnut)
+//      built per member; charts only show when the data exists. (b) Sends to ALL active members —
+//      inactive members get an encouraging nudge instead of being skipped. (c) New-signup alert email to
+//      ADMIN_EMAIL (default grant@findfitpeople.com) + "You have a new referral" email to the referrer,
+//      both wired into /api/onboard/from-stripe. Optional env QUICKCHART_KEY for chart rate limits;
+//      optional ADMIN_EMAIL to change the alert recipient. (Sunday Summary header still uses ffp-logo.png;
+//      swap to ffp-passport-cover.png once that asset is committed.)
 // v54 (2026-06-03): SUNDAY SUMMARY weekly digest email. GET /api/cron/sunday-summary (secured by
 //      CRON_SECRET — Vercel Cron sends Authorization: Bearer; ?secret= for manual tests) loops active
 //      members, calls member_weekly_digest RPC, renders the all-8-areas email (renderSundaySummary,
@@ -348,14 +356,16 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
     // 3b) Referral attribution (non-blocking): if this signup came through someone's
     //     referral link, credit them. ref = the referrer's referral_code (from the
     //     landing page's ffp_ref, passed by profile-complete).
+    let referrerName = null;
     if (ref) {
       try {
         const { data: referrer } = await supabase
           .from('members')
-          .select('id, tier')
+          .select('id, tier, email, full_name')
           .ilike('referral_code', String(ref).trim())
           .maybeSingle();
         if (referrer && referrer.id && referrer.id !== memberId) {
+          referrerName = referrer.full_name || null;
           // Set referred_by only if not already attributed
           await supabase.from('members')
             .update({ referred_by: referrer.id })
@@ -375,6 +385,11 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
               status: 'pending',
               reward_aed: rewardAed
             });
+            // Tell the passport holder they earned a referral (non-blocking)
+            if (referrer.email) {
+              try { await sendReferralEmail(referrer.email, referrer.full_name, fullName); }
+              catch (e) { console.warn('Onboard: referral email failed (non-blocking):', e.message); }
+            }
           }
         }
       } catch (refErr) {
@@ -426,6 +441,12 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
         await sendWelcomeEmail(email, firstName, city);
       } catch (mailErr) {
         console.warn('Onboard: welcome email failed (non-blocking):', mailErr.message);
+      }
+      // 5c) Admin alert — notify the FFP team of every new signup (non-blocking).
+      try {
+        await sendAdminNewSignupEmail({ full_name: fullName, email: email, city: city, referrer_name: referrerName });
+      } catch (mailErr) {
+        console.warn('Onboard: admin signup alert failed (non-blocking):', mailErr.message);
       }
     }
     // 6) Return the full member row for the frontend to cache
@@ -560,6 +581,36 @@ function escapeHtml(s) {
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
   }[c]));
 }
+// ── New-signup + referral emails (light/branded shell, matches FFP-EMAIL-STANDARD) ──
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'grant@findfitpeople.com';
+function brandEmail(kicker, bodyHtml) {
+  return ''
+  +'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:24px;">'
+  +'<table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;width:100%;background:#ffffff;border:1px solid #e4ebf1;border-radius:16px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
+  +'<tr><td style="padding:30px 32px 0;text-align:center;"><img src="https://ffppassport.com/assets/ffp-logo.png" alt="FFP Passport" width="132" style="display:inline-block;border:0;"></td></tr>'
+  +'<tr><td style="padding:14px 32px 0;text-align:center;"><div style="height:3px;width:46px;background:#2ba8e0;border-radius:2px;margin:0 auto;"></div>'+(kicker?'<div style="font-size:10px;color:#8196a6;letter-spacing:2.5px;text-transform:uppercase;margin-top:14px;">'+kicker+'</div>':'')+'</td></tr>'
+  +'<tr><td style="padding:22px 32px 8px;">'+bodyHtml+'</td></tr>'
+  +'<tr><td style="padding:18px 32px 28px;"><div style="border-top:1px solid #eef2f6;padding-top:18px;font-size:11px;color:#8196a6;line-height:1.7;">FFP Passport · UAE 2026 · <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div></td></tr>'
+  +'</table></td></tr></table>';
+}
+async function sendAdminNewSignupEmail(m) {
+  var body = '<div style="font-size:22px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">New member signed up</div>'
+   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 16px;">A new passport holder just joined FFP.</p>'
+   +'<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e7eef4;border-radius:10px;"><tr><td style="padding:14px 16px;font-size:13px;color:#44586a;line-height:2;">'
+   +'<span style="color:#8196a6;">Name</span> &nbsp; <strong style="color:#0f2c47;">'+escapeHtml(m.full_name||'—')+'</strong><br>'
+   +'<span style="color:#8196a6;">Email</span> &nbsp; '+escapeHtml(m.email||'—')+'<br>'
+   +'<span style="color:#8196a6;">City</span> &nbsp; '+escapeHtml(m.city||'—')+'<br>'
+   +'<span style="color:#8196a6;">Referred by</span> &nbsp; '+escapeHtml(m.referrer_name||'Direct signup')
+   +'</td></tr></table>';
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: ADMIN_EMAIL, subject: 'New FFP signup: ' + (m.full_name || m.email || ''), html: brandEmail('New signup', body) });
+}
+async function sendReferralEmail(toEmail, referrerName, newMemberName) {
+  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">You have a new referral</div>'
+   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 18px;">Nice work'+(referrerName?(', '+escapeHtml(referrerName)):'')+'. <strong style="color:#0f2c47;">'+escapeHtml(newMemberName||'Someone')+'</strong> just joined FFP Passport using your referral link.</p>'
+   +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html#referrals" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">View your referrals</a></td></tr></table>';
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'You have a new referral on FFP Passport', html: brandEmail('Referral', body) });
+}
+
 app.get('/', (req, res) => {
   res.json({ status: 'FFP Passport API running' });
 });
@@ -1098,33 +1149,61 @@ function ss_bench(you, b){
    + '<td style="padding:4px 0;"><span style="color:#8196a6;">Age group</span><br><span style="color:#0f2c47;font-weight:700;">avg '+c(b.age)+'</span>'+ss_pct(you,b.age)+'</td>'
    + '</tr></table>';
 }
-function ss_cell(label, big, sub){ return '<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e4ebf1;border-radius:12px;"><tr><td style="padding:14px 16px;"><div style="font-size:11px;color:#8196a6;text-transform:uppercase;letter-spacing:1px;">'+label+'</div><div style="font-size:18px;font-weight:800;color:#0f2c47;margin-top:4px;">'+big+'</div>'+(sub?'<div style="font-size:11px;color:#8196a6;">'+sub+'</div>':'')+'</td></tr></table>'; }
+function ss_date(iso){ try { return new Date(iso+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'}); } catch(e){ return iso; } }
+function ss_cell(label, big, sub){ return '<table role="presentation" width="100%" style="background:#ffffff;border:1px solid #e7eef4;border-radius:10px;"><tr><td style="padding:13px 15px;"><div style="font-size:10px;color:#8196a6;text-transform:uppercase;letter-spacing:1.2px;font-weight:600;">'+label+'</div><div style="font-size:19px;font-weight:800;color:#0f2c47;margin-top:5px;letter-spacing:-0.3px;">'+big+'</div>'+(sub?'<div style="font-size:11px;color:#8196a6;margin-top:2px;">'+sub+'</div>':'')+'</td></tr></table>'; }
 function ss_rankCard(it, grp){
-  var rankLine = (it.total>=3) ? ('#'+it.rank+' of '+it.total+(grp.city?(' in '+grp.city):'')) : 'Your current best';
-  return '<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e4ebf1;border-radius:12px;"><tr><td style="padding:14px 16px;"><div style="font-size:11px;color:#8196a6;text-transform:uppercase;letter-spacing:1px;">'+it.label+'</div><div style="font-size:22px;font-weight:800;color:#0f2c47;margin-top:3px;">'+it.display+'</div><div style="font-size:11px;color:#1f8fd0;font-weight:700;margin-top:3px;">'+rankLine+'</div></td></tr></table>';
+  var pill = (it.total>=3) ? ('#'+it.rank+' of '+it.total+(grp.city?(' in '+grp.city):'')) : 'Your best';
+  return '<table role="presentation" width="100%" style="background:#ffffff;border:1px solid #e7eef4;border-left:3px solid #2ba8e0;border-radius:10px;"><tr><td style="padding:14px 16px;"><div style="font-size:10px;color:#8196a6;text-transform:uppercase;letter-spacing:1.2px;font-weight:600;">'+it.label+'</div><div style="font-size:27px;font-weight:900;color:#0f2c47;margin-top:4px;letter-spacing:-0.5px;">'+it.display+'</div><div style="margin-top:9px;"><span style="background:#eaf5fb;color:#1f8fd0;font-size:10px;font-weight:800;letter-spacing:0.4px;padding:4px 10px;border-radius:100px;">'+pill+'</span></div></td></tr></table>';
 }
+// QuickChart: render a Chart.js config to a PNG URL (works in all email clients). Optional API key for volume.
+function qc(config, w, h){
+  var url = 'https://quickchart.io/chart?bkg=white&devicePixelRatio=2&w='+w+'&h='+h+'&c='+encodeURIComponent(JSON.stringify(config));
+  if (process.env.QUICKCHART_KEY) url += '&key='+process.env.QUICKCHART_KEY;
+  return url;
+}
+function ssH(t){ return '<div style="font-size:12px;color:#0f2c47;text-transform:uppercase;letter-spacing:1.5px;font-weight:800;margin-top:20px;">'+t+'</div><div style="height:2px;width:32px;background:#FFCC00;border-radius:2px;margin:6px 0 8px;"></div>'; }
+function ssImg(src, alt, max){ return '<img src="'+src+'" alt="'+alt+'" style="width:100%;max-width:'+max+'px;height:auto;display:block;margin:4px auto 0;border:0;">'; }
 function renderSundaySummary(name, d){
   var a=d.activity||{}, f=d.food||{}, e=d.earnings||{}, mu=d.meetups||{}, cn=d.connections||{}, q=d.quests||{}, ev=d.events||{}, ch=d.challenges||{}, grp=d.group||{};
   var rankings = d.rankings || [];
-  var rankGrid;
+  // CHARTS replace the rank cards (Grant) — only render charts whose data exists.
+  var rankGrid = '';
   if (rankings.length) {
-    rankGrid = '<div style="font-size:11px;color:#8196a6;text-transform:uppercase;letter-spacing:1.4px;font-weight:600;margin:0 0 12px;">How you rank'+(grp.city?(' in '+grp.city):'')+'</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0">';
-    for (var j=0;j<rankings.length;j+=2){
-      rankGrid += '<tr><td width="50%" style="padding:0 6px 10px 0;vertical-align:top;">'+ss_rankCard(rankings[j],grp)+'</td><td width="50%" style="padding:0 0 10px 6px;vertical-align:top;">'+(rankings[j+1]?ss_rankCard(rankings[j+1],grp):'')+'</td></tr>';
-    }
-    rankGrid += '</table>';
-  } else {
+    var labels = rankings.map(function(r){ return r.label; });
+    var pcts = rankings.map(function(r){ return (r.total>1) ? Math.round((r.total-r.rank)/(r.total-1)*100) : 100; });
+    var cfgA = {type:'bar',data:{labels:labels,datasets:[{data:pcts,backgroundColor:'#2ba8e0',borderRadius:5}]},options:{indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{min:0,max:100,grid:{color:'#eef2f6'},ticks:{font:{size:10},color:'#8196a6',callback:undefined}},y:{grid:{display:false},ticks:{font:{size:11},color:'#44586a'}}}}};
+    rankGrid += ssH('Where you rank'+(grp.city?(' in '+grp.city):''))
+      + '<div style="font-size:11px;color:#8196a6;margin:0 0 6px;">Your standing per metric (100 = top of your city)</div>'
+      + ssImg(qc(cfgA, 440, Math.max(150, 42*labels.length)), 'Your standing per metric', 440);
+  }
+  var am = (d.benchmarks||{}).active_minutes||{};
+  if ((am.you||0) > 0) {
+    var cfgB = {type:'bar',data:{labels:['You','City','Gender','Age '+(grp.age_group||'')],datasets:[{data:[am.you||0, am.city||0, am.gender||0, am.age||0],backgroundColor:['#2ba8e0','#cdd9e3','#cdd9e3','#cdd9e3'],borderRadius:6}]},options:{plugins:{legend:{display:false}},scales:{y:{grid:{color:'#eef2f6'},ticks:{font:{size:10},color:'#8196a6'}},x:{grid:{display:false},ticks:{font:{size:11},color:'#44586a'}}}}};
+    rankGrid += ssH('Active minutes vs people like you') + ssImg(qc(cfgB, 440, 190), 'Active minutes vs peers', 440);
+  }
+  var fp=f.avg_protein||0, fc=f.avg_carbs||0, ff=f.avg_fat||0;
+  if (fp+fc+ff > 0) {
+    var cfgC = {type:'doughnut',data:{labels:['Protein','Carbs','Fat'],datasets:[{data:[fp,fc,ff],backgroundColor:['#2ba8e0','#0f2c47','#FFCC00'],borderWidth:0}]},options:{cutout:'62%',plugins:{legend:{position:'right',labels:{font:{size:12},color:'#44586a',boxWidth:12}}}}};
+    rankGrid += ssH('Your macros this week') + ssImg(qc(cfgC, 440, 180), 'Macros split', 440);
+  }
+  if (!rankGrid) {
     rankGrid = '<table role="presentation" width="100%" style="background:#f1f7fc;border:1px solid #d9e7f2;border-radius:12px;"><tr><td style="padding:18px 20px;font-size:13px;color:#44586a;line-height:1.6;">Add your stats — VO2 max, bench press, 5km time, bio age — to see how you rank against people in your city. <a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:#2ba8e0;font-weight:700;text-decoration:none;">Update your records</a></td></tr></table>';
   }
+  var didStuff = rankings.length || (a.sessions||0) || (f.days_logged||0) || ((mu.hosted||0)+(mu.joined||0)) || (cn.new_this_week||0) || (q.completed_this_week||0) || (ev.checkins||0) || (ch.entries||0);
+  var greet = didStuff ? ('Well done, '+name) : ('Hey, '+name);
+  var sub = didStuff
+    ? ('Here are your passport stats for '+ss_date(d.week_start)+' – '+ss_date(d.week_end)+'.')
+    : 'A fresh week starts today — and now is the perfect time to get moving. Your passport is ready when you are.';
   return ''
   +'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:24px;">'
   +'<table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;width:100%;background:#ffffff;border:1px solid #e4ebf1;border-radius:16px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
-  +'<tr><td style="background:#0f2c47;padding:22px 32px;text-align:center;"><img src="https://ffppassport.com/assets/ffp-logo.png" alt="FFP Passport" width="120" style="display:inline-block;border:0;"><div style="font-size:10px;color:#8fb8d6;letter-spacing:2px;text-transform:uppercase;margin-top:8px;">Sunday Summary · '+d.week_start+' to '+d.week_end+'</div></td></tr>'
-  +'<tr><td style="padding:28px 32px 4px;">'
-  +'<div style="font-size:22px;font-weight:800;color:#0f2c47;margin-bottom:6px;">Well done, '+name+'!</div>'
-  +'<p style="font-size:14px;color:#44586a;line-height:1.65;margin:0 0 22px;">Here are your passport stats for the week of '+d.week_start+' – '+d.week_end+'.</p>'
+  +'<tr><td style="padding:30px 32px 0;text-align:center;"><img src="https://ffppassport.com/assets/ffp-logo.png" alt="FFP Passport" width="132" style="display:inline-block;border:0;"></td></tr>'
+  +'<tr><td style="padding:14px 32px 0;text-align:center;"><div style="height:3px;width:46px;background:#2ba8e0;border-radius:2px;margin:0 auto;"></div><div style="font-size:10px;color:#8196a6;letter-spacing:2.5px;text-transform:uppercase;margin-top:14px;">Sunday Summary &nbsp;·&nbsp; '+ss_date(d.week_start)+' – '+ss_date(d.week_end)+'</div></td></tr>'
+  +'<tr><td style="padding:22px 32px 4px;">'
+  +'<div style="font-size:25px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.4px;">'+greet+'</div>'
+  +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 24px;">'+sub+'</p>'
   + rankGrid
-  +'<div style="font-size:11px;color:#8196a6;text-transform:uppercase;letter-spacing:1.4px;font-weight:600;margin:20px 0 12px;">Your week at a glance</div>'
+  +'<div style="font-size:12px;color:#0f2c47;text-transform:uppercase;letter-spacing:1.5px;font-weight:800;margin:22px 0 0;">Your week at a glance</div><div style="height:2px;width:32px;background:#FFCC00;border-radius:2px;margin:6px 0 14px;"></div>'
   +'<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e4ebf1;border-radius:12px;margin-bottom:12px;"><tr><td style="padding:14px 18px;">'
   +'<table role="presentation" width="100%"><tr><td style="font-size:13px;color:#0f2c47;font-weight:700;">Food logged</td><td align="right" style="font-size:13px;color:#44586a;">'+(f.days_logged||0)+' days · '+(f.avg_kcal||0)+' kcal/day · '+(f.avg_protein||0)+'g protein</td></tr></table>'
   +'</td></tr></table>'
@@ -1173,11 +1252,7 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
       var d = dg.data;
       var rk = await supabase.rpc('member_stat_rankings', { p_me: m.id });
       d.rankings = (rk && !rk.error && rk.data) ? rk.data : [];
-      var any = (d.activity && d.activity.sessions) || (d.food && d.food.days_logged)
-        || (d.meetups && ((d.meetups.joined || 0) + (d.meetups.hosted || 0)))
-        || (d.connections && d.connections.new_this_week) || (d.quests && d.quests.completed_this_week)
-        || (d.events && d.events.checkins) || (d.challenges && d.challenges.entries);
-      if (!any && !only) { skipped++; continue; }   // skip zero-activity members on the real run (always send on ?only= test)
+      // Everyone gets the Sunday Summary — inactive members get a nudge (handled in the render), not a skip.
       var first = String(m.given_names || m.full_name || 'there').split(' ')[0];
       try {
         await mailer.sendMail({
