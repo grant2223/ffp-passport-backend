@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v65
+// FFP Passport — Express Server (Vercel, CommonJS) — v66
+// v66 (2026-06-04): GET /api/notifications now sends Cache-Control: no-store. v65 was deployed and
+//      serving the notification correctly, but the response was being CACHED (stale unread/badge — it
+//      returned unread:0 even after notifs_seen_at was reset). The feed must never be cached.
 // v65 (2026-06-04): NOTIFICATIONS backend (step 1 of the notifications build). The member bell UI +
 //      `notifications` table already existed but the endpoints it calls were missing. Added:
 //      GET /api/notifications?member_id (targeted rows + broadcast rows where member_id IS NULL; unread =
@@ -986,6 +989,7 @@ app.get('/api/cron/meetup-reminders', async (req, res) => {
 // read flag). Service-role queries bypass RLS; member targeting is by member_id.
 app.get('/api/notifications', async (req, res) => {
   try {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');   // v66: feed must never be cached (stale unread/badge)
     const memberId = req.query.member_id;
     if (!memberId) return res.json({ success: true, notifications: [], unread: 0 });
     const { data: mem } = await supabase.from('members').select('notifs_seen_at').eq('id', memberId).maybeSingle();
