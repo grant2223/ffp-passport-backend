@@ -1099,21 +1099,34 @@ function ss_bench(you, b){
    + '</tr></table>';
 }
 function ss_cell(label, big, sub){ return '<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e4ebf1;border-radius:12px;"><tr><td style="padding:14px 16px;"><div style="font-size:11px;color:#8196a6;text-transform:uppercase;letter-spacing:1px;">'+label+'</div><div style="font-size:18px;font-weight:800;color:#0f2c47;margin-top:4px;">'+big+'</div>'+(sub?'<div style="font-size:11px;color:#8196a6;">'+sub+'</div>':'')+'</td></tr></table>'; }
+function ss_rankCard(it, grp){
+  var rankLine = (it.total>=3) ? ('#'+it.rank+' of '+it.total+(grp.city?(' in '+grp.city):'')) : 'Your current best';
+  return '<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e4ebf1;border-radius:12px;"><tr><td style="padding:14px 16px;"><div style="font-size:11px;color:#8196a6;text-transform:uppercase;letter-spacing:1px;">'+it.label+'</div><div style="font-size:22px;font-weight:800;color:#0f2c47;margin-top:3px;">'+it.display+'</div><div style="font-size:11px;color:#1f8fd0;font-weight:700;margin-top:3px;">'+rankLine+'</div></td></tr></table>';
+}
 function renderSundaySummary(name, d){
-  var a=d.activity||{}, f=d.food||{}, e=d.earnings||{}, mu=d.meetups||{}, cn=d.connections||{}, q=d.quests||{}, ev=d.events||{}, ch=d.challenges||{}, ab=(d.benchmarks||{}).activities||{};
+  var a=d.activity||{}, f=d.food||{}, e=d.earnings||{}, mu=d.meetups||{}, cn=d.connections||{}, q=d.quests||{}, ev=d.events||{}, ch=d.challenges||{}, grp=d.group||{};
+  var rankings = d.rankings || [];
+  var rankGrid;
+  if (rankings.length) {
+    rankGrid = '<div style="font-size:11px;color:#8196a6;text-transform:uppercase;letter-spacing:1.4px;font-weight:600;margin:0 0 12px;">How you rank'+(grp.city?(' in '+grp.city):'')+'</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0">';
+    for (var j=0;j<rankings.length;j+=2){
+      rankGrid += '<tr><td width="50%" style="padding:0 6px 10px 0;vertical-align:top;">'+ss_rankCard(rankings[j],grp)+'</td><td width="50%" style="padding:0 0 10px 6px;vertical-align:top;">'+(rankings[j+1]?ss_rankCard(rankings[j+1],grp):'')+'</td></tr>';
+    }
+    rankGrid += '</table>';
+  } else {
+    rankGrid = '<table role="presentation" width="100%" style="background:#f1f7fc;border:1px solid #d9e7f2;border-radius:12px;"><tr><td style="padding:18px 20px;font-size:13px;color:#44586a;line-height:1.6;">Add your stats — VO2 max, bench press, 5km time, bio age — to see how you rank against people in your city. <a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:#2ba8e0;font-weight:700;text-decoration:none;">Update your records</a></td></tr></table>';
+  }
   return ''
   +'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:24px;">'
   +'<table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;width:100%;background:#ffffff;border:1px solid #e4ebf1;border-radius:16px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
   +'<tr><td style="background:#0f2c47;padding:22px 32px;text-align:center;"><img src="https://ffppassport.com/assets/ffp-logo.png" alt="FFP Passport" width="120" style="display:inline-block;border:0;"><div style="font-size:10px;color:#8fb8d6;letter-spacing:2px;text-transform:uppercase;margin-top:8px;">Sunday Summary · '+d.week_start+' to '+d.week_end+'</div></td></tr>'
-  +'<tr><td style="padding:26px 32px 0;">'
-  +'<div style="font-size:20px;font-weight:800;color:#0f2c47;margin-bottom:6px;">Your week, '+name+' — start the next one stronger</div>'
-  +'<p style="font-size:14px;color:#44586a;line-height:1.7;margin:0 0 20px;">Everything you did this week, and how it stacks up against people like you.</p>'
-  +'<table role="presentation" width="100%" style="background:#f1f7fc;border:1px solid #d9e7f2;border-radius:12px;margin-bottom:12px;"><tr><td style="padding:16px 18px;">'
-  +'<table role="presentation" width="100%"><tr><td style="font-size:12px;color:#8196a6;text-transform:uppercase;letter-spacing:1px;">Activity</td><td align="right" style="font-size:13px;color:#44586a;">'+(a.sessions||0)+' sessions · '+ss_fmtMin(a.minutes)+(a.top_activity?(' · top: '+a.top_activity):'')+'</td></tr></table>'
-  + ss_bench(ab.you||0, {city:ab.city,gender:ab.gender,age:ab.age})
-  +'</td></tr></table>'
-  +'<table role="presentation" width="100%" style="background:#fff8e1;border:1px solid #f3e2a8;border-radius:12px;margin-bottom:12px;"><tr><td style="padding:14px 18px;">'
-  +'<table role="presentation" width="100%"><tr><td style="font-size:12px;color:#8196a6;text-transform:uppercase;letter-spacing:1px;">Food logged</td><td align="right" style="font-size:13px;color:#44586a;">'+(f.days_logged||0)+' days · avg '+(f.avg_kcal||0)+' kcal · '+(f.avg_protein||0)+'g protein</td></tr></table>'
+  +'<tr><td style="padding:28px 32px 4px;">'
+  +'<div style="font-size:22px;font-weight:800;color:#0f2c47;margin-bottom:6px;">Well done, '+name+'!</div>'
+  +'<p style="font-size:14px;color:#44586a;line-height:1.65;margin:0 0 22px;">Here are your passport stats for the week of '+d.week_start+' – '+d.week_end+'.</p>'
+  + rankGrid
+  +'<div style="font-size:11px;color:#8196a6;text-transform:uppercase;letter-spacing:1.4px;font-weight:600;margin:20px 0 12px;">Your week at a glance</div>'
+  +'<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e4ebf1;border-radius:12px;margin-bottom:12px;"><tr><td style="padding:14px 18px;">'
+  +'<table role="presentation" width="100%"><tr><td style="font-size:13px;color:#0f2c47;font-weight:700;">Food logged</td><td align="right" style="font-size:13px;color:#44586a;">'+(f.days_logged||0)+' days · '+(f.avg_kcal||0)+' kcal/day · '+(f.avg_protein||0)+'g protein</td></tr></table>'
   +'</td></tr></table>'
   +'<table role="presentation" width="100%"><tr>'
   +'<td width="50%" style="padding:0 6px 12px 0;">'+ss_cell('Earnings','$'+(e.week_aed||0)+' this week','Balance $'+(e.balance_aed||0))+'</td>'
@@ -1136,11 +1149,18 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
   var auth = req.headers['authorization'] || '';
   var ok = secret && (auth === ('Bearer ' + secret) || req.query.secret === secret);
   if (!ok) return res.status(401).json({ error: 'unauthorized' });
+  // ?only=<member_id OR email> → send to just that one member (SAFE TEST: doesn't email everyone)
+  var only = (req.query.only || '').trim();
+  // Cron runs daily but only SENDS on Sunday (UTC). A manual ?only= test bypasses the day gate.
+  if (!only && new Date().getUTCDay() !== 0) return res.json({ success: true, skipped: 'not Sunday', sent: 0 });
   try {
-    var { data: members, error } = await supabase
-      .from('members')
-      .select('id, full_name, given_names, email, preferences')
-      .eq('role', 'member').eq('status', 'active').eq('profile_complete', true);
+    var qy = supabase.from('members').select('id, full_name, given_names, email, preferences');
+    if (only) {
+      qy = (only.indexOf('@') > -1) ? qy.eq('email', only) : qy.eq('id', only);
+    } else {
+      qy = qy.eq('role', 'member').eq('status', 'active').eq('profile_complete', true);
+    }
+    var { data: members, error } = await qy;
     if (error) throw error;
     var sent = 0, skipped = 0;
     for (var i = 0; i < (members || []).length; i++) {
@@ -1151,11 +1171,13 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
       var dg = await supabase.rpc('member_weekly_digest', { p_me: m.id });
       if (dg.error || !dg.data) { skipped++; continue; }
       var d = dg.data;
+      var rk = await supabase.rpc('member_stat_rankings', { p_me: m.id });
+      d.rankings = (rk && !rk.error && rk.data) ? rk.data : [];
       var any = (d.activity && d.activity.sessions) || (d.food && d.food.days_logged)
         || (d.meetups && ((d.meetups.joined || 0) + (d.meetups.hosted || 0)))
         || (d.connections && d.connections.new_this_week) || (d.quests && d.quests.completed_this_week)
         || (d.events && d.events.checkins) || (d.challenges && d.challenges.entries);
-      if (!any) { skipped++; continue; }   // don't email members who did nothing this week
+      if (!any && !only) { skipped++; continue; }   // skip zero-activity members on the real run (always send on ?only= test)
       var first = String(m.given_names || m.full_name || 'there').split(' ')[0];
       try {
         await mailer.sendMail({
