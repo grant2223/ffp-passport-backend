@@ -1,4 +1,10 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v64
+// FFP Passport — Express Server (Vercel, CommonJS) — v65
+// v65 (2026-06-04): NOTIFICATIONS backend (step 1 of the notifications build). The member bell UI +
+//      `notifications` table already existed but the endpoints it calls were missing. Added:
+//      GET /api/notifications?member_id (targeted rows + broadcast rows where member_id IS NULL; unread =
+//      newer than members.notifs_seen_at — new column), POST /api/notifications/seen (sets notifs_seen_at),
+//      POST /api/admin/broadcast (admin-gated; audience 'all' → member_id NULL row, or member_ids[] → one
+//      targeted row each). Next: #2 handle_connection trigger, #3 host_meetup→followers, #4 broadcast UI.
 // v64 (2026-06-04): Referral reward now = tier% × the ACTUAL amount the new member paid (Stripe
 //      session.amount_total/100, USD) — AFTER any discount code — NOT the $99 list price. (Barry/Mike
 //      paid $19.80 each via a discount → 20% = $3.96 each, not $19.80. Existing two were corrected in DB.)
@@ -970,6 +976,60 @@ app.get('/api/cron/meetup-reminders', async (req, res) => {
       }
     }
     return res.json({ success: true, reminded: total });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── NOTIFICATIONS — member bell feed + seen + admin broadcast (step 1 of the notifications build) ──
+// The notifications TABLE + bell UI already existed; these are the missing backend endpoints the bell
+// calls. Table cols: audience, member_id (NULL = broadcast to all), title, body, icon, link, created_at.
+// "unread" is tracked per member via members.notifs_seen_at (broadcasts are shared rows, so no per-row
+// read flag). Service-role queries bypass RLS; member targeting is by member_id.
+app.get('/api/notifications', async (req, res) => {
+  try {
+    const memberId = req.query.member_id;
+    if (!memberId) return res.json({ success: true, notifications: [], unread: 0 });
+    const { data: mem } = await supabase.from('members').select('notifs_seen_at').eq('id', memberId).maybeSingle();
+    const seenAt = (mem && mem.notifs_seen_at) ? new Date(mem.notifs_seen_at).getTime() : 0;
+    const { data: rows, error } = await supabase
+      .from('notifications')
+      .select('id, icon, title, body, link, created_at, member_id')
+      .or('member_id.eq.' + memberId + ',member_id.is.null')
+      .order('created_at', { ascending: false })
+      .limit(40);
+    if (error) { console.error('[notifications] list:', error.message); return res.json({ success: true, notifications: [], unread: 0 }); }
+    const list = rows || [];
+    const unread = list.filter(function (n) { return new Date(n.created_at).getTime() > seenAt; }).length;
+    return res.json({ success: true, notifications: list, unread: unread });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/notifications/seen', async (req, res) => {
+  try {
+    const memberId = req.body && req.body.member_id;
+    if (!memberId) return res.status(400).json({ error: 'member_id required' });
+    await supabase.from('members').update({ notifs_seen_at: new Date().toISOString() }).eq('id', memberId);
+    return res.json({ success: true });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// Admin broadcast — audience 'all' → one row with member_id NULL (everyone). member_ids[] → one row each.
+app.post('/api/admin/broadcast', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.admin_id) return res.status(400).json({ error: 'admin_id required' });
+    const { data: adm } = await supabase.from('admin_users').select('id').eq('id', b.admin_id).maybeSingle();
+    if (!adm) return res.status(403).json({ error: 'not admin' });
+    if (!b.title) return res.status(400).json({ error: 'title required' });
+    const icon = b.icon || 'campaign';
+    let rows;
+    if (Array.isArray(b.member_ids) && b.member_ids.length) {
+      rows = b.member_ids.map(function (mid) { return { audience: 'member', member_id: mid, title: b.title, body: b.body || null, icon: icon, link: b.link || null }; });
+    } else {
+      rows = [{ audience: 'all', member_id: null, title: b.title, body: b.body || null, icon: icon, link: b.link || null }];
+    }
+    const { error } = await supabase.from('notifications').insert(rows);
+    if (error) { console.error('[broadcast]', error.message); return res.status(500).json({ error: error.message }); }
+    return res.json({ success: true, sent: rows.length });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
