@@ -1,4 +1,11 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v55
+// FFP Passport — Express Server (Vercel, CommonJS) — v56
+// v56 (2026-06-03): Sunday Summary REBUILT around FFP's 3 pillars (Grant). (1) YOUR FITNESS vs the
+//      community — a radar chart scored from the member's OWN values vs healthy ranges (meaningful even
+//      solo, varies by their stats) + their PRs with community rank. (2) YOUR WORLD — cities + partner
+//      venues visited + people connected (member_places RPC + connections). (3) PASSPORT STATUS — real
+//      tier progress vs the Earnings 8-section / 4-of-8 / 30-day rule (member_tier_progress(p_me) RPC),
+//      progress bar + the closest sections to your next tier. Replaced the generic 8-box grid. New RPCs:
+//      member_tier_progress(p_me), member_places(p_me); member_stat_rankings now returns key+value.
 // v55 (2026-06-03): Sunday Summary upgrades + signup emails. (a) Rankings now render as REAL CHARTS
 //      (QuickChart PNGs: horizontal "where you rank" bar, active-minutes-vs-peers bar, macros doughnut)
 //      built per member; charts only show when the data exists. (b) Sends to ALL active members —
@@ -1157,43 +1164,73 @@ function ss_rankCard(it, grp){
 }
 // QuickChart: render a Chart.js config to a PNG URL (works in all email clients). Optional API key for volume.
 function qc(config, w, h){
-  var url = 'https://quickchart.io/chart?bkg=white&devicePixelRatio=2&w='+w+'&h='+h+'&c='+encodeURIComponent(JSON.stringify(config));
+  var url = 'https://quickchart.io/chart?bkg=white&version=4&devicePixelRatio=2&w='+w+'&h='+h+'&c='+encodeURIComponent(JSON.stringify(config));
   if (process.env.QUICKCHART_KEY) url += '&key='+process.env.QUICKCHART_KEY;
   return url;
 }
 function ssH(t){ return '<div style="font-size:12px;color:#0f2c47;text-transform:uppercase;letter-spacing:1.5px;font-weight:800;margin-top:20px;">'+t+'</div><div style="height:2px;width:32px;background:#FFCC00;border-radius:2px;margin:6px 0 8px;"></div>'; }
 function ssImg(src, alt, max){ return '<img src="'+src+'" alt="'+alt+'" style="width:100%;max-width:'+max+'px;height:auto;display:block;margin:4px auto 0;border:0;">'; }
+// per-metric score 0–100 from the member's own value vs a healthy range [lo,hi,dir] (dir -1 = lower is better)
+var SS_SCALE = { vo2:[30,60,1], bench:[40,140,1], run5k:[1080,2400,-1], bioage:[25,55,-1], bodyfat:[8,35,-1], active:[0,420,1] };
+function ss_score(it){ var s=SS_SCALE[it.key]; if(!s||it.value==null) return null; var pc=(it.value-s[0])/(s[1]-s[0])*100; if(s[2]<0) pc=100-pc; return Math.max(0,Math.min(100,Math.round(pc))); }
+function ss_bar(pct, color){ pct=Math.max(0,Math.min(100,Math.round(pct))); return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px;"><tr><td width="'+pct+'%" style="background:'+color+';height:8px;font-size:0;line-height:8px;border-radius:5px 0 0 5px;">&nbsp;</td><td width="'+(100-pct)+'%" style="background:#eef2f6;height:8px;font-size:0;line-height:8px;border-radius:0 5px 5px 0;">&nbsp;</td></tr></table>'; }
+var SS_TARGETS = { members_referred:{s:2,a:8,u:'referral'}, connections_made:{s:2,a:8,u:'connection'}, meetups_hosted:{s:1,a:4,u:'meet-up hosted'}, provider_checkins:{s:2,a:8,u:'provider visit'}, quests_completed:{s:1,a:2,u:'quest'}, events_attended:{s:1,a:4,u:'event'}, activities_logged:{s:8,a:24,u:'activity'}, challenges_completed:{s:2,a:4,u:'challenge'} };
 function renderSundaySummary(name, d){
-  var a=d.activity||{}, f=d.food||{}, e=d.earnings||{}, mu=d.meetups||{}, cn=d.connections||{}, q=d.quests||{}, ev=d.events||{}, ch=d.challenges||{}, grp=d.group||{};
+  var mu=d.meetups||{}, cn=d.connections||{}, grp=d.group||{};
   var rankings = d.rankings || [];
-  // CHARTS replace the rank cards (Grant) — only render charts whose data exists.
-  var rankGrid = '';
-  if (rankings.length) {
-    var labels = rankings.map(function(r){ return r.label; });
-    var pcts = rankings.map(function(r){ return (r.total>1) ? Math.round((r.total-r.rank)/(r.total-1)*100) : 100; });
-    var cfgA = {type:'bar',data:{labels:labels,datasets:[{data:pcts,backgroundColor:'#2ba8e0',borderRadius:5}]},options:{indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{min:0,max:100,grid:{color:'#eef2f6'},ticks:{font:{size:10},color:'#8196a6',callback:undefined}},y:{grid:{display:false},ticks:{font:{size:11},color:'#44586a'}}}}};
-    rankGrid += ssH('Where you rank'+(grp.city?(' in '+grp.city):''))
-      + '<div style="font-size:11px;color:#8196a6;margin:0 0 6px;">Your standing per metric (100 = top of your city)</div>'
-      + ssImg(qc(cfgA, 440, Math.max(150, 42*labels.length)), 'Your standing per metric', 440);
+  var places = d.places || {};
+  var tp = d.tier_progress || {};
+  var curTier = String(d.tier||'member').toLowerCase();
+
+  // ---- PILLAR 1 — your fitness vs the community ----
+  var fitHtml;
+  if (rankings.length >= 3) {
+    var rl = rankings.map(function(r){ return r.label; });
+    var rs = rankings.map(function(r){ var sc=ss_score(r); return sc==null?0:sc; });
+    var cfgR = {type:'radar',data:{labels:rl,datasets:[{label:'You',data:rs,borderColor:'#2ba8e0',backgroundColor:'rgba(43,168,224,0.22)',borderWidth:2,pointRadius:0}]},options:{plugins:{legend:{display:false}},scales:{r:{min:0,max:100,ticks:{display:false,stepSize:25},grid:{color:'#e7eef4'},angleLines:{color:'#e7eef4'},pointLabels:{font:{size:11},color:'#44586a'}}}}};
+    fitHtml = ssH('Your fitness'+(grp.city?(' — vs '+grp.city):''))
+      + ssImg(qc(cfgR, 380, 300), 'Your fitness profile', 360)
+      + '<div style="font-size:13px;color:#44586a;line-height:2;margin-top:6px;">'
+      + rankings.map(function(r){ var rk=(r.total>=3)?('#'+r.rank+' of '+r.total):'your best'; return '<span style="color:#8196a6;">'+r.label+'</span> &nbsp;<strong style="color:#0f2c47;">'+r.display+'</strong> &nbsp;<span style="color:#1f8fd0;font-weight:700;">'+rk+'</span>'; }).join('<br>')
+      + '</div>';
+  } else {
+    fitHtml = ssH('Your fitness') + '<table role="presentation" width="100%" style="background:#f1f7fc;border:1px solid #d9e7f2;border-radius:12px;"><tr><td style="padding:18px 20px;font-size:13px;color:#44586a;line-height:1.6;">Add your numbers — VO2, bench, 5km, body fat — to unlock your fitness profile and see how you stack up against the FFP community. <a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:#2ba8e0;font-weight:700;text-decoration:none;">Update your records</a></td></tr></table>';
   }
-  var am = (d.benchmarks||{}).active_minutes||{};
-  if ((am.you||0) > 0) {
-    var cfgB = {type:'bar',data:{labels:['You','City','Gender','Age '+(grp.age_group||'')],datasets:[{data:[am.you||0, am.city||0, am.gender||0, am.age||0],backgroundColor:['#2ba8e0','#cdd9e3','#cdd9e3','#cdd9e3'],borderRadius:6}]},options:{plugins:{legend:{display:false}},scales:{y:{grid:{color:'#eef2f6'},ticks:{font:{size:10},color:'#8196a6'}},x:{grid:{display:false},ticks:{font:{size:11},color:'#44586a'}}}}};
-    rankGrid += ssH('Active minutes vs people like you') + ssImg(qc(cfgB, 440, 190), 'Active minutes vs peers', 440);
+
+  // ---- PILLAR 2 — your world: places & people ----
+  var worldHtml = ssH('Your world — places &amp; people')
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+    + '<td width="33%" style="padding:0 5px 0 0;vertical-align:top;">'+ss_cell('Cities', (places.cities_total||0), ((places.cities_new||0)>0?('+'+places.cities_new+' this week'):'active in'))+'</td>'
+    + '<td width="33%" style="padding:0 5px;vertical-align:top;">'+ss_cell('Venues', (places.venues_total||0), ((places.venues_new||0)>0?('+'+places.venues_new+' this week'):'checked in'))+'</td>'
+    + '<td width="34%" style="padding:0 0 0 5px;vertical-align:top;">'+ss_cell('People', (cn.total||0), ((cn.new_this_week||0)>0?('+'+cn.new_this_week+' this week'):'connections'))+'</td>'
+    + '</tr></table>';
+
+  // ---- PILLAR 3 — your passport status ----
+  var statusHtml;
+  var nextTier = curTier==='member' ? 'Supporter' : (curTier==='supporter' ? 'Ambassador' : null);
+  if (nextTier) {
+    var goal = nextTier==='Ambassador' ? 'a' : 's';
+    var met=0, closest=[];
+    Object.keys(SS_TARGETS).forEach(function(k){ var tgt=SS_TARGETS[k][goal], have=tp[k]||0; if(have>=tgt) met++; else { var rem=tgt-have; closest.push({rem:rem, txt:rem+' more '+SS_TARGETS[k].u+(rem>1?'s':'')}); } });
+    closest.sort(function(a,b){ return a.rem-b.rem; });
+    var pct = Math.min(100, Math.round(met/4*100));
+    statusHtml = ssH('Your Passport Status')
+      + '<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e7eef4;border-radius:12px;"><tr><td style="padding:16px 18px;">'
+      + '<table role="presentation" width="100%"><tr><td style="font-size:14px;color:#0f2c47;font-weight:800;text-transform:capitalize;">'+curTier+'</td><td align="right" style="font-size:12px;color:#8196a6;font-weight:600;">'+met+' of 4 sections toward '+nextTier+'</td></tr></table>'
+      + ss_bar(pct, '#FFCC00')
+      + (closest.length ? '<div style="font-size:12px;color:#44586a;margin-top:12px;line-height:1.5;">Closest to '+nextTier+': <strong style="color:#0f2c47;">'+closest.slice(0,2).map(function(c){return c.txt;}).join(' · ')+'</strong></div>' : '<div style="font-size:12px;color:#22c55e;font-weight:700;margin-top:12px;">Every section is at '+nextTier+' level — you’re there.</div>')
+      + '</td></tr></table>';
+  } else {
+    statusHtml = ssH('Your Passport Status')
+      + '<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e7eef4;border-radius:12px;"><tr><td style="padding:16px 18px;font-size:13px;color:#0f2c47;line-height:1.6;"><strong>Ambassador</strong> — the top tier. Keep your sections active over the next 30 days to hold your status and your 20% referral rewards.</td></tr></table>';
   }
-  var fp=f.avg_protein||0, fc=f.avg_carbs||0, ff=f.avg_fat||0;
-  if (fp+fc+ff > 0) {
-    var cfgC = {type:'doughnut',data:{labels:['Protein','Carbs','Fat'],datasets:[{data:[fp,fc,ff],backgroundColor:['#2ba8e0','#0f2c47','#FFCC00'],borderWidth:0}]},options:{cutout:'62%',plugins:{legend:{position:'right',labels:{font:{size:12},color:'#44586a',boxWidth:12}}}}};
-    rankGrid += ssH('Your macros this week') + ssImg(qc(cfgC, 440, 180), 'Macros split', 440);
-  }
-  if (!rankGrid) {
-    rankGrid = '<table role="presentation" width="100%" style="background:#f1f7fc;border:1px solid #d9e7f2;border-radius:12px;"><tr><td style="padding:18px 20px;font-size:13px;color:#44586a;line-height:1.6;">Add your stats — VO2 max, bench press, 5km time, bio age — to see how you rank against people in your city. <a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:#2ba8e0;font-weight:700;text-decoration:none;">Update your records</a></td></tr></table>';
-  }
-  var didStuff = rankings.length || (a.sessions||0) || (f.days_logged||0) || ((mu.hosted||0)+(mu.joined||0)) || (cn.new_this_week||0) || (q.completed_this_week||0) || (ev.checkins||0) || (ch.entries||0);
+
+  var didStuff = rankings.length || (places.venues_new||0) || (places.cities_new||0) || (cn.new_this_week||0) || ((mu.hosted||0)+(mu.joined||0)) || (tp.activities_logged||0);
   var greet = didStuff ? ('Well done, '+name) : ('Hey, '+name);
   var sub = didStuff
-    ? ('Here are your passport stats for '+ss_date(d.week_start)+' – '+ss_date(d.week_end)+'.')
-    : 'A fresh week starts today — and now is the perfect time to get moving. Your passport is ready when you are.';
+    ? ('Here’s your passport this week — your fitness, your world, and your status.')
+    : 'A fresh week starts today — the perfect time to get moving, connect with people, and climb your passport. Here’s where you stand.';
+
   return ''
   +'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:24px;">'
   +'<table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;width:100%;background:#ffffff;border:1px solid #e4ebf1;border-radius:16px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
@@ -1201,23 +1238,11 @@ function renderSundaySummary(name, d){
   +'<tr><td style="padding:14px 32px 0;text-align:center;"><div style="height:3px;width:46px;background:#2ba8e0;border-radius:2px;margin:0 auto;"></div><div style="font-size:10px;color:#8196a6;letter-spacing:2.5px;text-transform:uppercase;margin-top:14px;">Sunday Summary &nbsp;·&nbsp; '+ss_date(d.week_start)+' – '+ss_date(d.week_end)+'</div></td></tr>'
   +'<tr><td style="padding:22px 32px 4px;">'
   +'<div style="font-size:25px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.4px;">'+greet+'</div>'
-  +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 24px;">'+sub+'</p>'
-  + rankGrid
-  +'<div style="font-size:12px;color:#0f2c47;text-transform:uppercase;letter-spacing:1.5px;font-weight:800;margin:22px 0 0;">Your week at a glance</div><div style="height:2px;width:32px;background:#FFCC00;border-radius:2px;margin:6px 0 14px;"></div>'
-  +'<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e4ebf1;border-radius:12px;margin-bottom:12px;"><tr><td style="padding:14px 18px;">'
-  +'<table role="presentation" width="100%"><tr><td style="font-size:13px;color:#0f2c47;font-weight:700;">Food logged</td><td align="right" style="font-size:13px;color:#44586a;">'+(f.days_logged||0)+' days · '+(f.avg_kcal||0)+' kcal/day · '+(f.avg_protein||0)+'g protein</td></tr></table>'
-  +'</td></tr></table>'
-  +'<table role="presentation" width="100%"><tr>'
-  +'<td width="50%" style="padding:0 6px 12px 0;">'+ss_cell('Earnings','$'+(e.week_aed||0)+' this week','Balance $'+(e.balance_aed||0))+'</td>'
-  +'<td width="50%" style="padding:0 0 12px 6px;">'+ss_cell('Meet-ups',(mu.hosted||0)+' hosted',(mu.joined||0)+' joined')+'</td>'
-  +'</tr><tr>'
-  +'<td width="50%" style="padding:0 6px 12px 0;">'+ss_cell('Connections',(cn.new_this_week||0)+' new',(cn.total||0)+' total')+'</td>'
-  +'<td width="50%" style="padding:0 0 12px 6px;">'+ss_cell('Quests',(q.completed_this_week||0)+' completed',(q.stamps_earned||0)+' stamps')+'</td>'
-  +'</tr><tr>'
-  +'<td width="50%" style="padding:0 6px 0 0;">'+ss_cell('Events',(ev.checkins||0)+' check-ins','')+'</td>'
-  +'<td width="50%" style="padding:0 0 0 6px;">'+ss_cell('Challenges',(ch.entries||0)+' entries',(ch.verified||0)+' verified')+'</td>'
-  +'</tr></table>'
-  +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:22px 0 4px;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">Open your passport</a></td></tr></table>'
+  +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 8px;">'+sub+'</p>'
+  + fitHtml
+  + worldHtml
+  + statusHtml
+  +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0 4px;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">Open your passport</a></td></tr></table>'
   +'</td></tr>'
   +'<tr><td style="padding:24px 32px 28px;"><div style="border-top:1px solid #eef2f6;padding-top:18px;font-size:11px;color:#8196a6;line-height:1.7;">FFP Passport · UAE 2026 · <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div></td></tr>'
   +'</table></td></tr></table>';
@@ -1233,7 +1258,7 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
   // Cron runs daily but only SENDS on Sunday (UTC). A manual ?only= test bypasses the day gate.
   if (!only && new Date().getUTCDay() !== 0) return res.json({ success: true, skipped: 'not Sunday', sent: 0 });
   try {
-    var qy = supabase.from('members').select('id, full_name, given_names, email, preferences');
+    var qy = supabase.from('members').select('id, full_name, given_names, email, preferences, tier');
     if (only) {
       qy = (only.indexOf('@') > -1) ? qy.eq('email', only) : qy.eq('id', only);
     } else {
@@ -1252,6 +1277,11 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
       var d = dg.data;
       var rk = await supabase.rpc('member_stat_rankings', { p_me: m.id });
       d.rankings = (rk && !rk.error && rk.data) ? rk.data : [];
+      var pl = await supabase.rpc('member_places', { p_me: m.id });
+      d.places = (pl && !pl.error && pl.data) ? pl.data : {};
+      var tprog = await supabase.rpc('member_tier_progress', { p_me: m.id });
+      d.tier_progress = (tprog && !tprog.error && tprog.data) ? tprog.data : {};
+      d.tier = m.tier || 'member';
       // Everyone gets the Sunday Summary — inactive members get a nudge (handled in the render), not a skip.
       var first = String(m.given_names || m.full_name || 'there').split(' ')[0];
       try {
