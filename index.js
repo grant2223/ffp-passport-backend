@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v63
+// FFP Passport — Express Server (Vercel, CommonJS) — v64
+// v64 (2026-06-04): Referral reward now = tier% × the ACTUAL amount the new member paid (Stripe
+//      session.amount_total/100, USD) — AFTER any discount code — NOT the $99 list price. (Barry/Mike
+//      paid $19.80 each via a discount → 20% = $3.96 each, not $19.80. Existing two were corrected in DB.)
 // v63 (2026-06-03): USD-ONLY wallet (Grant: "platform is only USD, stop the AED"). Referral reward is
 //      now computed in USD (pct × $99, no ×3.6725) and stored directly in reward_aed/amount_aed (legacy
 //      column names now hold USD). Email balance summed directly (no /3.6725). admin_referral_leaderboard
@@ -415,9 +418,11 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
             .update({ referred_by: referrer.id })
             .eq('id', memberId)
             .is('referred_by', null);
-          // Tier-based reward = pct of the $99 membership, in USD (platform is USD-only; no AED).
+          // Tier-based reward = pct of the ACTUAL amount the new member paid (USD), AFTER any discount
+          // code — NOT the $99 list price. session.amount_total is in cents of the session currency.
           const pct = ({ member: 5, supporter: 10, ambassador: 20 })[String(referrer.tier || 'member').toLowerCase()] || 5;
-          const rewardUsd = Math.round((pct / 100) * 99 * 100) / 100;
+          const paidUsd = Math.round((Number(session.amount_total) || 0)) / 100;   // actual paid, USD
+          const rewardUsd = Math.round((pct / 100) * paidUsd * 100) / 100;
           // One referral row per referred member
           const { data: dup } = await supabase.from('referrals')
             .select('id').eq('referred_member_id', memberId).maybeSingle();
