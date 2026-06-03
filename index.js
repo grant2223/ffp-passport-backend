@@ -1,4 +1,12 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v58
+// FFP Passport — Express Server (Vercel, CommonJS) — v59
+// v59 (2026-06-03): REFERRAL → WALLET CREDITING. A confirmed paid signup through a referral link
+//      now (a) marks the referrals row 'paid' (= earned/credited) and (b) inserts an 'in' transaction
+//      (category 'referrals', status 'paid') so the referrer's Available Balance reflects the reward
+//      immediately. Balance = sum(in.paid) − sum(out paid/pending); payouts already add 'out' rows on
+//      execution, so the balance now adjusts BOTH as earnings come in and as payouts go out. (Grant)
+//      (Existing pending referrals were back-filled into transactions via SQL.) NOTE: amounts stored
+//      in AED; dashboard converts to USD for display (platform = USD, payouts = local currency).
+// v58 (2026-06-03): SUNDAY SUMMARY redesigned to the approved DARK FFP brand (matches the homepage +
 // v58 (2026-06-03): SUNDAY SUMMARY redesigned to the approved DARK FFP brand (matches the homepage +
 //      FFP-SUNDAY-SUMMARY mockup): bold yellow status banner up top, "My fitness stats" rank rows,
 //      "Your passport" metric rows (places/cities/connections/meet-ups/activities with weekly ▲ deltas
@@ -402,13 +410,28 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           const { data: dup } = await supabase.from('referrals')
             .select('id').eq('referred_member_id', memberId).maybeSingle();
           if (!dup) {
+            // v59: this onboard fires on a CONFIRMED paid signup, so the referral reward is
+            // EARNED now. Mark the referral 'paid' (= credited/earned) AND mirror it into the
+            // wallet ledger as an 'in' transaction so the member's Available Balance reflects it.
+            // (Balance = sum(in.paid) − sum(out paid/pending); payouts add 'out' rows on execution.)
             await supabase.from('referrals').insert({
               referrer_id: referrer.id,
               referred_email: email,
               referred_member_id: memberId,
-              status: 'pending',
-              reward_aed: rewardAed
+              status: 'paid',
+              reward_aed: rewardAed,
+              paid_at: new Date().toISOString()
             });
+            const { error: refTxErr } = await supabase.from('transactions').insert({
+              member_id: referrer.id,
+              type: 'in',
+              amount_aed: rewardAed,
+              source: 'Referral — ' + (fullName || email),
+              category: 'referrals',
+              status: 'paid',
+              related_id: memberId
+            });
+            if (refTxErr) console.warn('Onboard: referral wallet credit failed (non-blocking):', refTxErr.message);
             // Tell the passport holder they earned a referral (non-blocking)
             if (referrer.email) {
               try { await sendReferralEmail(referrer.email, referrer.full_name, fullName); }
