@@ -1,4 +1,13 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v56
+// FFP Passport — Express Server (Vercel, CommonJS) — v57
+// v57 (2026-06-03): AUTH FIX — admin dashboard (and all RLS-gated reads/writes) showed NO DATA
+//      because the client was never given a Supabase JWT: /api/auth/signin returned {token, member}
+//      but NO `jwt`, so window.supabase ran as anon for everyone and auth.uid() was always null
+//      (which is why feedback etc. needed SECURITY DEFINER workarounds). Now signin AND
+//      /api/onboard/from-stripe return jwt = mintSupabaseJwt(member): a real HS256 token signed with
+//      the project's JWT secret (sub=member.id, role/aud='authenticated', 30-day exp). ffp-api-integration
+//      already stores+applies res.jwt, so auth.uid() now resolves to member.id in RLS — admin panels load.
+//      REQUIRES new Vercel env var SUPABASE_JWT_SECRET (Supabase → Settings → API → JWT Secret).
+//      Until that env is set, mintSupabaseJwt() returns null and behaviour is unchanged (safe fallback).
 // v56 (2026-06-03): Sunday Summary REBUILT around FFP's 3 pillars (Grant). (1) YOUR FITNESS vs the
 //      community — a radar chart scored from the member's OWN values vs healthy ranges (meaningful even
 //      solo, varies by their stats) + their PRs with community rank. (2) YOUR WORLD — cities + partner
@@ -464,6 +473,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       .single();
     return res.json({
       success: true,
+      jwt: mintSupabaseJwt(finalMember),   // v57: real Supabase JWT → auth.uid() resolves in RLS
       member: finalMember,
       is_new: isNew
     });
@@ -680,6 +690,7 @@ app.post('/api/auth/signin', async (req, res) => {
     res.json({
       success: true,
       token,
+      jwt: mintSupabaseJwt(member),   // v57: real Supabase JWT → auth.uid() resolves in RLS (admin dashboard etc.)
       member: memberSafe,
       redirect: member.profile_complete
         ? (member.role === 'admin' ? '/ffp-admin.html'
@@ -727,6 +738,33 @@ const VERIFY_SECRET = process.env.SUPABASE_SERVICE_KEY || 'ffp-fallback-secret';
 function b64url(s) {
   return Buffer.from(s).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
+
+// ── v57: mint a REAL Supabase-valid HS256 JWT so auth.uid() resolves in RLS ──
+// The project's anon/service keys are HS256 tokens signed with the project's
+// JWT secret. A token we sign with that SAME secret (sub=member.id,
+// role/aud='authenticated') is accepted by PostgREST, so auth.uid() = member.id
+// inside every RLS policy. This is what makes the admin dashboard (and any other
+// RLS-gated read/write) work without per-feature SECURITY DEFINER workarounds.
+// REQUIRES env: SUPABASE_JWT_SECRET = Supabase → Settings → API → JWT Secret.
+const SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET || '';
+function mintSupabaseJwt(member) {
+  if (!SUPABASE_JWT_SECRET) return null;            // safe no-op until the env var is set
+  const now = Math.floor(Date.now() / 1000);
+  const header  = { alg: 'HS256', typ: 'JWT' };
+  const payload = {
+    sub: String(member.id),
+    role: 'authenticated',
+    aud: 'authenticated',
+    email: member.email || null,
+    iat: now,
+    exp: now + 60 * 60 * 24 * 30   // 30-day token (applied as a static header client-side)
+  };
+  const enc = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const data = enc(header) + '.' + enc(payload);
+  const sig  = crypto.createHmac('sha256', SUPABASE_JWT_SECRET).update(data).digest('base64url');
+  return data + '.' + sig;
+}
+
 function signProviderToken(memberId) {
   const payload = `${memberId}.${Date.now() + 7 * 24 * 60 * 60 * 1000}`; // 7-day expiry
   const sig = crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex');
