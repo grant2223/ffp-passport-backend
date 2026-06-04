@@ -544,7 +544,8 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       .single();
     return res.json({
       success: true,
-      jwt: mintSupabaseJwt(finalMember),   // v57: real Supabase JWT → auth.uid() resolves in RLS
+      jwt: mintSupabaseJwt(finalMember),       // v57: short (7d) Supabase JWT → auth.uid() resolves in RLS
+      refresh: mintRefreshToken(finalMember),  // v71: long-lived refresh token → /api/auth/refresh
       member: finalMember,
       is_new: isNew
     });
@@ -771,13 +772,39 @@ app.post('/api/auth/signin', async (req, res) => {
     res.json({
       success: true,
       token,
-      jwt: mintSupabaseJwt(member),   // v57: real Supabase JWT → auth.uid() resolves in RLS (admin dashboard etc.)
+      jwt: mintSupabaseJwt(member),       // v57: short (7d) Supabase JWT → auth.uid() resolves in RLS
+      refresh: mintRefreshToken(member),  // v71: long-lived (365d) refresh token → /api/auth/refresh
       member: memberSafe,
       redirect: member.profile_complete
         ? (member.role === 'admin' ? '/ffp-admin.html'
            : member.role === 'provider' ? '/ffp-provider.html'
            : '/ffp-member-dashboard.html')
         : '/ffp-profile-complete.html'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+// v71: SILENT SESSION REFRESH — the client exchanges its long-lived ffp_refresh token for a fresh
+// short access JWT (+ a rotated refresh token). Called on app boot and on a 401. No code/email needed.
+// Stateless: the refresh token is HMAC-signed, so we just verify it, re-check the member is active, and
+// re-mint. (Future: a server-side revocation list if we ever need "log out everywhere".)
+app.post('/api/auth/refresh', async (req, res) => {
+  try {
+    const { refresh } = req.body || {};
+    if (!refresh) return res.status(400).json({ error: 'Missing refresh token' });
+    const v = verifyRefreshToken(refresh);
+    if (!v) return res.status(401).json({ error: 'Invalid or expired session' });
+    const { data: member, error } = await supabase
+      .from('members').select('*').eq('id', v.memberId).single();
+    if (error || !member) return res.status(401).json({ error: 'Account not found' });
+    if (member.status !== 'active') return res.status(403).json({ error: 'Account suspended' });
+    const { access_code: _ac, ...memberSafe } = member;
+    res.json({
+      success: true,
+      jwt: mintSupabaseJwt(member),       // fresh 7-day access JWT
+      refresh: mintRefreshToken(member),  // rotate the refresh token
+      member: memberSafe
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -838,12 +865,39 @@ function mintSupabaseJwt(member) {
     aud: 'authenticated',
     email: member.email || null,
     iat: now,
-    exp: now + 60 * 60 * 24 * 30   // 30-day token (applied as a static header client-side)
+    exp: now + 60 * 60 * 24 * 7    // v71: 7-day ACCESS token (short-lived). Renewed silently via
+                                   // /api/auth/refresh using the long-lived ffp_refresh token below.
   };
   const enc = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
   const data = enc(header) + '.' + enc(payload);
   const sig  = crypto.createHmac('sha256', SUPABASE_JWT_SECRET).update(data).digest('base64url');
   return data + '.' + sig;
+}
+
+// ── v71: REFRESH TOKEN — long-lived, self-validating (HMAC, stateless; same pattern as
+// signProviderToken). Exchanged at /api/auth/refresh for a fresh short access JWT. Format:
+// b64url("<member.id>.<expMs>") + "." + hmacHex. Signed with VERIFY_SECRET (server-only).
+const REFRESH_TTL_MS = 365 * 24 * 60 * 60 * 1000;   // 365 days
+function mintRefreshToken(member) {
+  const payload = `${member.id}.${Date.now() + REFRESH_TTL_MS}`;
+  const sig = crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex');
+  return b64url(payload) + '.' + sig;
+}
+function verifyRefreshToken(token) {
+  try {
+    const parts = String(token).split('.');
+    if (parts.length !== 2) return null;
+    const payload = Buffer.from(parts[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const expect = crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex');
+    // constant-time compare
+    const a = Buffer.from(parts[1]); const b = Buffer.from(expect);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const bits = payload.split('.');
+    const memberId = bits[0];
+    const expMs = Number(bits[1]);
+    if (!memberId || !expMs || Date.now() > expMs) return null;   // tampered or expired
+    return { memberId };
+  } catch (e) { return null; }
 }
 
 function signProviderToken(memberId) {
