@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v67
+// FFP Passport — Express Server (Vercel, CommonJS) — v68
+// v68 (2026-06-04): GET /api/members/:id/activity-logs now also returns duration_sec (the 0-59
+//      second remainder) so the passport journey can show activity durations with seconds precision
+//      (Log Activity now captures H/M/S; log_activity RPC stores duration_sec). duration_min unchanged.
 // v67 (2026-06-04): ROUTE FIX — the member bell calls GET /api/notifications/<member_id> (path param),
 //      but v65 defined it as /api/notifications?member_id= (query). The path-style call never matched →
 //      bell got nothing → "notification not showing". Route is now /api/notifications/:member_id (still
@@ -1184,7 +1187,7 @@ app.get('/api/members/:id/activity-logs', async (req, res) => {
     const { id } = req.params;
     const { data: logs, error } = await supabase
       .from('activity_logs')
-      .select('id, activity, category, venue, provider_id, duration_min, intensity, calories, notes, logged_at, city, country, verified, checkin_lat, checkin_lng')
+      .select('id, activity, category, venue, provider_id, duration_min, duration_sec, intensity, calories, notes, logged_at, city, country, verified, checkin_lat, checkin_lng')
       .eq('member_id', id)
       .order('logged_at', { ascending: false })
       .limit(500);
