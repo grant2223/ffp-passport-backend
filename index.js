@@ -1,4 +1,6 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v69
+// FFP Passport — Express Server (Vercel, CommonJS) — v70
+// v70 (2026-06-04): /api/quests + /api/quests/:id now also return joined_count (how many members
+//      are on each quest) for the member-created quest social hook (P2b).
 // v69 (2026-06-04): MEMBER QUEST DISCOVERY — added GET /api/quests (live quests + this member's
 //      progress) and GET /api/quests/:id (quest + its venues with provider names + progress). The
 //      member Quests panel already calls these; they were never built, so members saw no quests.
@@ -1224,9 +1226,14 @@ app.get('/api/quests', async (req, res) => {
         .eq('member_id', memberId);
       (prog || []).forEach(p => { progressByQuest[p.quest_id] = { completed_count: p.completed_count, status: p.status }; });
     }
+    // join counts (how many members are on each quest) — the social hook
+    let joinByQuest = {};
+    const { data: jc } = await supabase.from('quest_progress').select('quest_id');
+    (jc || []).forEach(r => { joinByQuest[r.quest_id] = (joinByQuest[r.quest_id] || 0) + 1; });
     const out = (quests || []).map(q => Object.assign({}, q, {
       sponsors: null,
-      progress: progressByQuest[q.id] || null
+      progress: progressByQuest[q.id] || null,
+      joined_count: joinByQuest[q.id] || 0
     }));
     res.json({ success: true, quests: out });
   } catch (e) {
@@ -1261,7 +1268,11 @@ app.get('/api/quests/:id', async (req, res) => {
         .maybeSingle();
       progress = p || null;
     }
-    res.json({ success: true, quest, venues: venues || [], progress });
+    const { count: joined_count } = await supabase
+      .from('quest_progress')
+      .select('*', { count: 'exact', head: true })
+      .eq('quest_id', id);
+    res.json({ success: true, quest, venues: venues || [], progress, joined_count: joined_count || 0 });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
