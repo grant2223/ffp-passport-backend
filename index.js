@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v68
+// FFP Passport — Express Server (Vercel, CommonJS) — v69
+// v69 (2026-06-04): MEMBER QUEST DISCOVERY — added GET /api/quests (live quests + this member's
+//      progress) and GET /api/quests/:id (quest + its venues with provider names + progress). The
+//      member Quests panel already calls these; they were never built, so members saw no quests.
+//      Now surfaces provider venue quests (scope='venue') too. Service-role reads.
 // v68 (2026-06-04): GET /api/members/:id/activity-logs now also returns duration_sec (the 0-59
 //      second remainder) so the passport journey can show activity durations with seconds precision
 //      (Log Activity now captures H/M/S; log_activity RPC stores duration_sec). duration_min unchanged.
@@ -1195,6 +1199,71 @@ app.get('/api/members/:id/activity-logs', async (req, res) => {
     res.json({ success: true, logs: logs || [] });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ── MEMBER QUEST DISCOVERY (v69) ──
+// The member Quests panel calls these. Service-role reads so member sessions work.
+// Returns LIVE quests (incl. provider venue quests, scope='venue') + this member's progress.
+app.get('/api/quests', async (req, res) => {
+  try {
+    const memberId = req.query.member_id || null;
+    const { data: quests, error } = await supabase
+      .from('quests')
+      .select('id, title, description, category, scope, target_count, hero_image_url, reward_type, prize_total, prize_remaining, prize_text, active_to, provider_id, owner_type')
+      .eq('status', 'live')
+      .order('created_at', { ascending: false })
+      .limit(200);
+    if (error) return res.status(500).json({ error: error.message });
+
+    let progressByQuest = {};
+    if (memberId) {
+      const { data: prog } = await supabase
+        .from('quest_progress')
+        .select('quest_id, completed_count, status')
+        .eq('member_id', memberId);
+      (prog || []).forEach(p => { progressByQuest[p.quest_id] = { completed_count: p.completed_count, status: p.status }; });
+    }
+    const out = (quests || []).map(q => Object.assign({}, q, {
+      sponsors: null,
+      progress: progressByQuest[q.id] || null
+    }));
+    res.json({ success: true, quests: out });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Quest detail — the quest + its eligible venues (with provider name) + this member's progress.
+app.get('/api/quests/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const memberId = req.query.member_id || null;
+    const { data: quest, error } = await supabase
+      .from('quests')
+      .select('id, title, description, category, scope, target_count, hero_image_url, reward_type, prize_total, prize_remaining, prize_text, active_to, provider_id, owner_type')
+      .eq('id', id)
+      .single();
+    if (error || !quest) return res.status(404).json({ error: 'Quest not found' });
+
+    const { data: venues } = await supabase
+      .from('quest_venues')
+      .select('provider_id, providers(business_name, city)')
+      .eq('quest_id', id);
+
+    let progress = null;
+    if (memberId) {
+      const { data: p } = await supabase
+        .from('quest_progress')
+        .select('completed_count, status')
+        .eq('quest_id', id)
+        .eq('member_id', memberId)
+        .maybeSingle();
+      progress = p || null;
+    }
+    res.json({ success: true, quest, venues: venues || [], progress });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 app.put('/api/members/:id', async (req, res) => {
