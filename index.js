@@ -991,8 +991,17 @@ async function sendMeetupCancelEmail(toEmail, name, m) {
    + mtgCta('Find a meet-up');
   await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'Cancelled: ' + (m.title || m.sport || 'FFP meet-up'), html: brandEmail('Meet & Move', body) });
 }
+// v72: emailed to the HOST when a member REQUESTS to join (they must approve before the member is confirmed).
+async function sendMeetupRequestEmail(toEmail, hostName, requesterName, m) {
+  var hi = hostName ? ('Hi ' + escapeHtml(hostName) + '. ') : '';
+  var who = requesterName ? escapeHtml(requesterName) : 'Someone';
+  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">New request to join</div>'
+   + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + '<strong style="color:#0f2c47;">' + who + '</strong> has requested to join your meet-up. Open the app to approve them — they won’t be confirmed until you do.</p>'
+   + mtgDetailBlock(m) + mtgCta('Review request');
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: who + ' wants to join your meet-up', html: brandEmail('Meet & Move', body) });
+}
 
-// Event-driven notify: confirmation on RSVP, cancellation on host-cancel (client calls after the RPC).
+// Event-driven notify: request→host (v72), confirmation on APPROVE, cancellation on host-cancel (client calls after the RPC).
 app.post('/api/meetups/notify', async (req, res) => {
   try {
     var kind = (req.body && req.body.kind) || '';
@@ -1003,6 +1012,15 @@ app.post('/api/meetups/notify', async (req, res) => {
     if (!m) return res.status(404).json({ error: 'meetup not found' });
     let hostName = null;
     if (m.host_member_id) { const { data: h } = await supabase.from('members').select('full_name').eq('id', m.host_member_id).maybeSingle(); hostName = h && h.full_name; }
+    if (kind === 'request') {
+      // v72: a member requested to join → email the HOST so they can approve.
+      if (!memberId) return res.status(400).json({ error: 'member_id required' });
+      if (!m.host_member_id) return res.json({ success: true });
+      const { data: host } = await supabase.from('members').select('email, full_name').eq('id', m.host_member_id).maybeSingle();
+      const { data: reqr } = await supabase.from('members').select('full_name').eq('id', memberId).maybeSingle();
+      if (host && host.email) { try { await sendMeetupRequestEmail(host.email, host.full_name, reqr && reqr.full_name, m); } catch (e) { console.warn('meetup request email:', e.message); } }
+      return res.json({ success: true });
+    }
     if (kind === 'confirm') {
       if (!memberId) return res.status(400).json({ error: 'member_id required' });
       const { data: mem } = await supabase.from('members').select('email, full_name').eq('id', memberId).maybeSingle();
@@ -1017,6 +1035,59 @@ app.post('/api/meetups/notify', async (req, res) => {
         if (em) { try { await sendMeetupCancelEmail(em, a.member.full_name, m); sent++; } catch (e) { console.warn('meetup cancel email:', e.message); } }
       }
       return res.json({ success: true, emailed: sent });
+    }
+    return res.status(400).json({ error: 'unknown kind' });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── v73: EVENT RSVP emails. ev = events row (+ pname = provider business name). Reuses the meet-move
+// email layout (mtgDetailBlock builds the When/Where card). Event QR check-in records attendance later.
+function evtAsBlock(ev) {
+  return { title: ev.title, sport: ev.activity || ev.category, meets_at: ev.starts_at,
+           venue: ev.venue, city: ev.city, maps_url: ev.maps_url || null };
+}
+function evtCta(label) {
+  return '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html#panel-events" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">' + label + '</a></td></tr></table>';
+}
+async function sendEventRsvpMemberEmail(toEmail, name, ev) {
+  var hi = name ? ('Hi ' + escapeHtml(name) + '. ') : '';
+  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">You’re confirmed to attend</div>'
+   + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + 'You’re confirmed for this event' + (ev.pname ? (' at <strong style="color:#0f2c47;">' + escapeHtml(ev.pname) + '</strong>') : '') + '. On the day, check in with your FFP Passport at the venue to mark your attendance.</p>'
+   + mtgDetailBlock(evtAsBlock(ev)) + evtCta('View event');
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'You’re confirmed: ' + (ev.title || 'FFP event'), html: brandEmail('Events', body) });
+}
+async function sendEventRsvpProviderEmail(toEmail, providerName, attendeeName, ev) {
+  var hi = providerName ? ('Hi ' + escapeHtml(providerName) + '. ') : '';
+  var who = attendeeName ? escapeHtml(attendeeName) : 'Someone';
+  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">New RSVP to your event</div>'
+   + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + '<strong style="color:#0f2c47;">' + who + '</strong> has RSVP’d to your event. Their FFP Passport is on your guest list — they’ll check in with it when they arrive.</p>'
+   + mtgDetailBlock(evtAsBlock(ev)) + evtCta('View event');
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: who + ' RSVP’d to your event', html: brandEmail('Events', body) });
+}
+// Event-driven notify: member confirmation + provider alert on RSVP (loader calls after rsvp_event RPC).
+app.post('/api/events/notify', async (req, res) => {
+  try {
+    var kind = (req.body && req.body.kind) || '';
+    var eventId = req.body && req.body.event_id;
+    var memberId = req.body && req.body.member_id;
+    if (!eventId || !kind) return res.status(400).json({ error: 'kind and event_id required' });
+    const { data: ev } = await supabase.from('events').select('*').eq('id', eventId).maybeSingle();
+    if (!ev) return res.status(404).json({ error: 'event not found' });
+    if (kind === 'rsvp') {
+      if (!memberId) return res.status(400).json({ error: 'member_id required' });
+      let provName = null, provEmail = null;
+      if (ev.provider_id) {
+        const { data: pr } = await supabase.from('providers').select('business_name, contact_email, owner_user_id').eq('id', ev.provider_id).maybeSingle();
+        if (pr) {
+          provName = pr.business_name; provEmail = pr.contact_email;
+          if (!provEmail && pr.owner_user_id) { const { data: ow } = await supabase.from('members').select('email').eq('id', pr.owner_user_id).maybeSingle(); provEmail = ow && ow.email; }
+        }
+      }
+      ev.pname = provName;
+      const { data: mem } = await supabase.from('members').select('email, full_name').eq('id', memberId).maybeSingle();
+      if (mem && mem.email) { try { await sendEventRsvpMemberEmail(mem.email, mem.full_name, ev); } catch (e) { console.warn('event rsvp member email:', e.message); } }
+      if (provEmail) { try { await sendEventRsvpProviderEmail(provEmail, provName, mem && mem.full_name, ev); } catch (e) { console.warn('event rsvp provider email:', e.message); } }
+      return res.json({ success: true });
     }
     return res.status(400).json({ error: 'unknown kind' });
   } catch (e) { return res.status(500).json({ error: e.message }); }
