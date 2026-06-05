@@ -1093,6 +1093,29 @@ app.post('/api/events/notify', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
+// v74: SHARED member-email endpoint. Find Fit People (and any FFP surface) calls this to email a member
+// via the branded Resend shell — pairs with a notifications-table insert for the in-app Passport bell, so a
+// booking confirmation reaches both. Body: { to_member_id, subject, heading, body }. `body` is HTML the
+// caller provides. (Mirrors the open /api/events/notify pattern; CORS is already '*'.)
+app.post('/api/notify/member', async (req, res) => {
+  try {
+    var b = req.body || {};
+    var toMemberId = b.to_member_id;
+    var subject = (b.subject || '').toString().trim();
+    var heading = (b.heading || '').toString().trim();
+    var bodyHtml = (b.body || '').toString();
+    if (!toMemberId || !subject || !bodyHtml.trim()) {
+      return res.status(400).json({ error: 'to_member_id, subject and body required' });
+    }
+    const { data: mem } = await supabase.from('members').select('email, full_name').eq('id', toMemberId).maybeSingle();
+    if (!mem || !mem.email) return res.status(404).json({ error: 'member or email not found' });
+    var firstName = String((mem.full_name || '').split(' ')[0] || 'there').replace(/[<>]/g, '');
+    var html = brandEmail(heading || subject, '<p style="margin:0 0 14px;">Hi ' + firstName + ',</p>' + bodyHtml);
+    await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: mem.email, subject: subject, html: html });
+    return res.json({ success: true });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
 // Reminder cron — meet-ups starting within 24h, email each attendee once (reminder_sent_at flag).
 app.get('/api/cron/meetup-reminders', async (req, res) => {
   var secret = process.env.CRON_SECRET || '';
