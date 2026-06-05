@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v70
+// FFP Passport — Express Server (Vercel, CommonJS) — v74
+// v74 (2026-06-05): SHARED member-notify endpoint POST /api/notify/member { to_member_id, subject, heading,
+//      body } → looks up the member email + sends via Resend (branded shell). Find Fit People calls this for
+//      booking-confirmation emails; pairs with a notifications-table insert for the Passport bell. (Header was
+//      stale at v70 — v71 auth refresh, v72 meetup approval emails, v73 event RSVP emails were already in the
+//      file; marker now reconciled to v74.)
 // v70 (2026-06-04): /api/quests + /api/quests/:id now also return joined_count (how many members
 //      are on each quest) for the member-created quest social hook (P2b).
 // v69 (2026-06-04): MEMBER QUEST DISCOVERY — added GET /api/quests (live quests + this member's
