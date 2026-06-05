@@ -1,4 +1,11 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v74
+// FFP Passport — Express Server (Vercel, CommonJS) — v75
+// v75 (2026-06-05): EMAIL CASE-INSENSITIVITY (login lockout fix). Sign-in matched email case-SENSITIVELY
+//      (.eq('email', email)) while stored emails are lowercase, so a capitalized email (e.g. autocapitalized
+//      first letter) made /api/auth/reset return exists:false → the v8 login screen's new gate showed "account
+//      does not exist" and blocked sign-in. Now every member-touch point normalizes email to .trim().toLowerCase()
+//      before lookup/insert: /api/auth/signin, /api/auth/reset, /api/auth/signup, the Stripe webhook, and
+//      /api/onboard/from-stripe. (Verified all 9 existing emails were already lowercase, so this matches every
+//      account and breaks none.) Pairs with login.html v9 (lowercases email client-side too).
 // v74 (2026-06-05): SHARED member-notify endpoint POST /api/notify/member { to_member_id, subject, heading,
 //      body } → looks up the member email + sends via Resend (branded shell). Find Fit People calls this for
 //      booking-confirmation emails; pairs with a notifications-table insert for the Passport bell. (Header was
@@ -212,7 +219,7 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
   if (event.type === 'checkout.session.completed') {
     try {
       const session = event.data.object;
-      const email = (session.customer_details && session.customer_details.email) || session.customer_email;
+      const email = String((session.customer_details && session.customer_details.email) || session.customer_email || '').trim().toLowerCase(); // v75: normalize email case
       const name  = (session.customer_details && session.customer_details.name) || '';
       if (!email) {
         console.error('Stripe webhook: no email in session', session.id);
@@ -334,7 +341,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       console.error('Onboard: Stripe session retrieve failed:', stripeErr.message);
       return res.status(400).json({ error: 'Invalid Stripe session: ' + stripeErr.message });
     }
-    const email = (session.customer_details && session.customer_details.email) || session.customer_email;
+    const email = String((session.customer_details && session.customer_details.email) || session.customer_email || '').trim().toLowerCase(); // v75: normalize email case
     const stripeName = (session.customer_details && session.customer_details.name) || '';
     const customerId = session.customer || null;
     if (!email) {
@@ -726,7 +733,8 @@ app.post('/api/auth/signup', async (req, res) => {
     });
   }
   try {
-    const { email, full_name, role = 'member' } = req.body;
+    const { full_name, role = 'member' } = req.body;
+    const email = String(req.body.email || '').trim().toLowerCase(); // v75: normalize email case (login/lookup is case-insensitive)
     if (!email) return res.status(400).json({ error: 'Email required' });
     const { data: existing } = await supabase
       .from('members')
@@ -754,7 +762,8 @@ app.post('/api/auth/signup', async (req, res) => {
 });
 app.post('/api/auth/signin', async (req, res) => {
   try {
-    const { email, code } = req.body;
+    const code = req.body.code;
+    const email = String(req.body.email || '').trim().toLowerCase(); // v75: case-insensitive sign-in — stored emails are lowercase
     if (!email || !code) return res.status(400).json({ error: 'Email and code required' });
     const hash = crypto.createHash('sha256').update(String(code)).digest('hex');
     const { data: member, error } = await supabase
@@ -817,7 +826,7 @@ app.post('/api/auth/refresh', async (req, res) => {
 });
 app.post('/api/auth/reset', async (req, res) => {
   try {
-    const { email } = req.body;
+    const email = String(req.body.email || '').trim().toLowerCase(); // v75: case-insensitive lookup — fixes "account does not exist" on capitalized email
     if (!email) return res.status(400).json({ error: 'Email required' });
     const { data: member } = await supabase
       .from('members')
