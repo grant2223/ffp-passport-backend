@@ -1747,8 +1747,12 @@ function renderSundaySummary(name, d){
   var fitHtml;
   if (rankings.length >= 1) {
     var fr = rankings.map(function(r, i){
+      var last = i===rankings.length-1;
+      if (r.missing) {   // not logged yet → prompt them to add it (drives usage)
+        return ssRankRow(r.label, '&#8212;', '<a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:'+C.accent+';text-decoration:none;font-weight:800;">+ Add your number &#8250;</a>', last);
+      }
       var rk = (r.total>=3) ? ('#'+r.rank+' of '+r.total+(grp.city?(' in '+grp.city):'')) : 'Your personal best';
-      return ssRankRow(r.label, r.display, rk, i===rankings.length-1);
+      return ssRankRow(r.label, r.display, rk, last);
     }).join('');
     fitHtml = '<tr><td style="padding:28px 30px 0;">'+ssEye('My fitness stats')+'<div style="font-size:12px;color:'+C.dim+';margin:11px 0 0;font-weight:700;">how you rank'+(grp.city?(' in '+grp.city):' in the community')+'</div>'+ssRule()+'</td></tr>'
       +'<tr><td style="padding:0 30px;">'+fr+'</td></tr>';
