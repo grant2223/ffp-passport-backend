@@ -1815,8 +1815,9 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
   if (!ok) return res.status(401).json({ error: 'unauthorized' });
   // ?only=<member_id OR email> → send to just that one member (SAFE TEST: doesn't email everyone)
   var only = (req.query.only || '').trim();
-  // Cron runs daily but only SENDS on Sunday (UTC). A manual ?only= test bypasses the day gate.
-  if (!only && new Date().getUTCDay() !== 0) return res.json({ success: true, skipped: 'not Sunday', sent: 0 });
+  var force = req.query.force === '1' || req.query.force === 'true';   // manual "send to everyone now", any day
+  // Cron runs daily but only SENDS on Sunday (UTC). ?only=<member> (one) or ?force=1 (all) bypass the day gate.
+  if (!only && !force && new Date().getUTCDay() !== 0) return res.json({ success: true, skipped: 'not Sunday', sent: 0 });
   try {
     var qy = supabase.from('members').select('id, full_name, given_names, email, preferences, tier');
     if (only) {
