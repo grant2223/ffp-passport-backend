@@ -1855,7 +1855,7 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
         await mailer.sendMail({
           from: '"FFP Passport" <noreply@ffppassport.com>',
           to: m.email,
-          subject: 'Your FFP Sunday Summary',
+          subject: 'Your FFP Sunday Summary — week to ' + new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
           html: renderSundaySummary(first, d)
         });
         sent++;
