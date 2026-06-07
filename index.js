@@ -1827,9 +1827,9 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
     if (only) {
       qy = (only.indexOf('@') > -1) ? qy.eq('email', only) : qy.eq('id', only);
     } else {
-      // Send to everyone who USES the passport app (members + admins/super_admins), not providers.
-      // (Was role='member' only — which silently skipped admin/super_admin accounts like grant@.)
-      qy = qy.neq('role', 'provider').eq('status', 'active').eq('profile_complete', true);
+      // MEMBERS ONLY — real passport members. grant@ is a member so he's included; admin@findfitpeople
+      // (super_admin) and providers are system/partner accounts and are NOT emailed the member digest.
+      qy = qy.eq('role', 'member').eq('status', 'active').eq('profile_complete', true);
     }
     var { data: members, error } = await qy;
     if (error) throw error;
