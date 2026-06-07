@@ -790,7 +790,7 @@ app.post('/api/auth/signin', async (req, res) => {
       refresh: mintRefreshToken(member),  // v71: long-lived (365d) refresh token → /api/auth/refresh
       member: memberSafe,
       redirect: member.profile_complete
-        ? (member.role === 'admin' ? '/ffp-admin.html'
+        ? ((member.role === 'admin' || member.role === 'super_admin') ? '/ffp-admin.html'
            : member.role === 'provider' ? '/ffp-provider.html'
            : '/ffp-member-dashboard.html')
         : '/ffp-profile-complete.html'
@@ -1822,7 +1822,9 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
     if (only) {
       qy = (only.indexOf('@') > -1) ? qy.eq('email', only) : qy.eq('id', only);
     } else {
-      qy = qy.eq('role', 'member').eq('status', 'active').eq('profile_complete', true);
+      // Send to everyone who USES the passport app (members + admins/super_admins), not providers.
+      // (Was role='member' only — which silently skipped admin/super_admin accounts like grant@.)
+      qy = qy.neq('role', 'provider').eq('status', 'active').eq('profile_complete', true);
     }
     var { data: members, error } = await qy;
     if (error) throw error;
