@@ -932,6 +932,36 @@ function verifyProviderToken(token) {
     return memberId;
   } catch (_) { return null; }
 }
+
+// ── v74: MEMBER IMAGE UPLOAD (proper, server-validated) ──────────────────────────────────────
+// Members reach Supabase as the `anon` role (custom FFP JWT + anon key), so they can't write Storage
+// under owner-scoped RLS. Instead of opening the bucket to anon/public, the browser POSTs the image
+// here with the member's long-lived refresh token; we verify it → member id, then upload with the
+// SERVICE key into the member's own folder. Storage write policies stay LOCKED (anon/public removed).
+// Bucket allowlist + size cap guard abuse. Providers/admins keep uploading directly (real auth session).
+const UPLOAD_BUCKETS = { 'quest-images': true };
+app.post('/api/storage/upload', async (req, res) => {
+  try {
+    const { refresh, bucket, key, data } = req.body || {};
+    const v = refresh ? verifyRefreshToken(refresh) : null;
+    if (!v) return res.status(401).json({ error: 'Not signed in' });
+    if (!UPLOAD_BUCKETS[bucket]) return res.status(400).json({ error: 'Bucket not allowed' });
+    if (!data) return res.status(400).json({ error: 'No image data' });
+    const b64 = String(data).replace(/^data:[^;]+;base64,/, '');
+    const buf = Buffer.from(b64, 'base64');
+    if (!buf.length) return res.status(400).json({ error: 'Empty image' });
+    if (buf.length > 5 * 1024 * 1024) return res.status(413).json({ error: 'Image too large' });
+    const safeKey = String(key || ('img-' + Date.now())).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const path = v.memberId + '/' + safeKey + '.jpg';
+    const up = await supabase.storage.from(bucket).upload(path, buf, { contentType: 'image/jpeg', upsert: true, cacheControl: '3600' });
+    if (up.error) return res.status(500).json({ error: up.error.message });
+    const pub = supabase.storage.from(bucket).getPublicUrl(path);
+    const url = (pub && pub.data && pub.data.publicUrl) || null;
+    return res.json({ success: true, url: url ? (url + '?v=' + Date.now()) : null });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
 async function sendProviderVerifyEmail(email, businessName, contactName, verifyUrl) {
   const html = `
     <div style="font-family:Montserrat,sans-serif;max-width:480px;margin:0 auto;background:#081420;color:#fff;padding:32px;border-radius:16px;">
