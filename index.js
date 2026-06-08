@@ -1,4 +1,12 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v79
+// FFP Passport — Express Server (Vercel, CommonJS) — v80
+// v80 (2026-06-08): PASSPORT SUBSCRIPTIONS (Annual $149/yr · Monthly $20/mo). New POST /api/billing/checkout
+//      creates a Stripe subscription Checkout Session tied to the signed-in member (client_reference_id +
+//      metadata.member_id/plan/ref). Webhook now handles mode=subscription (checkout.session.completed →
+//      grant), invoice.paid (renew → extend passport_expires_at to current_period_end), and
+//      customer.subscription.deleted/updated (lapse/adjust). setMemberFromSubscription is the single source of
+//      truth (status + period end → membership/plan/expiry/sub id). members gained stripe_subscription_id + plan.
+//      Price IDs in env STRIPE_PRICE_ANNUAL / STRIPE_PRICE_MONTHLY (defaults baked). Legacy one-time $99 flow
+//      untouched. (Enable invoice.paid + customer.subscription.* on the Stripe webhook.)
 // v79 (2026-06-08): ACCOUNT EMAIL from profile-complete. The account email is now the one the member
 //      confirms on profile-complete (field prefilled from the Stripe email, editable) — fixes Apple Pay /
 //      wallet emails overriding what they typed. onboard accepts account_email, matches the paid row by
@@ -242,6 +250,12 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
   if (event.type === 'checkout.session.completed') {
     try {
       const session = event.data.object;
+      // v80: SUBSCRIPTION upgrade (Annual/Monthly) of an existing signed-in member — handled separately
+      // from the legacy one-time $99 link flow below.
+      if (session.mode === 'subscription') {
+        await activateMemberSubscription(session);
+        return res.status(200).json({ received: true, subscription: true });
+      }
       const email = String((session.customer_details && session.customer_details.email) || session.customer_email || '').trim().toLowerCase(); // v75: normalize email case
       const name  = (session.customer_details && session.customer_details.name) || '';
       if (!email) {
@@ -316,6 +330,15 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
       console.error('Stripe webhook handler error:', err.message);
       return res.status(500).json({ error: err.message });
     }
+  }
+  // v80: subscription lifecycle — renewals extend the passport; cancels/changes lapse or adjust it.
+  if (event.type === 'invoice.paid') {
+    try { await onInvoicePaid(event.data.object); } catch (e) { console.error('[webhook invoice.paid]', e.message); }
+    return res.json({ received: true });
+  }
+  if (event.type === 'customer.subscription.deleted' || event.type === 'customer.subscription.updated') {
+    try { await onSubscriptionChange(event.data.object); } catch (e) { console.error('[webhook subscription change]', e.message); }
+    return res.json({ received: true });
   }
   res.json({ received: true });
 });
@@ -932,6 +955,85 @@ app.post('/api/auth/reset', async (req, res) => {
 // admin account-approval step. Free during the research-preview phase. Phase 2 hooks paid_until/tier.
 // ─────────────────────────────────────────────────────────────────────────────
 const SITE_URL = process.env.SITE_URL || 'https://ffppassport.com';
+
+// ── v80: PASSPORT SUBSCRIPTIONS (Annual $149/yr · Monthly $20/mo) ─────────────────────────────
+// Stripe product "FFP Passport 2026" → two recurring prices. A signed-in member upgrades via
+// /api/billing/checkout (subscription Checkout Session tied to their account); the webhook below grants /
+// extends / lapses their passport from the subscription's status + current_period_end.
+const PRICE_ANNUAL  = process.env.STRIPE_PRICE_ANNUAL  || 'price_1Tg3o8BnpbSTlIOBIj5eIl8D';  // $149 / year
+const PRICE_MONTHLY = process.env.STRIPE_PRICE_MONTHLY || 'price_1Tg3pBBnpbSTlIOB1EEs9LJc';  // $20 / month
+
+// Apply a Stripe subscription to the member row (grant/extend/lapse). Source of truth = the sub's status +
+// current_period_end. Finds the member by id (metadata/client_reference_id), then existing sub id, email, customer.
+async function setMemberFromSubscription(sub, plan, hintMemberId, hintEmail) {
+  if (!sub) return;
+  const periodEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null;
+  const active = (sub.status === 'active' || sub.status === 'trialing');
+  const upd = {
+    paid: true,
+    membership: active ? 'passport' : 'free',
+    passport_expires_at: periodEnd,
+    plan: plan || null,
+    stripe_subscription_id: sub.id,
+    stripe_customer_id: sub.customer || null
+  };
+  let target = null;
+  if (hintMemberId) target = { col: 'id', val: hintMemberId };
+  if (!target) { const { data } = await supabase.from('members').select('id').eq('stripe_subscription_id', sub.id).maybeSingle(); if (data) target = { col: 'id', val: data.id }; }
+  if (!target && hintEmail) target = { col: 'email', val: String(hintEmail).trim().toLowerCase() };
+  if (!target && sub.customer) { const { data } = await supabase.from('members').select('id').eq('stripe_customer_id', sub.customer).maybeSingle(); if (data) target = { col: 'id', val: data.id }; }
+  if (!target) { console.warn('[sub] no member match for subscription', sub.id); return; }
+  const { error } = await supabase.from('members').update(upd).eq(target.col, target.val);
+  if (error) console.error('[sub] member update failed', error.message);
+}
+async function activateMemberSubscription(session) {
+  const memberId = session.client_reference_id || (session.metadata && session.metadata.member_id) || null;
+  const plan = (session.metadata && session.metadata.plan) || null;
+  const email = (session.customer_details && session.customer_details.email) || session.customer_email || null;
+  if (!session.subscription) return;
+  const sub = await stripe.subscriptions.retrieve(session.subscription);
+  await setMemberFromSubscription(sub, plan, memberId, email);
+}
+async function onInvoicePaid(invoice) {
+  if (!invoice || !invoice.subscription) return;                 // only subscription invoices (renewals)
+  const sub = await stripe.subscriptions.retrieve(invoice.subscription);
+  const memberId = (sub.metadata && sub.metadata.member_id) || null;
+  const plan = (sub.metadata && sub.metadata.plan) || null;
+  await setMemberFromSubscription(sub, plan, memberId, invoice.customer_email);
+}
+async function onSubscriptionChange(sub) {
+  const memberId = (sub.metadata && sub.metadata.member_id) || null;
+  const plan = (sub.metadata && sub.metadata.plan) || null;
+  await setMemberFromSubscription(sub, plan, memberId, null);
+}
+
+// POST /api/billing/checkout — a signed-in member upgrades to Passport. Creates a Stripe subscription
+// Checkout Session tied to their account (client_reference_id + metadata.member_id) so the webhook can flip
+// THAT member to passport. Returns { url } for the browser to redirect to.
+app.post('/api/billing/checkout', async (req, res) => {
+  try {
+    const { plan, member_id, email, ref } = req.body || {};
+    const price = plan === 'monthly' ? PRICE_MONTHLY : (plan === 'annual' ? PRICE_ANNUAL : null);
+    if (!price) return res.status(400).json({ error: 'Choose annual or monthly.' });
+    if (!member_id) return res.status(400).json({ error: 'Please sign in again.' });
+    const meta = { member_id: String(member_id), plan: String(plan), ref: ref ? String(ref) : '' };
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      line_items: [{ price, quantity: 1 }],
+      customer_email: email || undefined,
+      client_reference_id: String(member_id),
+      metadata: meta,
+      subscription_data: { metadata: meta },   // propagate to the subscription so invoice.paid / subscription.* find the member
+      allow_promotion_codes: true,
+      success_url: SITE_URL + '/ffp-member-dashboard.html?upgraded=1',
+      cancel_url: SITE_URL + '/ffp-member-dashboard.html?upgrade=cancel'
+    });
+    return res.json({ url: session.url });
+  } catch (e) {
+    console.error('[billing/checkout]', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
 const VERIFY_SECRET = process.env.SUPABASE_SERVICE_KEY || 'ffp-fallback-secret';
 
 function b64url(s) {
