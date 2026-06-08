@@ -1,4 +1,12 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v80
+// FFP Passport — Express Server (Vercel, CommonJS) — v81
+// v81 (2026-06-08): REFERRALS — recurring + 60-day Ambassador. A referred signup gets referred_by + 60 days at
+//      Ambassador tier (applyReferralOnSignup). The referrer earns their (effective) tier% of EVERY invoice on
+//      that member's ORIGINAL subscription (creditReferralForInvoice in invoice.paid) — idempotent per invoice
+//      (transactions.stripe_invoice_id unique). If the member lapses and re-subscribes, the new sub earns
+//      nothing (referrals.stripe_subscription_id pins the original). onboard now does attribution+Ambassador and
+//      only credits the legacy one-time $99 (non-subscription); subscriptions credit per-invoice. Signup checkout
+//      also creates the member on payment (success → profile-complete). effectiveTier() lapses an expired
+//      Ambassador back to 5%.
 // v80 (2026-06-08): PASSPORT SUBSCRIPTIONS (Annual $149/yr · Monthly $20/mo). New POST /api/billing/checkout
 //      creates a Stripe subscription Checkout Session tied to the signed-in member (client_reference_id +
 //      metadata.member_id/plan/ref). Webhook now handles mode=subscription (checkout.session.completed →
@@ -529,12 +537,26 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       memberId = inserted.id;
     }
 
+    // v80: SUBSCRIPTION term — if they paid via a subscription (Annual/Monthly), set membership/plan/expiry
+    // from the actual subscription (period end), overwriting the default 1-year above. Non-blocking.
+    if (session.subscription) {
+      try {
+        const sub = await stripe.subscriptions.retrieve(session.subscription);
+        const subPlan = (session.metadata && session.metadata.plan) || null;
+        await setMemberFromSubscription(sub, subPlan, memberId, email);
+      } catch (subErr) { console.warn('Onboard: subscription apply failed (non-blocking):', subErr.message); }
+    }
+
     // 3b) Referral attribution (non-blocking): if this signup came through someone's
     //     referral link, credit them. ref = the referrer's referral_code (from the
     //     landing page's ffp_ref, passed by profile-complete).
     let referrerName = null;
     if (ref) {
       try {
+        await applyReferralOnSignup(memberId, ref);   // v81: referred_by + 60-day Ambassador (first attribution)
+        // Subscriptions credit the referrer per-invoice (recurring) in the webhook; only the legacy one-time
+        // $99 flow credits the referrer here.
+        if (!session.subscription) {
         const { data: referrer } = await supabase
           .from('members')
           .select('id, tier, email, full_name')
@@ -588,6 +610,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
               catch (e) { console.warn('Onboard: referral email failed (non-blocking):', e.message); }
             }
           }
+        }
         }
       } catch (refErr) {
         console.warn('Onboard: referral attribution failed (non-blocking):', refErr.message);
@@ -989,10 +1012,34 @@ async function setMemberFromSubscription(sub, plan, hintMemberId, hintEmail) {
 async function activateMemberSubscription(session) {
   const memberId = session.client_reference_id || (session.metadata && session.metadata.member_id) || null;
   const plan = (session.metadata && session.metadata.plan) || null;
-  const email = (session.customer_details && session.customer_details.email) || session.customer_email || null;
+  const email = String((session.customer_details && session.customer_details.email) || session.customer_email || '').trim().toLowerCase();
   if (!session.subscription) return;
   const sub = await stripe.subscriptions.retrieve(session.subscription);
-  await setMemberFromSubscription(sub, plan, memberId, email);
+  const periodEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null;
+  const ref = (session.metadata && session.metadata.ref) || '';
+  // Locate the member: by id (in-app upgrade) → by email (new signup).
+  let id = memberId;
+  if (!id && email) { const { data } = await supabase.from('members').select('id').eq('email', email).maybeSingle(); if (data) id = data.id; }
+  if (id) {
+    await setMemberFromSubscription(sub, plan, id, email);
+  } else if (email) {
+    // SIGNUP via subscription — create the member (mirrors the legacy $99 webhook insert). profile-complete
+    // fills in name/DOB/etc. afterwards; access code is generated now, emailed on first /api/auth/reset.
+    const { hash } = generateCode();
+    const passport_no = `FFP-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9999 + 1)).padStart(4, '0')}`;
+    const { data: inserted, error } = await supabase.from('members').insert({
+      email,
+      full_name: (session.customer_details && session.customer_details.name) || '',
+      access_code: hash, role: 'member', status: 'active', passport_no,
+      paid: true, membership: 'passport', passport_expires_at: periodEnd, plan: plan || null,
+      stripe_subscription_id: sub.id, stripe_customer_id: sub.customer || null
+    }).select('id').single();
+    if (error) { console.error('[sub] signup member insert failed', error.message); return; }
+    id = inserted ? inserted.id : null;
+  } else {
+    console.warn('[sub] subscription with no member + no email', sub.id); return;
+  }
+  if (id && ref) await applyReferralOnSignup(id, ref);   // referred_by + 60-day Ambassador (first attribution)
 }
 async function onInvoicePaid(invoice) {
   if (!invoice || !invoice.subscription) return;                 // only subscription invoices (renewals)
@@ -1000,11 +1047,73 @@ async function onInvoicePaid(invoice) {
   const memberId = (sub.metadata && sub.metadata.member_id) || null;
   const plan = (sub.metadata && sub.metadata.plan) || null;
   await setMemberFromSubscription(sub, plan, memberId, invoice.customer_email);
+  try { await creditReferralForInvoice(invoice, sub); } catch (e) { console.warn('[referral credit]', e.message); }  // recurring referral commission
 }
 async function onSubscriptionChange(sub) {
   const memberId = (sub.metadata && sub.metadata.member_id) || null;
   const plan = (sub.metadata && sub.metadata.plan) || null;
   await setMemberFromSubscription(sub, plan, memberId, null);
+}
+
+// ── v81: REFERRALS (recurring) ───────────────────────────────────────────────────────────────
+const REFERRAL_PCT = { member: 5, supporter: 10, ambassador: 20 };
+// An Ambassador grant that has lapsed earns at the base 'member' rate again.
+function effectiveTier(referrer) {
+  const t = String((referrer && referrer.tier) || 'member').toLowerCase();
+  if (t === 'ambassador' && referrer && referrer.tier_expires_at && new Date(referrer.tier_expires_at) < new Date()) return 'member';
+  return t;
+}
+// Referred signup → attribute the referrer + grant the NEW member 60 days at Ambassador tier (20% earnings).
+// First attribution only (guarded by referred_by IS NULL) — never re-granted on renewals/re-runs.
+async function applyReferralOnSignup(newMemberId, refCode) {
+  if (!newMemberId || !refCode) return;
+  const { data: referrer } = await supabase.from('members').select('id').ilike('referral_code', String(refCode).trim()).maybeSingle();
+  if (!referrer || referrer.id === newMemberId) return;
+  const expires = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString();
+  await supabase.from('members')
+    .update({ referred_by: referrer.id, tier: 'ambassador', tier_expires_at: expires })
+    .eq('id', newMemberId).is('referred_by', null);
+}
+// RECURRING referral commission — credit the referrer their (effective) tier% of THIS invoice's amount, on
+// EVERY payment of the member's ORIGINAL subscription. Idempotent per invoice (unique stripe_invoice_id). If
+// the member lapsed and re-subscribed (a new sub id), it earns nothing — the referral is tied to the first sub.
+async function creditReferralForInvoice(invoice, sub) {
+  if (!invoice || !invoice.id || !sub) return;
+  const refCode = (sub.metadata && sub.metadata.ref) || '';
+  if (!refCode) return;
+  let mid = (sub.metadata && sub.metadata.member_id) || null;
+  if (!mid) { const { data } = await supabase.from('members').select('id').eq('stripe_subscription_id', sub.id).maybeSingle(); if (data) mid = data.id; }
+  let refRow = null;
+  if (mid) { const { data } = await supabase.from('referrals').select('id, stripe_subscription_id').eq('referred_member_id', mid).maybeSingle(); refRow = data || null; }
+  if (refRow && refRow.stripe_subscription_id && refRow.stripe_subscription_id !== sub.id) return;  // re-subscribe after a lapse → no earnings
+  const { data: dupTx } = await supabase.from('transactions').select('id').eq('stripe_invoice_id', invoice.id).maybeSingle();
+  if (dupTx) return;                                                                                // already credited this invoice
+  const { data: referrer } = await supabase.from('members').select('id, tier, tier_expires_at, full_name, email').ilike('referral_code', String(refCode).trim()).maybeSingle();
+  if (!referrer || (mid && referrer.id === mid)) return;
+  const pct = REFERRAL_PCT[effectiveTier(referrer)] || 5;
+  const paidUsd = Math.round((Number(invoice.amount_paid) || 0)) / 100;                              // what they actually paid this cycle, USD
+  if (paidUsd <= 0) return;
+  const rewardUsd = Math.round((pct / 100) * paidUsd * 100) / 100;
+  let payerName = invoice.customer_email || 'a member';
+  if (mid) { const { data: mm } = await supabase.from('members').select('full_name, email').eq('id', mid).maybeSingle(); if (mm) payerName = mm.full_name || mm.email; }
+  const { error: txErr } = await supabase.from('transactions').insert({
+    member_id: referrer.id, type: 'in', amount_aed: rewardUsd,
+    source: 'Referral — ' + payerName, category: 'referrals', status: 'paid',
+    related_id: mid || null, stripe_invoice_id: invoice.id
+  });
+  if (txErr) return;                                                                                // unique index tripped (race) → already credited
+  // First conversion → referrals row (records the ORIGINAL sub id) + a single email (no spam on renewals).
+  if (mid && !refRow) {
+    await supabase.from('referrals').insert({
+      referrer_id: referrer.id, referred_email: invoice.customer_email || null, referred_member_id: mid,
+      status: 'paid', reward_aed: rewardUsd, paid_at: new Date().toISOString(), stripe_subscription_id: sub.id
+    });
+    try {
+      let bal = 0; const { data: txs } = await supabase.from('transactions').select('type, amount_aed, status').eq('member_id', referrer.id);
+      (txs || []).forEach(function (t) { if (t.type === 'in' && t.status === 'paid') bal += Number(t.amount_aed) || 0; else if (t.type === 'out' && (t.status === 'paid' || t.status === 'pending')) bal -= Number(t.amount_aed) || 0; });
+      if (referrer.email) await sendReferralEmail(referrer.email, referrer.full_name, payerName, rewardUsd, Math.round(bal * 100) / 100);
+    } catch (e) { console.warn('[referral email]', e.message); }
+  }
 }
 
 // POST /api/billing/checkout — a signed-in member upgrades to Passport. Creates a Stripe subscription
@@ -1015,19 +1124,27 @@ app.post('/api/billing/checkout', async (req, res) => {
     const { plan, member_id, email, ref } = req.body || {};
     const price = plan === 'monthly' ? PRICE_MONTHLY : (plan === 'annual' ? PRICE_ANNUAL : null);
     if (!price) return res.status(400).json({ error: 'Choose annual or monthly.' });
-    if (!member_id) return res.status(400).json({ error: 'Please sign in again.' });
-    const meta = { member_id: String(member_id), plan: String(plan), ref: ref ? String(ref) : '' };
-    const session = await stripe.checkout.sessions.create({
+    const isUpgrade = !!member_id;   // signed-in member upgrading vs a brand-new "Become A Member" signup
+    const meta = { member_id: member_id ? String(member_id) : '', plan: String(plan), ref: ref ? String(ref) : '' };
+    const params = {
       mode: 'subscription',
       line_items: [{ price, quantity: 1 }],
       customer_email: email || undefined,
-      client_reference_id: String(member_id),
       metadata: meta,
       subscription_data: { metadata: meta },   // propagate to the subscription so invoice.paid / subscription.* find the member
-      allow_promotion_codes: true,
-      success_url: SITE_URL + '/ffp-member-dashboard.html?upgraded=1',
-      cancel_url: SITE_URL + '/ffp-member-dashboard.html?upgrade=cancel'
-    });
+      allow_promotion_codes: true
+    };
+    if (isUpgrade) {
+      params.client_reference_id = String(member_id);
+      params.success_url = SITE_URL + '/ffp-member-dashboard.html?upgraded=1';
+      params.cancel_url  = SITE_URL + '/ffp-member-dashboard.html?upgrade=cancel';
+    } else {
+      // new member — Stripe collects the email at checkout; on success → profile-complete (creates/finishes
+      // the member). The webhook also creates them as a backup, matched by email.
+      params.success_url = SITE_URL + '/ffp-profile-complete.html?session_id={CHECKOUT_SESSION_ID}';
+      params.cancel_url  = SITE_URL + '/login.html#signup';
+    }
+    const session = await stripe.checkout.sessions.create(params);
     return res.json({ url: session.url });
   } catch (e) {
     console.error('[billing/checkout]', e.message);
