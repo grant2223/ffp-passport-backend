@@ -1,4 +1,10 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v75
+// FFP Passport — Express Server (Vercel, CommonJS) — v76
+// v76 (2026-06-08): PARTNER INSTANT SIGN-IN. POST /api/provider/signup now creates the account (verified:true,
+//      providers row approved), mints a full session (token + Supabase jwt + refresh) and returns it + the
+//      member row + redirect '/ffp-provider-dashboard.html', so provider-signup.html drops the new partner
+//      straight into their dashboard — no email-verify click, no 6-digit code step. The email is now a WELCOME
+//      guide (sendProviderWelcomeEmail): upload Experiences/Events/Trips to findfitpeople.com, create Quests /
+//      Challenges. (Old sendProviderVerifyEmail + /api/provider/verify kept, now unused by the live flow.)
 // v75 (2026-06-05): EMAIL CASE-INSENSITIVITY (login lockout fix). Sign-in matched email case-SENSITIVELY
 //      (.eq('email', email)) while stored emails are lowercase, so a capitalized email (e.g. autocapitalized
 //      first letter) made /api/auth/reset return exists:false → the v8 login screen's new gate showed "account
@@ -962,6 +968,40 @@ app.post('/api/storage/upload', async (req, res) => {
     return res.status(500).json({ error: e.message });
   }
 });
+// v76: Partner WELCOME email — sent on instant self-signup (account is already live + signed in).
+// Informational only: what they can do now. No verify link / no gate.
+async function sendProviderWelcomeEmail(email, businessName, contactName, loginUrl) {
+  const html = `
+    <div style="font-family:Montserrat,sans-serif;max-width:480px;margin:0 auto;background:#081420;color:#fff;padding:32px;border-radius:16px;">
+      <div style="font-size:22px;font-weight:900;letter-spacing:3px;margin-bottom:8px;">FFP <span style="color:#2ba8e0;">PASSPORT</span></div>
+      <div style="font-size:12px;color:#6a90a8;letter-spacing:2px;text-transform:uppercase;margin-bottom:28px;">Partner Account</div>
+      <p style="font-size:18px;color:#fff;font-weight:700;margin:0 0 14px;">Welcome to Find Fit People, ${escapeHtml(contactName || businessName || 'there')}.</p>
+      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">
+        Your partner account for <strong style="color:#fff;">${escapeHtml(businessName || '')}</strong> is live and you're signed in. Here's what you can do from your FFP Partner dashboard:
+      </p>
+      <ul style="font-size:14px;color:#9dbdd0;line-height:1.8;margin:0 0 18px;padding-left:18px;">
+        <li><strong style="color:#fff;">Upload your services</strong> &mdash; Experiences (Classes / Tours), Events or Trips that go on the <a href="https://www.findfitpeople.com" style="color:#2ba8e0;">findfitpeople.com</a> booking platform.</li>
+        <li><strong style="color:#fff;">Create Quests</strong> for your facility.</li>
+        <li><strong style="color:#fff;">Create Challenges</strong> for others to come and compete in.</li>
+      </ul>
+      <div style="text-align:center;margin:26px 0 22px;">
+        <a href="${loginUrl}" style="display:inline-block;background:#FFCC00;color:#082335;text-decoration:none;font-weight:800;font-size:14px;padding:14px 34px;border-radius:8px;letter-spacing:.4px;">Open my dashboard</a>
+      </div>
+      <p style="font-size:12px;color:#6a90a8;line-height:1.7;">
+        Next time you visit, sign in at ${escapeHtml(loginUrl)} &mdash; choose Partner, enter this email, and we'll send you a 6-digit code.
+      </p>
+      <div style="margin-top:30px;padding-top:22px;border-top:1px solid rgba(43,168,224,.1);font-size:11px;color:#6a90a8;">
+        FFP Passport · findfitpeople.com · If you didn't create this account, please email providers@findfitpeople.com.
+      </div>
+    </div>
+  `;
+  await mailer.sendMail({
+    from: '"Find Fit People" <noreply@ffppassport.com>',
+    to: email,
+    subject: 'Welcome to Find Fit People — your partner account is ready',
+    html
+  });
+}
 async function sendProviderVerifyEmail(email, businessName, contactName, verifyUrl) {
   const html = `
     <div style="font-family:Montserrat,sans-serif;max-width:480px;margin:0 auto;background:#081420;color:#fff;padding:32px;border-radius:16px;">
@@ -1269,7 +1309,7 @@ app.post('/api/provider/signup', async (req, res) => {
       .from('members')
       .insert({
         email: cleanEmail, full_name: contact, access_code: hash,
-        role: 'provider', status: 'active', verified: false, passport_no,
+        role: 'provider', status: 'active', verified: true, passport_no, // v76: signed in directly → no email-verify gate
         phone: phone || null, phone_country_code: phone_country_code || null
       })
       .select('id').single();
@@ -1294,15 +1334,35 @@ app.post('/api/provider/signup', async (req, res) => {
       return res.status(500).json({ error: 'Could not create your provider profile. Please try again.' });
     }
 
-    const apiBase = `https://${req.get('host')}`;
-    const verifyUrl = `${apiBase}/api/provider/verify?token=${encodeURIComponent(signProviderToken(member.id))}`;
+    // v76: INSTANT SIGN-IN. Mint the same session the login flow issues so the signup page can drop the
+    // new partner straight into their dashboard — no email-verify click, no 6-digit code step. The email
+    // is now informational (a welcome + what-you-can-do guide), not a gate.
+    const { data: fullMember } = await supabase
+      .from('members').select('*').eq('id', member.id).single();
+    const sessionMember = fullMember || {
+      id: member.id, email: cleanEmail, full_name: contact, role: 'provider', status: 'active'
+    };
+    const { access_code: _ac, ...memberSafe } = sessionMember;
+    const token = crypto.randomBytes(32).toString('hex');
+
+    let email_sent = false;
     try {
-      await sendProviderVerifyEmail(cleanEmail, biz, contact, verifyUrl);
+      await sendProviderWelcomeEmail(cleanEmail, biz, contact, `${SITE_URL}/login`);
+      email_sent = true;
     } catch (e) {
-      console.error('[provider/signup] email failed:', e);
-      return res.json({ success: true, email: cleanEmail, email_sent: false });
+      console.error('[provider/signup] welcome email failed (non-blocking):', e);
     }
-    res.json({ success: true, email: cleanEmail, email_sent: true });
+
+    res.json({
+      success: true,
+      email: cleanEmail,
+      email_sent,
+      token,
+      jwt: mintSupabaseJwt(sessionMember),      // short Supabase JWT for RLS (null until env set; refresh re-mints on dashboard boot)
+      refresh: mintRefreshToken(sessionMember), // long-lived refresh → /api/auth/refresh
+      member: memberSafe,
+      redirect: '/ffp-provider-dashboard.html'
+    });
   } catch (error) {
     console.error('[provider/signup] error:', error);
     res.status(500).json({ error: error.message });
