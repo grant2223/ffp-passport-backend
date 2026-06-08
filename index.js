@@ -1,4 +1,17 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v77
+// FFP Passport — Express Server (Vercel, CommonJS) — v79
+// v79 (2026-06-08): ACCOUNT EMAIL from profile-complete. The account email is now the one the member
+//      confirms on profile-complete (field prefilled from the Stripe email, editable) — fixes Apple Pay /
+//      wallet emails overriding what they typed. onboard accepts account_email, matches the paid row by
+//      stripe_session_id (so no duplicate when the email differs), sets the row's email, and guards against
+//      stealing an email already owned by another account. The Stripe webhook also matches by session_id
+//      first. New GET /api/onboard/session-email prefills the field. Future: edit email from profile (syncs
+//      both sites via the shared members row).
+// v78 (2026-06-08): PAID-GATE FIX (urgent). The passport gate RPC (member_passport_active) requires
+//      membership='passport' AND passport_expires_at>now — but the Stripe webhook + /api/onboard/from-stripe
+//      only set paid=true, never membership/expiry. So paying members (Sunjay Vyas, John Haraki) were shown
+//      the Join/upgrade gate despite paying. All 4 payment writes (webhook update+insert, onboard update+insert)
+//      now also set membership='passport' + passport_expires_at = now+1yr. (Two stuck rows back-filled in DB.)
+//      NOTE: resets expiry to +1yr on any repeat checkout — revisit when the annual/monthly plans land.
 // v77 (2026-06-08): LOG ACTIVITY — distance + avg heart rate. activity_logs gained distance_km +
 //      avg_heart_rate (migration); log_activity RPC takes p_distance_km + p_avg_hr (old 9-arg overload
 //      dropped to avoid ambiguity). GET /api/members/:id/activity-logs now also returns distance_km +
@@ -235,11 +248,18 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
         console.error('Stripe webhook: no email in session', session.id);
         return res.status(200).json({ received: true, warning: 'no email' });
       }
-      const { data: existing } = await supabase
-        .from('members')
-        .select('id, access_code')
-        .eq('email', email)
-        .maybeSingle();
+      // v79: match by stripe_session_id FIRST (the account email may differ from the payment email, e.g.
+      // Apple Pay or a profile-complete email edit), then fall back to the payment email. Prevents a
+      // duplicate row when onboard created the member under the typed email before this webhook fired.
+      let existing = null;
+      {
+        const r = await supabase.from('members').select('id, access_code').eq('stripe_session_id', session.id).maybeSingle();
+        existing = r.data || null;
+      }
+      if (!existing) {
+        const r = await supabase.from('members').select('id, access_code').eq('email', email).maybeSingle();
+        existing = r.data || null;
+      }
       if (existing) {
         // v2: Update existing member with the new stripe_session_id so
         // ffp-profile-complete v7 can find them. Without this, repeat
@@ -252,7 +272,9 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
           .update({
             stripe_session_id: session.id,
             stripe_customer_id: session.customer || null,
-            paid: true
+            paid: true,
+            membership: 'passport',                                                          // v78: the gate (member_passport_active) keys off membership + expiry, NOT the paid flag
+            passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString() // 1-year term ($99/yr). (Renewal note: resets to +1yr from now; revisit when annual/monthly plans land.)
           })
           .eq('id', existing.id);
         if (updateErr) {
@@ -272,6 +294,8 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
           role: 'member',
           passport_no,
           paid: true,
+          membership: 'passport',                                                          // v78: paid → passport so the gate recognises them
+          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-year term ($99/yr)
           status: 'active', // v8: required for signin check `member.status !== 'active'`
           stripe_session_id: session.id,
           stripe_customer_id: session.customer || null
@@ -334,11 +358,25 @@ app.get('/api/referrer/:code', async (req, res) => {
   }
 });
 
+// v79: prefill helper — profile-complete fetches the payment email to pre-fill the editable "Account email"
+// field, so the verified Stripe email is the default but the member can correct an Apple Pay mismatch.
+app.get('/api/onboard/session-email', async (req, res) => {
+  try {
+    const sid = String(req.query.session_id || '').trim();
+    if (!sid) return res.json({ email: null });
+    const session = await stripe.checkout.sessions.retrieve(sid);
+    const email = String((session.customer_details && session.customer_details.email) || session.customer_email || '').trim().toLowerCase();
+    return res.json({ email: email || null });
+  } catch (e) {
+    return res.json({ email: null });
+  }
+});
+
 app.post('/api/onboard/from-stripe', async (req, res) => {
   try {
     const {
       session_id, surname, given_names, date_of_birth,
-      nationality, country, city, skills, gender, photo_url, ref
+      nationality, country, city, skills, gender, photo_url, ref, account_email
     } = req.body;
     if (!session_id) {
       return res.status(400).json({ error: 'session_id required' });
@@ -351,23 +389,45 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       console.error('Onboard: Stripe session retrieve failed:', stripeErr.message);
       return res.status(400).json({ error: 'Invalid Stripe session: ' + stripeErr.message });
     }
-    const email = String((session.customer_details && session.customer_details.email) || session.customer_email || '').trim().toLowerCase(); // v75: normalize email case
+    const stripeEmail = String((session.customer_details && session.customer_details.email) || session.customer_email || '').trim().toLowerCase(); // payment-captured email (Apple Pay can override what they typed on the Stripe page)
     const stripeName = (session.customer_details && session.customer_details.name) || '';
     const customerId = session.customer || null;
+    // v79: ACCOUNT EMAIL = what the member confirmed on profile-complete (the field is prefilled with the
+    // Stripe email but is editable). This is the email they sign in with + receive codes at. Falls back to
+    // the Stripe email if blank/invalid.
+    const typedEmail = String(account_email || '').trim().toLowerCase();
+    let email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail) ? typedEmail : stripeEmail;
     if (!email) {
       return res.status(400).json({ error: 'No email on Stripe session' });
     }
     // 2) Build full_name (form values take priority over Stripe's single field)
     const fullName = ((given_names || '') + ' ' + (surname || '')).trim() || stripeName;
-    // 3) Find existing member by email
-    //    v4: select profile_complete too, so we know whether this is a
-    //    first-time onboarding (welcome email should fire) or a returning
-    //    user re-submitting (welcome email should NOT fire).
-    const { data: existing } = await supabase
-      .from('members')
-      .select('id, paid, profile_complete')
-      .eq('email', email)
-      .maybeSingle();
+    // 3) Find the member created at payment. Match by stripe_session_id FIRST (reliable even when the
+    //    payment email differs from the typed one — e.g. Apple Pay), then by either email as a fallback.
+    //    Selecting profile_complete tells us first-time vs returning (gates the welcome email).
+    let existing = null;
+    if (session_id) {
+      const r = await supabase.from('members').select('id, paid, profile_complete, email').eq('stripe_session_id', session_id).maybeSingle();
+      existing = r.data || null;
+    }
+    if (!existing && stripeEmail) {
+      const r = await supabase.from('members').select('id, paid, profile_complete, email').eq('email', stripeEmail).maybeSingle();
+      existing = r.data || null;
+    }
+    if (!existing && email !== stripeEmail) {
+      const r = await supabase.from('members').select('id, paid, profile_complete, email').eq('email', email).maybeSingle();
+      existing = r.data || null;
+    }
+    // Conflict guard: never steal an email already owned by a DIFFERENT account. If the chosen account
+    // email is taken by someone else, keep the safe (payment) email instead and flag it.
+    let emailConflict = false;
+    {
+      const safeEmail = existing ? (existing.email || stripeEmail) : stripeEmail;
+      if (email !== safeEmail) {
+        const { data: clash } = await supabase.from('members').select('id').eq('email', email).maybeSingle();
+        if (clash && (!existing || clash.id !== existing.id)) { email = safeEmail; emailConflict = true; }
+      }
+    }
     // v4: First-time onboarding = no existing row, OR existing row that hasn't
     // completed profile yet (e.g. paid via Stripe webhook but never finished
     // profile-complete). Either way, this is the moment they become a real,
@@ -381,6 +441,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       const { error: updateErr } = await supabase
         .from('members')
         .update({
+          email: email,                                 // v79: account email the member confirmed on profile-complete
           full_name: fullName,
           surname: surname || null,
           given_names: given_names || null,
@@ -392,6 +453,8 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           skills: (Array.isArray(skills) && skills.length) ? skills : null,
           photo_url: photo_url || null,
           paid: true,
+          membership: 'passport',                                                          // v78: paid → passport so the gate recognises them
+          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-year term ($99/yr)
           stripe_session_id: session_id,
           stripe_customer_id: customerId,
           profile_complete: true
@@ -427,6 +490,8 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           access_code: generated.hash,
           role: 'member',
           paid: true,
+          membership: 'passport',                                                          // v78: paid → passport so the gate recognises them
+          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-year term ($99/yr)
           status: 'active', // v8: required for signin check `member.status !== 'active'`
           stripe_session_id: session_id,
           stripe_customer_id: customerId,
@@ -569,7 +634,9 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       jwt: mintSupabaseJwt(finalMember),       // v57: short (7d) Supabase JWT → auth.uid() resolves in RLS
       refresh: mintRefreshToken(finalMember),  // v71: long-lived refresh token → /api/auth/refresh
       member: finalMember,
-      is_new: isNew
+      is_new: isNew,
+      email: email,                  // v79: the account email actually saved (may differ from what they typed if a conflict was caught)
+      email_conflict: emailConflict  // v79: true → typed email was already in use, so we kept the payment email
     });
   } catch (error) {
     console.error('Onboard endpoint error:', error);
