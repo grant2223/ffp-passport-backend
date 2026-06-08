@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v76
+// FFP Passport — Express Server (Vercel, CommonJS) — v77
+// v77 (2026-06-08): LOG ACTIVITY — distance + avg heart rate. activity_logs gained distance_km +
+//      avg_heart_rate (migration); log_activity RPC takes p_distance_km + p_avg_hr (old 9-arg overload
+//      dropped to avoid ambiguity). GET /api/members/:id/activity-logs now also returns distance_km +
+//      avg_heart_rate so the Fitness Stats → Activity "Recent activity" list can show them.
 // v76 (2026-06-08): PARTNER INSTANT SIGN-IN. POST /api/provider/signup now creates the account (verified:true,
 //      providers row approved), mints a full session (token + Supabase jwt + refresh) and returns it + the
 //      member row + redirect '/ffp-provider-dashboard.html', so provider-signup.html drops the new partner
@@ -1445,7 +1449,7 @@ app.get('/api/members/:id/activity-logs', async (req, res) => {
     const { id } = req.params;
     const { data: logs, error } = await supabase
       .from('activity_logs')
-      .select('id, activity, category, venue, provider_id, duration_min, duration_sec, intensity, calories, notes, logged_at, city, country, verified, checkin_lat, checkin_lng')
+      .select('id, activity, category, venue, provider_id, duration_min, duration_sec, intensity, calories, distance_km, avg_heart_rate, notes, logged_at, city, country, verified, checkin_lat, checkin_lng')
       .eq('member_id', id)
       .order('logged_at', { ascending: false })
       .limit(500);
