@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v82
+// FFP Passport — Express Server (Vercel, CommonJS) — v83
+// v83 (2026-06-09): WEB PUSH (phone notifications). New push_subscriptions table + endpoints
+//      /api/push/subscribe (upsert + welcome push), /api/push/unsubscribe, /api/push/test. Helpers
+//      sendPushToMember / sendPushToAll (web-push + VAPID from env; prune dead 404/410 endpoints). Admin
+//      broadcast now also delivers as a phone push to opted-in members. Needs env VAPID_PUBLIC_KEY /
+//      VAPID_PRIVATE_KEY / VAPID_SUBJECT (public key has a baked default). PUSH_READY=false → safe no-op.
 // v82 (2026-06-08): 7-DAY FREE TRIAL. /api/billing/checkout now starts every subscription with
 //      trial_period_days:7 — the card is captured upfront (Stripe Checkout default) and the first real charge
 //      lands on day 7. No other change needed: setMemberFromSubscription already treats status 'trialing' as
@@ -1574,7 +1579,94 @@ app.post('/api/admin/broadcast', async (req, res) => {
     }
     const { error } = await supabase.from('notifications').insert(rows);
     if (error) { console.error('[broadcast]', error.message); return res.status(500).json({ error: error.message }); }
+    // v83: also deliver as a PHONE push to opted-in members (rides along with the in-app bell notification).
+    try {
+      const pl = { title: b.title, body: b.body || '', url: b.link || '/ffp-member-dashboard.html', icon: '/assets/icons/ffp-icon-192.png' };
+      if (Array.isArray(b.member_ids) && b.member_ids.length) { for (const mid of b.member_ids) { await sendPushToMember(mid, pl); } }
+      else { await sendPushToAll(pl); }
+    } catch (e) { console.warn('[broadcast push]', e.message); }
     return res.json({ success: true, sent: rows.length });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── WEB PUSH (v83) — phone notifications for installed PWAs ───────────────────────────────────
+// VAPID keys come from env (VAPID_PRIVATE_KEY is a secret; the public key has a baked default since it's
+// public by design). web-push is installed by Vercel from package.json. If keys aren't set yet, PUSH_READY
+// stays false and every send is a safe no-op — the app still works, it just won't push until configured.
+const webpush = require('web-push');
+const VAPID_PUBLIC  = process.env.VAPID_PUBLIC_KEY  || 'BPx1WNwnR2fXuLgS6LFvUSRsT7Xhm-PkSyhROdfkzCOQImwKXiLk0R15Q8WWANEyeiGGQL2gy87QTzm2EU4bgE4';
+const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || '';
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:admin@findfitpeople.com';
+let PUSH_READY = false;
+try {
+  if (VAPID_PUBLIC && VAPID_PRIVATE) { webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE); PUSH_READY = true; }
+  else console.warn('[push] VAPID_PRIVATE_KEY not set — push disabled until configured in Vercel env');
+} catch (e) { console.warn('[push] VAPID setup failed:', e.message); }
+
+// Send a payload to a set of subscription rows; prune dead endpoints (404/410 = gone).
+async function _sendPushTo(subRows, payloadObj) {
+  if (!PUSH_READY || !subRows || !subRows.length) return 0;
+  const payload = JSON.stringify(payloadObj);
+  let sent = 0;
+  for (const s of subRows) {
+    try {
+      await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload);
+      sent++;
+    } catch (err) {
+      const code = err && err.statusCode;
+      if (code === 404 || code === 410) { try { await supabase.from('push_subscriptions').delete().eq('endpoint', s.endpoint); } catch (e) {} }
+      else console.warn('[push] send failed', code, err && err.message);
+    }
+  }
+  return sent;
+}
+async function sendPushToMember(memberId, payloadObj) {
+  if (!PUSH_READY || !memberId) return 0;
+  const { data } = await supabase.from('push_subscriptions').select('endpoint, p256dh, auth').eq('member_id', memberId);
+  return _sendPushTo(data || [], payloadObj);
+}
+async function sendPushToAll(payloadObj) {
+  if (!PUSH_READY) return 0;
+  const { data } = await supabase.from('push_subscriptions').select('endpoint, p256dh, auth');
+  return _sendPushTo(data || [], payloadObj);
+}
+
+// Member subscribes (after granting permission in the browser). Upsert by endpoint; send a welcome push.
+app.post('/api/push/subscribe', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const memberId = b.member_id;
+    const sub = b.subscription;
+    if (!memberId || !sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
+      return res.status(400).json({ error: 'member_id + full subscription required' });
+    }
+    const row = {
+      member_id: memberId, endpoint: sub.endpoint, p256dh: sub.keys.p256dh, auth: sub.keys.auth,
+      user_agent: String(b.user_agent || '').slice(0, 300), last_used_at: new Date().toISOString()
+    };
+    const { error } = await supabase.from('push_subscriptions').upsert(row, { onConflict: 'endpoint' });
+    if (error) return res.status(500).json({ error: error.message });
+    try { await sendPushToMember(memberId, { title: 'Notifications on', body: 'You will now get FFP Passport alerts on this device.', url: '/ffp-member-dashboard.html', icon: '/assets/icons/ffp-icon-192.png' }); } catch (e) {}
+    return res.json({ success: true, push_ready: PUSH_READY });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/push/unsubscribe', async (req, res) => {
+  try {
+    const ep = req.body && req.body.endpoint;
+    if (!ep) return res.status(400).json({ error: 'endpoint required' });
+    await supabase.from('push_subscriptions').delete().eq('endpoint', ep);
+    return res.json({ success: true });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// Send a test push to one member (used by the Profile "send test" + for our own verification).
+app.post('/api/push/test', async (req, res) => {
+  try {
+    const memberId = req.body && req.body.member_id;
+    if (!memberId) return res.status(400).json({ error: 'member_id required' });
+    const n = await sendPushToMember(memberId, { title: 'FFP Passport', body: 'Test notification — you are all set.', url: '/ffp-member-dashboard.html', icon: '/assets/icons/ffp-icon-192.png' });
+    return res.json({ success: true, sent: n, push_ready: PUSH_READY });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
