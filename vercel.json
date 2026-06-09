@@ -7,6 +7,7 @@
     { "src": "/(.*)", "dest": "index.js" }
   ],
   "crons": [
-    { "path": "/api/cron/sunday-summary", "schedule": "0 4 * * *" }
+    { "path": "/api/cron/sunday-summary", "schedule": "0 4 * * *" },
+    { "path": "/api/cron/meetup-reminders", "schedule": "0 6 * * *" }
   ]
 }
