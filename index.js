@@ -1,4 +1,11 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v81
+// FFP Passport — Express Server (Vercel, CommonJS) — v82
+// v82 (2026-06-08): 7-DAY FREE TRIAL. /api/billing/checkout now starts every subscription with
+//      trial_period_days:7 — the card is captured upfront (Stripe Checkout default) and the first real charge
+//      lands on day 7. No other change needed: setMemberFromSubscription already treats status 'trialing' as
+//      active (membership='passport'), passport_expires_at tracks current_period_end (= trial end, so an
+//      un-converted trial auto-expires the gate at day 7), a cancel during trial flips membership→free via
+//      customer.subscription.deleted, and creditReferralForInvoice already skips the $0 trial invoice
+//      (paidUsd<=0 → no referral until real money flows at conversion).
 // v81 (2026-06-08): REFERRALS — recurring + 60-day Ambassador. A referred signup gets referred_by + 60 days at
 //      Ambassador tier (applyReferralOnSignup). The referrer earns their (effective) tier% of EVERY invoice on
 //      that member's ORIGINAL subscription (creditReferralForInvoice in invoice.paid) — idempotent per invoice
@@ -1131,7 +1138,9 @@ app.post('/api/billing/checkout', async (req, res) => {
       line_items: [{ price, quantity: 1 }],
       customer_email: email || undefined,
       metadata: meta,
-      subscription_data: { metadata: meta },   // propagate to the subscription so invoice.paid / subscription.* find the member
+      // 7-day free trial on every plan. Card captured now (Checkout default), first charge on day 7. metadata
+      // propagates to the subscription so invoice.paid / subscription.* find the member.
+      subscription_data: { metadata: meta, trial_period_days: 7 },
       allow_promotion_codes: true
     };
     if (isUpgrade) {
