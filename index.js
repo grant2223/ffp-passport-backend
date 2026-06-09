@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v85
+// FFP Passport — Express Server (Vercel, CommonJS) — v86
+// v86 (2026-06-09): MEET-UP REMINDERS — two windows: a DAY-BEFORE nudge (2–24h out) gated to daytime
+//      (05–18 UTC = 9am–10pm UAE, so it never buzzes at 3am), and a STARTING-SOON nudge ~2h before (own
+//      flag reminder_2h_sent_at so both fire). Each delivers bell + push + email. Vercel cron moved 3am→6am
+//      UTC (10am UAE). NOTE: the 2h reminder needs the cron to run HOURLY — Vercel Hobby only runs it daily,
+//      so an hourly external ping is required for the 2h one (day-before works on the daily run).
 // v85 (2026-06-09): IN-APP BELL + PUSH together. New notifyMember(memberId, {title,body,icon,link}) helper
 //      inserts a notifications-table row (bell) AND sends the phone push in one call. All event triggers now
 //      use it, so meet-up request/confirm/cancel/24h-reminder, event RSVP and /api/notify/member each land in
@@ -1523,21 +1528,40 @@ app.get('/api/cron/meetup-reminders', async (req, res) => {
   var ok = secret && (auth === ('Bearer ' + secret) || req.query.secret === secret);
   if (!ok) return res.status(401).json({ error: 'unauthorized' });
   try {
-    const nowIso = new Date().toISOString();
-    const soonIso = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    // TWO reminder windows, each tracked by its own flag so a member gets BOTH (day-before + starting-soon).
+    // For the 2-hour reminder to be timely this endpoint must be called HOURLY (see deploy notes). Calling it
+    // only once a day still delivers the day-before nudge; the 2h one just won't be precise.
+    const now = Date.now();
+    const sendHour = new Date(now).getUTCHours();   // gate the day-before nudge to UAE daytime (no 3am buzzes)
+    const nowIso = new Date(now).toISOString();
+    const soonIso = new Date(now + 24 * 60 * 60 * 1000).toISOString();
     const { data: ms } = await supabase.from('meetups').select('*').gte('meets_at', nowIso).lte('meets_at', soonIso).neq('status', 'cancelled');
-    let total = 0;
+    let dayBefore = 0, startingSoon = 0;
     for (const m of (ms || [])) {
+      const hoursAway = (new Date(m.meets_at).getTime() - now) / 3600000;
       let hostName = null;
       if (m.host_member_id) { const { data: h } = await supabase.from('members').select('full_name').eq('id', m.host_member_id).maybeSingle(); hostName = h && h.full_name; }
-      const { data: atts } = await supabase.from('meetup_attendees').select('id, member_id, member:member_id(email, full_name)').eq('meetup_id', m.id).is('reminder_sent_at', null);
+      const { data: atts } = await supabase.from('meetup_attendees').select('id, member_id, reminder_sent_at, reminder_2h_sent_at, member:member_id(email, full_name)').eq('meetup_id', m.id);
       for (const a of (atts || [])) {
         const em = a.member && a.member.email;
-        if (em) { try { await sendMeetupReminderEmail(em, a.member.full_name, m, hostName); await supabase.from('meetup_attendees').update({ reminder_sent_at: new Date().toISOString() }).eq('id', a.id); total++; } catch (e) { console.warn('meetup reminder:', e.message); } }
-        try { await notifyMember(a.member_id, { title: 'Meet-up coming up', body: (m.title || 'Your meet-up') + ' is within 24 hours' + (m.city ? ' in ' + m.city : ''), icon: 'schedule', link: '/ffp-member-dashboard.html#panel-meetups' }); } catch (e) {}
+        // DAY-BEFORE: anything 2–24h out, once — but only sent during daytime (05–18 UTC = 9am–10pm UAE),
+        // so a reminder never buzzes someone at 3am. (UAE is the primary market; this is UAE-tuned.)
+        if (hoursAway > 2 && hoursAway <= 24 && !a.reminder_sent_at && sendHour >= 5 && sendHour <= 18) {
+          if (em) { try { await sendMeetupReminderEmail(em, a.member.full_name, m, hostName); } catch (e) { console.warn('meetup reminder email:', e.message); } }
+          try { await notifyMember(a.member_id, { title: 'Upcoming meet-up', body: (m.title || 'Your meet-up') + ' is coming up' + (m.city ? ' in ' + m.city : ''), icon: 'event', link: '/ffp-member-dashboard.html#panel-meetups' }); } catch (e) {}
+          try { await supabase.from('meetup_attendees').update({ reminder_sent_at: new Date().toISOString() }).eq('id', a.id); } catch (e) {}
+          dayBefore++;
+        }
+        // STARTING SOON: within the next 2h, once.
+        if (hoursAway > 0 && hoursAway <= 2 && !a.reminder_2h_sent_at) {
+          if (em) { try { await sendMeetupReminderEmail(em, a.member.full_name, m, hostName); } catch (e) { console.warn('meetup 2h email:', e.message); } }
+          try { await notifyMember(a.member_id, { title: 'Meet-up starting soon', body: (m.title || 'Your meet-up') + ' starts in about 2 hours' + (m.city ? ' in ' + m.city : ''), icon: 'schedule', link: '/ffp-member-dashboard.html#panel-meetups' }); } catch (e) {}
+          try { await supabase.from('meetup_attendees').update({ reminder_2h_sent_at: new Date().toISOString() }).eq('id', a.id); } catch (e) {}
+          startingSoon++;
+        }
       }
     }
-    return res.json({ success: true, reminded: total });
+    return res.json({ success: true, day_before: dayBefore, starting_soon: startingSoon });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
