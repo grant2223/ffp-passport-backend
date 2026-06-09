@@ -1,4 +1,11 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v83
+// FFP Passport — Express Server (Vercel, CommonJS) — v85
+// v85 (2026-06-09): IN-APP BELL + PUSH together. New notifyMember(memberId, {title,body,icon,link}) helper
+//      inserts a notifications-table row (bell) AND sends the phone push in one call. All event triggers now
+//      use it, so meet-up request/confirm/cancel/24h-reminder, event RSVP and /api/notify/member each land in
+//      the in-app bell, on the lock screen, and (where applicable) by email. Admin broadcast already did both.
+// v84 (2026-06-09): PUSH TRIGGERS wired into real events — meet-up request (to host), confirmed/approved,
+//      cancelled (to all attendees), the 24h "coming up" reminder cron, event RSVP, and the generic
+//      /api/notify/member. Each now also fires a phone push alongside its existing email.
 // v83 (2026-06-09): WEB PUSH (phone notifications). New push_subscriptions table + endpoints
 //      /api/push/subscribe (upsert + welcome push), /api/push/unsubscribe, /api/push/test. Helpers
 //      sendPushToMember / sendPushToAll (web-push + VAPID from env; prune dead 404/410 endpoints). Admin
@@ -1407,12 +1414,14 @@ app.post('/api/meetups/notify', async (req, res) => {
       const { data: host } = await supabase.from('members').select('email, full_name').eq('id', m.host_member_id).maybeSingle();
       const { data: reqr } = await supabase.from('members').select('full_name').eq('id', memberId).maybeSingle();
       if (host && host.email) { try { await sendMeetupRequestEmail(host.email, host.full_name, reqr && reqr.full_name, m); } catch (e) { console.warn('meetup request email:', e.message); } }
+      try { await notifyMember(m.host_member_id, { title: 'New meet-up request', body: ((reqr && reqr.full_name) || 'Someone') + ' wants to join ' + (m.title || 'your meet-up'), icon: 'group_add', link: '/ffp-member-dashboard.html#panel-meetups' }); } catch (e) {}
       return res.json({ success: true });
     }
     if (kind === 'confirm') {
       if (!memberId) return res.status(400).json({ error: 'member_id required' });
       const { data: mem } = await supabase.from('members').select('email, full_name').eq('id', memberId).maybeSingle();
       if (mem && mem.email) { try { await sendMeetupConfirmEmail(mem.email, mem.full_name, m, hostName); } catch (e) { console.warn('meetup confirm email:', e.message); } }
+      try { await notifyMember(memberId, { title: 'Meet-up confirmed', body: 'You are in for ' + (m.title || 'the meet-up') + (m.city ? ' in ' + m.city : ''), icon: 'event_available', link: '/ffp-member-dashboard.html#panel-meetups' }); } catch (e) {}
       return res.json({ success: true });
     }
     if (kind === 'cancel') {
@@ -1421,6 +1430,7 @@ app.post('/api/meetups/notify', async (req, res) => {
       for (const a of (atts || [])) {
         const em = a.member && a.member.email;
         if (em) { try { await sendMeetupCancelEmail(em, a.member.full_name, m); sent++; } catch (e) { console.warn('meetup cancel email:', e.message); } }
+        try { await notifyMember(a.member_id, { title: 'Meet-up cancelled', body: (m.title || 'A meet-up') + ' has been cancelled', icon: 'event_busy', link: '/ffp-member-dashboard.html#panel-meetups' }); } catch (e) {}
       }
       return res.json({ success: true, emailed: sent });
     }
@@ -1474,6 +1484,7 @@ app.post('/api/events/notify', async (req, res) => {
       ev.pname = provName;
       const { data: mem } = await supabase.from('members').select('email, full_name').eq('id', memberId).maybeSingle();
       if (mem && mem.email) { try { await sendEventRsvpMemberEmail(mem.email, mem.full_name, ev); } catch (e) { console.warn('event rsvp member email:', e.message); } }
+      try { await notifyMember(memberId, { title: 'You are confirmed', body: 'You are confirmed for ' + (ev.title || 'the event'), icon: 'event', link: '/ffp-member-dashboard.html' }); } catch (e) {}
       if (provEmail) { try { await sendEventRsvpProviderEmail(provEmail, provName, mem && mem.full_name, ev); } catch (e) { console.warn('event rsvp provider email:', e.message); } }
       return res.json({ success: true });
     }
@@ -1500,6 +1511,7 @@ app.post('/api/notify/member', async (req, res) => {
     var firstName = String((mem.full_name || '').split(' ')[0] || 'there').replace(/[<>]/g, '');
     var html = brandEmail(heading || subject, '<p style="margin:0 0 14px;">Hi ' + firstName + ',</p>' + bodyHtml);
     await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: mem.email, subject: subject, html: html });
+    try { var _pb = bodyHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140); await notifyMember(toMemberId, { title: subject, body: _pb, icon: 'notifications', link: '/ffp-member-dashboard.html' }); } catch (e) {}
     return res.json({ success: true });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
@@ -1518,10 +1530,11 @@ app.get('/api/cron/meetup-reminders', async (req, res) => {
     for (const m of (ms || [])) {
       let hostName = null;
       if (m.host_member_id) { const { data: h } = await supabase.from('members').select('full_name').eq('id', m.host_member_id).maybeSingle(); hostName = h && h.full_name; }
-      const { data: atts } = await supabase.from('meetup_attendees').select('id, member:member_id(email, full_name)').eq('meetup_id', m.id).is('reminder_sent_at', null);
+      const { data: atts } = await supabase.from('meetup_attendees').select('id, member_id, member:member_id(email, full_name)').eq('meetup_id', m.id).is('reminder_sent_at', null);
       for (const a of (atts || [])) {
         const em = a.member && a.member.email;
         if (em) { try { await sendMeetupReminderEmail(em, a.member.full_name, m, hostName); await supabase.from('meetup_attendees').update({ reminder_sent_at: new Date().toISOString() }).eq('id', a.id); total++; } catch (e) { console.warn('meetup reminder:', e.message); } }
+        try { await notifyMember(a.member_id, { title: 'Meet-up coming up', body: (m.title || 'Your meet-up') + ' is within 24 hours' + (m.city ? ' in ' + m.city : ''), icon: 'schedule', link: '/ffp-member-dashboard.html#panel-meetups' }); } catch (e) {}
       }
     }
     return res.json({ success: true, reminded: total });
@@ -1629,6 +1642,20 @@ async function sendPushToAll(payloadObj) {
   if (!PUSH_READY) return 0;
   const { data } = await supabase.from('push_subscriptions').select('endpoint, p256dh, auth');
   return _sendPushTo(data || [], payloadObj);
+}
+
+// One call → BOTH the in-app bell row (notifications table) AND a phone push. n = { title, body, icon
+// (material-symbol name for the bell), link }. Use this for event-driven member alerts so they show in the
+// bell, on the lock screen, and (where the caller also sends one) by email.
+async function notifyMember(memberId, n) {
+  if (!memberId || !n || !n.title) return;
+  try {
+    await supabase.from('notifications').insert({
+      audience: 'member', member_id: memberId, title: n.title, body: n.body || null,
+      icon: n.icon || 'notifications', link: n.link || null
+    });
+  } catch (e) { console.warn('[notify] bell insert:', e.message); }
+  try { await sendPushToMember(memberId, { title: n.title, body: n.body || '', url: n.link || '/ffp-member-dashboard.html', icon: '/assets/icons/ffp-icon-192.png' }); } catch (e) {}
 }
 
 // Member subscribes (after granting permission in the browser). Upsert by endpoint; send a welcome push.
