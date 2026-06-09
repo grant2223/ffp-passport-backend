@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v86
+// FFP Passport — Express Server (Vercel, CommonJS) — v87
+// v87 (2026-06-09): QUESTS — /api/quests + /api/quests/:id now return created_by (so the member dashboard
+//      can show the Edit-quest button to the owner — the photo can only be changed via Edit, so this also
+//      unblocks swapping a quest photo). New POST /api/quests/:id/invite — a member invites chosen FFP
+//      connections to "join me" on a quest; each invitee gets a bell row + phone push (via notifyMember)
+//      with a deep link that opens the quest. Self-invites and the inviter are skipped.
 // v86 (2026-06-09): MEET-UP REMINDERS — two windows: a DAY-BEFORE nudge (2–24h out) gated to daytime
 //      (05–18 UTC = 9am–10pm UAE, so it never buzzes at 3am), and a STARTING-SOON nudge ~2h before (own
 //      flag reminder_2h_sent_at so both fire). Each delivers bell + push + email. Vercel cron moved 3am→6am
@@ -1906,7 +1911,7 @@ app.get('/api/quests', async (req, res) => {
     const memberId = req.query.member_id || null;
     const { data: quests, error } = await supabase
       .from('quests')
-      .select('id, title, description, category, scope, target_count, hero_image_url, reward_type, prize_total, prize_remaining, prize_text, active_to, provider_id, owner_type')
+      .select('id, title, description, category, scope, target_count, hero_image_url, reward_type, prize_total, prize_remaining, prize_text, active_to, provider_id, owner_type, created_by')
       .eq('status', 'live')
       .order('created_at', { ascending: false })
       .limit(200);
@@ -1942,7 +1947,7 @@ app.get('/api/quests/:id', async (req, res) => {
     const memberId = req.query.member_id || null;
     const { data: quest, error } = await supabase
       .from('quests')
-      .select('id, title, description, category, scope, target_count, hero_image_url, reward_type, prize_total, prize_remaining, prize_text, active_to, provider_id, owner_type')
+      .select('id, title, description, category, scope, target_count, hero_image_url, reward_type, prize_total, prize_remaining, prize_text, active_to, provider_id, owner_type, created_by')
       .eq('id', id)
       .single();
     if (error || !quest) return res.status(404).json({ error: 'Quest not found' });
@@ -1967,6 +1972,43 @@ app.get('/api/quests/:id', async (req, res) => {
       .select('*', { count: 'exact', head: true })
       .eq('quest_id', id);
     res.json({ success: true, quest, venues: venues || [], progress, joined_count: joined_count || 0 });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+// v87: Invite FFP connections to "join me" on a quest — each invitee gets a bell row + phone push.
+app.post('/api/quests/:id/invite', async (req, res) => {
+  try {
+    const questId = req.params.id;
+    const fromId = (req.body && (req.body.from_member_id || req.body.member_id)) || null;
+    let toIds = (req.body && req.body.to_member_ids) || [];
+    if (!Array.isArray(toIds)) toIds = [];
+    // de-dupe, drop blanks + don't invite yourself
+    toIds = Array.from(new Set(toIds.filter(x => x && x !== fromId)));
+    if (!fromId || !toIds.length) return res.status(400).json({ error: 'Missing inviter or recipients' });
+
+    const { data: quest } = await supabase
+      .from('quests').select('id, title, owner_type').eq('id', questId).single();
+    if (!quest) return res.status(404).json({ error: 'Quest not found' });
+
+    const { data: inviter } = await supabase
+      .from('members').select('full_name').eq('id', fromId).maybeSingle();
+    const who = (inviter && inviter.full_name) ? inviter.full_name : 'A friend';
+    const title = quest.title || 'a quest';
+
+    let sent = 0;
+    for (const toId of toIds) {
+      try {
+        await notifyMember(toId, {
+          title: who + ' invited you to a quest',
+          body: 'Join me on “' + title + '” — tap to take a look',
+          icon: 'explore',
+          link: '/ffp-member-dashboard.html?quest=' + encodeURIComponent(questId) + '#panel-quests'
+        });
+        sent++;
+      } catch (e) {}
+    }
+    res.json({ success: true, sent });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
