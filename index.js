@@ -1,4 +1,6 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v88
+// FFP Passport — Express Server (Vercel, CommonJS) — v89
+// v89 (2026-06-10): Activity photos — /api/storage/upload now allows the 'activity-photos' bucket (was
+//      quest-images only), so the Log Activity photo upload's server fallback works for members.
 // v88 (2026-06-10): SHARED ACTIVITIES — POST /api/activity/notify lets a member who logged an activity
 //      with "Share with my connections" ON notify everyone in their collection (member_connections):
 //      each gets a bell + phone push ("<Name> logged an activity — tap to see how it went") that deep
@@ -1270,7 +1272,7 @@ function verifyProviderToken(token) {
 // here with the member's long-lived refresh token; we verify it → member id, then upload with the
 // SERVICE key into the member's own folder. Storage write policies stay LOCKED (anon/public removed).
 // Bucket allowlist + size cap guard abuse. Providers/admins keep uploading directly (real auth session).
-const UPLOAD_BUCKETS = { 'quest-images': true };
+const UPLOAD_BUCKETS = { 'quest-images': true, 'activity-photos': true };
 app.post('/api/storage/upload', async (req, res) => {
   try {
     const { refresh, bucket, key, data } = req.body || {};
