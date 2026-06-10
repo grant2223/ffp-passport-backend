@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v90
+// FFP Passport — Express Server (Vercel, CommonJS) — v92
+// v92 (2026-06-10): MEET-UP INVITE — POST /api/meetups/:id/invite lets a member invite chosen FFP
+//      connections to a meet-up (same as quest invites): each gets a bell + push deep-linking to it.
+// v91 (2026-06-10): MEET-UP MATCH NOTIFY — POST /api/meetups/notify {kind:'new'} notifies every member
+//      who matches the MEET-UP's own criteria (city · gender · age range, via meetup_match_members RPC),
+//      not the host's profile. Host + notifications-off members are excluded. Bell + phone push, deep link.
 // v90 (2026-06-10): Meet-up notification deep links — the host's "wants to join" + the attendee's
 //      "confirmed" notifications now carry ?meetup=<id> so tapping opens that specific meet-up's detail
 //      (host lands right on the Approve/Ignore request queue), not just the generic meet-ups panel.
@@ -1426,6 +1431,29 @@ app.post('/api/meetups/notify', async (req, res) => {
     if (!m) return res.status(404).json({ error: 'meetup not found' });
     let hostName = null;
     if (m.host_member_id) { const { data: h } = await supabase.from('members').select('full_name').eq('id', m.host_member_id).maybeSingle(); hostName = h && h.full_name; }
+    if (kind === 'new') {
+      // v91: a meet-up was posted → notify members who match ITS criteria (city · gender · age range).
+      let ids = [];
+      try {
+        const { data: matches } = await supabase.rpc('meetup_match_members', { p_meetup: meetupId });
+        ids = (matches || []).map(r => r.member_id).filter(Boolean);
+      } catch (e) { console.warn('meetup match:', e.message); }
+      const what = m.title || m.sport || 'A meet-up';
+      const where = m.city ? (' in ' + m.city) : '';
+      let notified = 0;
+      for (const toId of ids.slice(0, 800)) {
+        try {
+          await notifyMember(toId, {
+            title: 'New meet-up near you',
+            body: what + where + ' — tap to take a look',
+            icon: 'groups',
+            link: '/ffp-member-dashboard.html?meetup=' + meetupId + '#panel-meetups'
+          });
+          notified++;
+        } catch (e) {}
+      }
+      return res.json({ success: true, notified });
+    }
     if (kind === 'request') {
       // v72: a member requested to join → email the HOST so they can approve.
       if (!memberId) return res.status(400).json({ error: 'member_id required' });
@@ -2026,6 +2054,37 @@ app.post('/api/activity/notify', async (req, res) => {
       } catch (e) {}
     }
     res.json({ success: true, notified });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+// v92: Invite FFP connections to a meet-up — each invitee gets a bell + push deep-linking to it.
+app.post('/api/meetups/:id/invite', async (req, res) => {
+  try {
+    const meetupId = req.params.id;
+    const fromId = (req.body && (req.body.from_member_id || req.body.member_id)) || null;
+    let toIds = (req.body && req.body.to_member_ids) || [];
+    if (!Array.isArray(toIds)) toIds = [];
+    toIds = Array.from(new Set(toIds.filter(x => x && x !== fromId)));
+    if (!fromId || !toIds.length) return res.status(400).json({ error: 'Missing inviter or recipients' });
+    const { data: m } = await supabase.from('meetups').select('id, title, sport, city').eq('id', meetupId).single();
+    if (!m) return res.status(404).json({ error: 'Meet-up not found' });
+    const { data: inviter } = await supabase.from('members').select('full_name').eq('id', fromId).maybeSingle();
+    const who = (inviter && inviter.full_name) ? inviter.full_name : 'A friend';
+    const what = m.title || m.sport || 'a meet-up';
+    let sent = 0;
+    for (const toId of toIds) {
+      try {
+        await notifyMember(toId, {
+          title: who + ' invited you to a meet-up',
+          body: 'Join “' + what + '”' + (m.city ? ' in ' + m.city : '') + ' — tap to take a look',
+          icon: 'group_add',
+          link: '/ffp-member-dashboard.html?meetup=' + encodeURIComponent(meetupId) + '#panel-meetups'
+        });
+        sent++;
+      } catch (e) {}
+    }
+    res.json({ success: true, sent });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
