@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v87
+// FFP Passport — Express Server (Vercel, CommonJS) — v88
+// v88 (2026-06-10): SHARED ACTIVITIES — POST /api/activity/notify lets a member who logged an activity
+//      with "Share with my connections" ON notify everyone in their collection (member_connections):
+//      each gets a bell + phone push ("<Name> logged an activity — tap to see how it went") that deep
+//      links to the activity card. Self is skipped; only fires for a shared activity owned by the caller.
 // v87 (2026-06-09): QUESTS — /api/quests + /api/quests/:id now return created_by (so the member dashboard
 //      can show the Edit-quest button to the owner — the photo can only be changed via Edit, so this also
 //      unblocks swapping a quest photo). New POST /api/quests/:id/invite — a member invites chosen FFP
@@ -1892,7 +1896,7 @@ app.get('/api/members/:id/activity-logs', async (req, res) => {
     const { id } = req.params;
     const { data: logs, error } = await supabase
       .from('activity_logs')
-      .select('id, activity, category, venue, provider_id, duration_min, duration_sec, intensity, calories, distance_km, avg_heart_rate, notes, logged_at, city, country, verified, checkin_lat, checkin_lng')
+      .select('id, activity, category, venue, provider_id, duration_min, duration_sec, intensity, calories, distance_km, avg_heart_rate, notes, logged_at, city, country, verified, checkin_lat, checkin_lng, photo_url, shared')
       .eq('member_id', id)
       .order('logged_at', { ascending: false })
       .limit(500);
@@ -1972,6 +1976,51 @@ app.get('/api/quests/:id', async (req, res) => {
       .select('*', { count: 'exact', head: true })
       .eq('quest_id', id);
     res.json({ success: true, quest, venues: venues || [], progress, joined_count: joined_count || 0 });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+// v88: A member shares a logged activity → notify everyone in their collection (member_connections).
+app.post('/api/activity/notify', async (req, res) => {
+  try {
+    const memberId = (req.body && (req.body.member_id || req.body.from_member_id)) || null;
+    const activityId = (req.body && req.body.activity_id) || null;
+    if (!memberId || !activityId) return res.status(400).json({ error: 'Missing member or activity' });
+
+    // The activity must belong to this member AND be shared.
+    const { data: act } = await supabase
+      .from('activity_logs').select('id, member_id, activity, city, shared').eq('id', activityId).single();
+    if (!act || act.member_id !== memberId) return res.status(404).json({ error: 'Activity not found' });
+    if (!act.shared) return res.json({ success: true, notified: 0, skipped: 'not shared' });
+
+    // Collection = member_connections involving this member (non-rejected).
+    const { data: conns } = await supabase
+      .from('member_connections')
+      .select('requester_id, addressee_id, status')
+      .or('requester_id.eq.' + memberId + ',addressee_id.eq.' + memberId);
+    const ids = Array.from(new Set((conns || [])
+      .filter(c => (c.status || '') !== 'rejected')
+      .map(c => (c.requester_id === memberId ? c.addressee_id : c.requester_id))
+      .filter(x => x && x !== memberId)));
+
+    const { data: me } = await supabase.from('members').select('full_name').eq('id', memberId).maybeSingle();
+    const who = (me && me.full_name) ? me.full_name : 'A connection';
+    const what = act.activity || 'an activity';
+    const where = act.city ? (' in ' + act.city) : '';
+
+    let notified = 0;
+    for (const toId of ids) {
+      try {
+        await notifyMember(toId, {
+          title: who + ' logged an activity',
+          body: what + where + ' — tap to see how it went',
+          icon: 'fitness_center',
+          link: '/ffp-member-dashboard.html?activity=' + encodeURIComponent(activityId) + '#panel-passport'
+        });
+        notified++;
+      } catch (e) {}
+    }
+    res.json({ success: true, notified });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
