@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v89
+// FFP Passport — Express Server (Vercel, CommonJS) — v90
+// v90 (2026-06-10): Meet-up notification deep links — the host's "wants to join" + the attendee's
+//      "confirmed" notifications now carry ?meetup=<id> so tapping opens that specific meet-up's detail
+//      (host lands right on the Approve/Ignore request queue), not just the generic meet-ups panel.
 // v89 (2026-06-10): Activity photos — /api/storage/upload now allows the 'activity-photos' bucket (was
 //      quest-images only), so the Log Activity photo upload's server fallback works for members.
 // v88 (2026-06-10): SHARED ACTIVITIES — POST /api/activity/notify lets a member who logged an activity
@@ -1430,14 +1433,14 @@ app.post('/api/meetups/notify', async (req, res) => {
       const { data: host } = await supabase.from('members').select('email, full_name').eq('id', m.host_member_id).maybeSingle();
       const { data: reqr } = await supabase.from('members').select('full_name').eq('id', memberId).maybeSingle();
       if (host && host.email) { try { await sendMeetupRequestEmail(host.email, host.full_name, reqr && reqr.full_name, m); } catch (e) { console.warn('meetup request email:', e.message); } }
-      try { await notifyMember(m.host_member_id, { title: 'New meet-up request', body: ((reqr && reqr.full_name) || 'Someone') + ' wants to join ' + (m.title || 'your meet-up'), icon: 'group_add', link: '/ffp-member-dashboard.html#panel-meetups' }); } catch (e) {}
+      try { await notifyMember(m.host_member_id, { title: 'New meet-up request', body: ((reqr && reqr.full_name) || 'Someone') + ' wants to join ' + (m.title || 'your meet-up'), icon: 'group_add', link: '/ffp-member-dashboard.html?meetup=' + meetupId + '#panel-meetups' }); } catch (e) {}
       return res.json({ success: true });
     }
     if (kind === 'confirm') {
       if (!memberId) return res.status(400).json({ error: 'member_id required' });
       const { data: mem } = await supabase.from('members').select('email, full_name').eq('id', memberId).maybeSingle();
       if (mem && mem.email) { try { await sendMeetupConfirmEmail(mem.email, mem.full_name, m, hostName); } catch (e) { console.warn('meetup confirm email:', e.message); } }
-      try { await notifyMember(memberId, { title: 'Meet-up confirmed', body: 'You are in for ' + (m.title || 'the meet-up') + (m.city ? ' in ' + m.city : ''), icon: 'event_available', link: '/ffp-member-dashboard.html#panel-meetups' }); } catch (e) {}
+      try { await notifyMember(memberId, { title: 'Meet-up confirmed', body: 'You are in for ' + (m.title || 'the meet-up') + (m.city ? ' in ' + m.city : ''), icon: 'event_available', link: '/ffp-member-dashboard.html?meetup=' + meetupId + '#panel-meetups' }); } catch (e) {}
       return res.json({ success: true });
     }
     if (kind === 'cancel') {
