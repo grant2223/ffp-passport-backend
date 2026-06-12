@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v92
+// FFP Passport — Express Server (Vercel, CommonJS) — v93
+// v93 (2026-06-12): FACILITY PAYMENTS — Stripe Connect (Standard) onboarding. POST /api/facility/connect/start
+//      (refresh-token auth → confirms providers.owner_user_id → returns Stripe OAuth URL, signed 10-min state)
+//      + GET /api/facility/connect/callback (oauth.token swap → save providers.stripe_account_id + payments_status
+//      ='connected' → bounce to portal Billing). Zero application fee. NEW env: STRIPE_CONNECT_CLIENT_ID,
+//      STRIPE_CONNECT_REDIRECT_URI, PROVIDER_DASH_URL (optional). Phase 1 of the facility-billing build.
 // v92 (2026-06-10): MEET-UP INVITE — POST /api/meetups/:id/invite lets a member invite chosen FFP
 //      connections to a meet-up (same as quest invites): each gets a bell + push deep-linking to it.
 // v91 (2026-06-10): MEET-UP MATCH NOTIFY — POST /api/meetups/notify {kind:'new'} notifies every member
@@ -1273,6 +1278,99 @@ function verifyProviderToken(token) {
     return memberId;
   } catch (_) { return null; }
 }
+
+// ── FACILITY PAYMENTS — Stripe Connect (Standard) onboarding ─────────────────────────────────
+// A facility links its OWN Stripe account via OAuth so it can collect member payments directly
+// (zero application fee; money → facility's Stripe → their bank). We only store the connected
+// account id against the provider row. REQUIRES env:
+//   STRIPE_CONNECT_CLIENT_ID      = platform Connect client_id (ca_…)  [Dashboard → Connect → Settings]
+//   STRIPE_CONNECT_REDIRECT_URI   = this backend's /api/facility/connect/callback URL (must match Dashboard)
+//   PROVIDER_DASH_URL (optional)  = where to bounce the facility back after authorising
+const CONNECT_CLIENT_ID    = process.env.STRIPE_CONNECT_CLIENT_ID || '';
+const CONNECT_REDIRECT_URI = process.env.STRIPE_CONNECT_REDIRECT_URI || '';
+const PROVIDER_DASH_URL    = process.env.PROVIDER_DASH_URL || (SITE_URL + '/ffp-provider-dashboard.html');
+
+// Short-lived signed state (HMAC, server-only) tying the OAuth round-trip to one provider id.
+function signConnectState(providerId) {
+  const payload = `${providerId}.${Date.now() + 10 * 60 * 1000}`; // 10-minute window
+  const sig = crypto.createHmac('sha256', VERIFY_SECRET).update('connect:' + payload).digest('hex');
+  return b64url(payload) + '.' + sig;
+}
+function verifyConnectState(state) {
+  try {
+    const parts = String(state).split('.');
+    if (parts.length !== 2) return null;
+    const payload = Buffer.from(parts[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const expect  = crypto.createHmac('sha256', VERIFY_SECRET).update('connect:' + payload).digest('hex');
+    const a = Buffer.from(parts[1]); const b = Buffer.from(expect);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const [pid, expStr] = payload.split('.');
+    if (!pid || Number(expStr) < Date.now()) return null;
+    return pid;
+  } catch (_) { return null; }
+}
+
+// Begin connect: the portal posts the signed-in member's refresh token + their provider_id.
+// We confirm they OWN that facility, then hand back Stripe's hosted OAuth URL.
+app.post('/api/facility/connect/start', async (req, res) => {
+  try {
+    const { refresh, provider_id } = req.body || {};
+    const v = refresh ? verifyRefreshToken(refresh) : null;
+    if (!v) return res.status(401).json({ error: 'Not signed in' });
+    if (!provider_id) return res.status(400).json({ error: 'Missing provider_id' });
+    if (!CONNECT_CLIENT_ID || !CONNECT_REDIRECT_URI) {
+      return res.status(500).json({ error: 'Payments not configured yet — Connect client_id / redirect URI missing.' });
+    }
+    const { data: prov, error } = await supabase
+      .from('providers').select('id, owner_user_id, business_name, contact_email, stripe_account_id')
+      .eq('id', provider_id).maybeSingle();
+    if (error) throw error;
+    if (!prov || String(prov.owner_user_id) !== String(v.memberId)) {
+      return res.status(403).json({ error: 'Not your facility' });
+    }
+    if (prov.stripe_account_id) {
+      return res.json({ already_connected: true });
+    }
+    const state = signConnectState(provider_id);
+    const url = 'https://connect.stripe.com/oauth/authorize'
+      + '?response_type=code'
+      + '&client_id=' + encodeURIComponent(CONNECT_CLIENT_ID)
+      + '&scope=read_write'
+      + '&redirect_uri=' + encodeURIComponent(CONNECT_REDIRECT_URI)
+      + '&state=' + encodeURIComponent(state)
+      + (prov.contact_email ? '&stripe_user[email]=' + encodeURIComponent(prov.contact_email) : '')
+      + (prov.business_name ? '&stripe_user[business_name]=' + encodeURIComponent(prov.business_name) : '');
+    res.json({ url });
+  } catch (e) {
+    console.error('[connect/start]', e);
+    res.status(500).json({ error: 'Could not start Stripe connection' });
+  }
+});
+
+// Stripe redirects the facility back here with ?code & ?state. Swap the code for their account id,
+// store it, then bounce them to the portal Billing panel.
+app.get('/api/facility/connect/callback', async (req, res) => {
+  const back = (flag) => res.redirect(PROVIDER_DASH_URL + '?panel=billing&stripe=' + flag);
+  try {
+    const { code, state, error: oauthError } = req.query || {};
+    if (oauthError) return back('denied');
+    const pid = verifyConnectState(state);
+    if (!pid || !code) return back('error');
+    const resp = await stripe.oauth.token({ grant_type: 'authorization_code', code: String(code) });
+    const acct = resp && resp.stripe_user_id;
+    if (!acct) return back('error');
+    const { error } = await supabase.from('providers').update({
+      stripe_account_id: acct,
+      stripe_connected_at: new Date().toISOString(),
+      payments_status: 'connected'
+    }).eq('id', pid);
+    if (error) throw error;
+    return back('connected');
+  } catch (e) {
+    console.error('[connect/callback]', e);
+    return back('error');
+  }
+});
 
 // ── v74: MEMBER IMAGE UPLOAD (proper, server-validated) ──────────────────────────────────────
 // Members reach Supabase as the `anon` role (custom FFP JWT + anon key), so they can't write Storage
