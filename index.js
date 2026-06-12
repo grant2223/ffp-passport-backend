@@ -1,9 +1,11 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v93
-// v93 (2026-06-12): FACILITY PAYMENTS — Stripe Connect (Standard) onboarding. POST /api/facility/connect/start
-//      (refresh-token auth → confirms providers.owner_user_id → returns Stripe OAuth URL, signed 10-min state)
-//      + GET /api/facility/connect/callback (oauth.token swap → save providers.stripe_account_id + payments_status
-//      ='connected' → bounce to portal Billing). Zero application fee. NEW env: STRIPE_CONNECT_CLIENT_ID,
-//      STRIPE_CONNECT_REDIRECT_URI, PROVIDER_DASH_URL (optional). Phase 1 of the facility-billing build.
+// FFP Passport — Express Server (Vercel, CommonJS) — v94
+// v94 (2026-06-12): FACILITY PAYMENTS — switched Connect onboarding to ACCOUNT LINKS (Stripe-hosted), since new
+//      platforms no longer get an OAuth client_id without platform-profile review. POST /api/facility/connect/start
+//      (refresh-token auth → owner check → ensure a Standard account via accounts.create → accountLinks.create →
+//      returns hosted onboarding URL) + GET /api/facility/connect/return (retrieve account → charges_enabled?
+//      → payments_status 'connected'/'onboarding' → bounce to Billing) + GET /api/facility/connect/refresh (new
+//      link when expired). NO client_id / redirect URI needed — only STRIPE_SECRET_KEY (set) + Connect enabled.
+//      Optional env: PROVIDER_DASH_URL, BACKEND_BASE_URL. Zero application fee. (Replaces the v93 OAuth flow.)
 // v92 (2026-06-10): MEET-UP INVITE — POST /api/meetups/:id/invite lets a member invite chosen FFP
 //      connections to a meet-up (same as quest invites): each gets a bell + push deep-linking to it.
 // v91 (2026-06-10): MEET-UP MATCH NOTIFY — POST /api/meetups/notify {kind:'new'} notifies every member
@@ -1279,20 +1281,19 @@ function verifyProviderToken(token) {
   } catch (_) { return null; }
 }
 
-// ── FACILITY PAYMENTS — Stripe Connect (Standard) onboarding ─────────────────────────────────
-// A facility links its OWN Stripe account via OAuth so it can collect member payments directly
-// (zero application fee; money → facility's Stripe → their bank). We only store the connected
-// account id against the provider row. REQUIRES env:
-//   STRIPE_CONNECT_CLIENT_ID      = platform Connect client_id (ca_…)  [Dashboard → Connect → Settings]
-//   STRIPE_CONNECT_REDIRECT_URI   = this backend's /api/facility/connect/callback URL (must match Dashboard)
-//   PROVIDER_DASH_URL (optional)  = where to bounce the facility back after authorising
-const CONNECT_CLIENT_ID    = process.env.STRIPE_CONNECT_CLIENT_ID || '';
-const CONNECT_REDIRECT_URI = process.env.STRIPE_CONNECT_REDIRECT_URI || '';
-const PROVIDER_DASH_URL    = process.env.PROVIDER_DASH_URL || (SITE_URL + '/ffp-provider-dashboard.html');
+// ── FACILITY PAYMENTS — Stripe Connect (Standard) onboarding via Account Links ────────────────
+// Each facility gets a Standard connected account created via the API; they finish onboarding on
+// Stripe's own hosted form (KYC, bank, ID). Charges are taken directly on their account with ZERO
+// application fee → money → facility's Stripe → their bank; FFP never touches it. No client_id and
+// no pre-registered redirect URI needed — only STRIPE_SECRET_KEY (already set) + Connect enabled.
+//   PROVIDER_DASH_URL (optional)  = where to bounce the facility back after onboarding
+//   BACKEND_BASE_URL (optional)   = this backend's public origin (for return/refresh links)
+const PROVIDER_DASH_URL = process.env.PROVIDER_DASH_URL || (SITE_URL + '/ffp-provider-dashboard.html');
+const BACKEND_BASE = (process.env.BACKEND_BASE_URL || 'https://ffp-passport-backend.vercel.app').replace(/\/$/, '');
 
-// Short-lived signed state (HMAC, server-only) tying the OAuth round-trip to one provider id.
+// Signed, time-boxed token tying the hosted-onboarding round-trip to one provider id (HMAC, server-only).
 function signConnectState(providerId) {
-  const payload = `${providerId}.${Date.now() + 10 * 60 * 1000}`; // 10-minute window
+  const payload = `${providerId}.${Date.now() + 2 * 60 * 60 * 1000}`; // 2-hour window (onboarding can take minutes)
   const sig = crypto.createHmac('sha256', VERIFY_SECRET).update('connect:' + payload).digest('hex');
   return b64url(payload) + '.' + sig;
 }
@@ -1309,66 +1310,95 @@ function verifyConnectState(state) {
     return pid;
   } catch (_) { return null; }
 }
+function buildAccountLink(providerId, accountId) {
+  const t = signConnectState(providerId);
+  return stripe.accountLinks.create({
+    account: accountId,
+    refresh_url: BACKEND_BASE + '/api/facility/connect/refresh?pid=' + encodeURIComponent(t),
+    return_url:  BACKEND_BASE + '/api/facility/connect/return?pid='  + encodeURIComponent(t),
+    type: 'account_onboarding'
+  });
+}
 
-// Begin connect: the portal posts the signed-in member's refresh token + their provider_id.
-// We confirm they OWN that facility, then hand back Stripe's hosted OAuth URL.
+// Begin onboarding: portal posts the signed-in member's refresh token + provider_id. We confirm they
+// OWN that facility, ensure a Standard connected account exists, and return a Stripe-hosted onboarding link.
 app.post('/api/facility/connect/start', async (req, res) => {
   try {
     const { refresh, provider_id } = req.body || {};
     const v = refresh ? verifyRefreshToken(refresh) : null;
     if (!v) return res.status(401).json({ error: 'Not signed in' });
     if (!provider_id) return res.status(400).json({ error: 'Missing provider_id' });
-    if (!CONNECT_CLIENT_ID || !CONNECT_REDIRECT_URI) {
-      return res.status(500).json({ error: 'Payments not configured yet — Connect client_id / redirect URI missing.' });
-    }
     const { data: prov, error } = await supabase
-      .from('providers').select('id, owner_user_id, business_name, contact_email, stripe_account_id')
+      .from('providers').select('id, owner_user_id, business_name, contact_email, stripe_account_id, payments_status')
       .eq('id', provider_id).maybeSingle();
     if (error) throw error;
     if (!prov || String(prov.owner_user_id) !== String(v.memberId)) {
       return res.status(403).json({ error: 'Not your facility' });
     }
-    if (prov.stripe_account_id) {
-      return res.json({ already_connected: true });
+    let acctId = prov.stripe_account_id;
+    if (acctId) {
+      // Existing account: if fully enabled we're done; otherwise resume onboarding.
+      try {
+        const acct = await stripe.accounts.retrieve(acctId);
+        if (acct && acct.charges_enabled) {
+          if (prov.payments_status !== 'connected') {
+            await supabase.from('providers').update({ payments_status: 'connected', stripe_connected_at: new Date().toISOString() }).eq('id', provider_id);
+          }
+          return res.json({ already_connected: true });
+        }
+      } catch (e) { acctId = null; } // account was deleted on Stripe → recreate below
     }
-    const state = signConnectState(provider_id);
-    const url = 'https://connect.stripe.com/oauth/authorize'
-      + '?response_type=code'
-      + '&client_id=' + encodeURIComponent(CONNECT_CLIENT_ID)
-      + '&scope=read_write'
-      + '&redirect_uri=' + encodeURIComponent(CONNECT_REDIRECT_URI)
-      + '&state=' + encodeURIComponent(state)
-      + (prov.contact_email ? '&stripe_user[email]=' + encodeURIComponent(prov.contact_email) : '')
-      + (prov.business_name ? '&stripe_user[business_name]=' + encodeURIComponent(prov.business_name) : '');
-    res.json({ url });
+    if (!acctId) {
+      const account = await stripe.accounts.create({
+        type: 'standard',
+        email: prov.contact_email || undefined,
+        business_profile: prov.business_name ? { name: prov.business_name } : undefined
+      });
+      acctId = account.id;
+      await supabase.from('providers').update({ stripe_account_id: acctId, payments_status: 'onboarding' }).eq('id', provider_id);
+    }
+    const link = await buildAccountLink(provider_id, acctId);
+    res.json({ url: link.url });
   } catch (e) {
     console.error('[connect/start]', e);
-    res.status(500).json({ error: 'Could not start Stripe connection' });
+    res.status(500).json({ error: 'Could not start Stripe setup' });
   }
 });
 
-// Stripe redirects the facility back here with ?code & ?state. Swap the code for their account id,
-// store it, then bounce them to the portal Billing panel.
-app.get('/api/facility/connect/callback', async (req, res) => {
+// Stripe returns the facility here after the hosted onboarding form. We check whether the account can
+// now take charges, update status, and bounce them to the portal Billing panel.
+app.get('/api/facility/connect/return', async (req, res) => {
   const back = (flag) => res.redirect(PROVIDER_DASH_URL + '?panel=billing&stripe=' + flag);
   try {
-    const { code, state, error: oauthError } = req.query || {};
-    if (oauthError) return back('denied');
-    const pid = verifyConnectState(state);
-    if (!pid || !code) return back('error');
-    const resp = await stripe.oauth.token({ grant_type: 'authorization_code', code: String(code) });
-    const acct = resp && resp.stripe_user_id;
-    if (!acct) return back('error');
-    const { error } = await supabase.from('providers').update({
-      stripe_account_id: acct,
-      stripe_connected_at: new Date().toISOString(),
-      payments_status: 'connected'
-    }).eq('id', pid);
-    if (error) throw error;
-    return back('connected');
+    const pid = verifyConnectState(req.query && req.query.pid);
+    if (!pid) return back('error');
+    const { data: prov } = await supabase.from('providers').select('stripe_account_id').eq('id', pid).maybeSingle();
+    if (!prov || !prov.stripe_account_id) return back('error');
+    const acct = await stripe.accounts.retrieve(prov.stripe_account_id);
+    const done = !!(acct && acct.charges_enabled);
+    const upd = { payments_status: done ? 'connected' : 'onboarding' };
+    if (done) upd.stripe_connected_at = new Date().toISOString();
+    await supabase.from('providers').update(upd).eq('id', pid);
+    return back(done ? 'connected' : 'incomplete');
   } catch (e) {
-    console.error('[connect/callback]', e);
+    console.error('[connect/return]', e);
     return back('error');
+  }
+});
+
+// Account link expired or the user bounced — mint a fresh onboarding link and send them back in.
+app.get('/api/facility/connect/refresh', async (req, res) => {
+  const errBack = () => res.redirect(PROVIDER_DASH_URL + '?panel=billing&stripe=error');
+  try {
+    const pid = verifyConnectState(req.query && req.query.pid);
+    if (!pid) return errBack();
+    const { data: prov } = await supabase.from('providers').select('stripe_account_id').eq('id', pid).maybeSingle();
+    if (!prov || !prov.stripe_account_id) return errBack();
+    const link = await buildAccountLink(pid, prov.stripe_account_id);
+    return res.redirect(link.url);
+  } catch (e) {
+    console.error('[connect/refresh]', e);
+    return errBack();
   }
 });
 
