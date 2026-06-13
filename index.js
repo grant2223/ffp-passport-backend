@@ -1,4 +1,10 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v95
+// FFP Passport — Express Server (Vercel, CommonJS) — v96
+// v96 (2026-06-14): REFUNDS + PAID NOTIFICATION. (a) POST /api/pay/refund {booking_id} — issues the Stripe refund
+//      on the SAME connected account as the charge (direct-charge refund) for the amount cancel_booking computed
+//      (refunded_aed); resolves acct via providers/pro_slots->professionals; idempotent (idempotencyKey). (b)
+//      finalisePaidCheckout now fires the "payment confirmed / membership active" bell+push via notifyMember ONCE
+//      (guarded against the confirm+webhook double-call), so Passport owns the paid message and the booking site
+//      should send only "booking received". No new env.
 // v95 (2026-06-13): PRO Connect onboarding (/api/pro/connect/start|return|refresh) + BOOKING PAYMENTS — connected-
 //      account Checkout for cash sessions & package purchases (/api/pay/session-checkout, /api/pay/pro-session-checkout,
 //      /api/pay/buy-plan, /api/pay/buy-pro-package), idempotent finalise via /api/pay/confirm + the Stripe webhook
@@ -1623,21 +1629,76 @@ app.get('/api/pay/confirm', async (req, res) => {
 // Shared finaliser (used by confirm + the webhook). Idempotent.
 async function finalisePaidCheckout(kind, p, sess, intent) {
   if (kind === 'session' || kind === 'pro_session') {
-    await supabase.rpc('mark_booking_paid', { p_booking: p.ref || p.booking_id, p_payment_intent: intent, p_charge: null });
+    const bid = p.ref || p.booking_id;
+    // Idempotent: confirm + webhook both call this. Only finalise + notify on the first transition to paid.
+    const { data: bk } = await supabase.from('bookings')
+      .select('id, member_id, payment_status, currency, total_aed').eq('id', bid).maybeSingle();
+    if (!bk || bk.payment_status === 'paid') return;
+    await supabase.rpc('mark_booking_paid', { p_booking: bid, p_payment_intent: intent, p_charge: null });
+    // v96: Passport owns the "payment confirmed" message (it owns the confirmation event) — fires once here.
+    try {
+      await notifyMember(bk.member_id, {
+        title: 'Payment confirmed',
+        body: 'Your booking is confirmed and paid — ' + (bk.currency || 'AED') + ' ' + Number(bk.total_aed || 0).toLocaleString() + '.',
+        icon: 'check_circle', link: '/ffp-member-dashboard.html'
+      });
+    } catch (e) {}
   } else if (kind === 'plan') {
     const { data: ex } = await supabase.from('provider_member_plans').select('id').eq('stripe_session_id', sess.id).maybeSingle();
     if (!ex) {
       const { data: g } = await supabase.rpc('grant_member_plan', { p_member: p.member || p.member_id, p_provider: p.provider || p.provider_id, p_plan: p.plan || p.plan_id });
       if (g && g.member_plan_id) await supabase.from('provider_member_plans').update({ stripe_session_id: sess.id }).eq('id', g.member_plan_id);
+      try { await notifyMember(p.member || p.member_id, { title: 'Membership active', body: 'Your package is paid — your credits are ready to book.', icon: 'redeem', link: '/ffp-member-dashboard.html' }); } catch (e) {}
     }
   } else if (kind === 'pro_package') {
     const { data: ex } = await supabase.from('pro_client_packages').select('id').eq('stripe_session_id', sess.id).maybeSingle();
     if (!ex) {
       const { data: g } = await supabase.rpc('grant_pro_package', { p_member: p.member || p.member_id, p_professional: p.pro || p.professional_id, p_package: p.package || p.package_id });
       if (g && g.client_package_id) await supabase.from('pro_client_packages').update({ stripe_session_id: sess.id }).eq('id', g.client_package_id);
+      try { await notifyMember(p.member || p.member_id, { title: 'Package active', body: 'Your package is paid — your credits are ready to book.', icon: 'redeem', link: '/ffp-member-dashboard.html' }); } catch (e) {}
     }
   }
 }
+
+// ── v96: REFUND (gap #3). cancel_booking (member-gated RPC) computes refund_pct + refunded_aed and marks the
+// booking cancelled/refunded; this endpoint moves the money on the SAME connected account the charge was on
+// (direct-charge refund). Idempotent via Stripe idempotency key. FFP holds no funds, takes no fee on the refund.
+app.post('/api/pay/refund', async (req, res) => {
+  try {
+    const { booking_id } = req.body || {};
+    if (!booking_id) return res.status(400).json({ error: 'Missing booking_id' });
+    const { data: bk } = await supabase.from('bookings')
+      .select('id, provider_id, item_type, item_id, status, payment_status, refunded_aed, payment_ref, stripe_payment_intent_id, stripe_charge_id')
+      .eq('id', booking_id).maybeSingle();
+    if (!bk) return res.status(404).json({ error: 'Booking not found' });
+    if (bk.status !== 'cancelled') return res.status(409).json({ error: 'Booking is not cancelled — call cancel_booking first' });
+    if (!['refunded', 'partially_refunded'].includes(bk.payment_status)) {
+      return res.json({ ok: true, refunded: 0, note: 'No refund due per the cancellation policy' });
+    }
+    const amtFils = Math.round(Number(bk.refunded_aed || 0) * 100);
+    if (!amtFils || amtFils <= 0) return res.json({ ok: true, refunded: 0, note: 'No refund amount' });
+    if (!bk.stripe_payment_intent_id && !bk.stripe_charge_id) {
+      return res.status(409).json({ error: 'No Stripe charge on this booking (credit or unpaid) — nothing to refund' });
+    }
+    // Resolve the connected account: facility via provider_id, pro via item_id -> pro_slots.professional_id.
+    let acctId = null;
+    if (bk.item_type === 'professional_session') {
+      const { data: slot } = await supabase.from('pro_slots').select('professional_id').eq('id', bk.item_id).maybeSingle();
+      if (slot) { const { data: pro } = await supabase.from('professionals').select('stripe_account_id').eq('id', slot.professional_id).maybeSingle(); acctId = pro && pro.stripe_account_id; }
+    } else if (bk.provider_id) {
+      const { data: prov } = await supabase.from('providers').select('stripe_account_id').eq('id', bk.provider_id).maybeSingle();
+      acctId = prov && prov.stripe_account_id;
+    }
+    if (!acctId) return res.status(409).json({ error: 'No connected Stripe account for this booking' });
+    const args = { amount: amtFils };
+    if (bk.stripe_payment_intent_id) args.payment_intent = bk.stripe_payment_intent_id; else args.charge = bk.stripe_charge_id;
+    const refund = await stripe.refunds.create(args, { stripeAccount: acctId, idempotencyKey: 'refund_' + booking_id });
+    await supabase.from('bookings').update({ payment_ref: (bk.payment_ref ? bk.payment_ref + ';' : '') + 'refund:' + refund.id }).eq('id', booking_id);
+    return res.json({ ok: true, refunded: amtFils / 100, refund_id: refund.id, status: refund.status });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
 
 // ── v74: MEMBER IMAGE UPLOAD (proper, server-validated) ──────────────────────────────────────
 // Members reach Supabase as the `anon` role (custom FFP JWT + anon key), so they can't write Storage
