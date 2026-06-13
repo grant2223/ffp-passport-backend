@@ -1,4 +1,10 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v94
+// FFP Passport — Express Server (Vercel, CommonJS) — v95
+// v95 (2026-06-13): PRO Connect onboarding (/api/pro/connect/start|return|refresh) + BOOKING PAYMENTS — connected-
+//      account Checkout for cash sessions & package purchases (/api/pay/session-checkout, /api/pay/pro-session-checkout,
+//      /api/pay/buy-plan, /api/pay/buy-pro-package), idempotent finalise via /api/pay/confirm + the Stripe webhook
+//      (mark_booking_paid / grant_member_plan / grant_pro_package). Direct charges, zero application fee. Env:
+//      BOOKINGS_URL (booking-site return), PRO_DASH_URL (optional). NEW DB cols: provider_member_plans.stripe_session_id,
+//      pro_client_packages.stripe_session_id (grant idempotency).
 // v94 (2026-06-12): FACILITY PAYMENTS — switched Connect onboarding to ACCOUNT LINKS (Stripe-hosted), since new
 //      platforms no longer get an OAuth client_id without platform-profile review. POST /api/facility/connect/start
 //      (refresh-token auth → owner check → ensure a Standard account via accounts.create → accountLinks.create →
@@ -313,6 +319,14 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
       if (session.mode === 'subscription') {
         await activateMemberSubscription(session);
         return res.status(200).json({ received: true, subscription: true });
+      }
+      // v95: booking payments on connected accounts (backup to /api/pay/confirm — same idempotent finalise).
+      if (session.mode === 'payment' && session.metadata && ['session','pro_session','plan','pro_package'].indexOf(session.metadata.kind) >= 0) {
+        try {
+          const intent = (typeof session.payment_intent === 'string') ? session.payment_intent : (session.payment_intent && session.payment_intent.id) || null;
+          if (session.payment_status === 'paid') await finalisePaidCheckout(session.metadata.kind, session.metadata, session, intent);
+        } catch (e) { console.error('[webhook pay finalise]', e); }
+        return res.status(200).json({ received: true, pay: true });
       }
       const email = String((session.customer_details && session.customer_details.email) || session.customer_email || '').trim().toLowerCase(); // v75: normalize email case
       const name  = (session.customer_details && session.customer_details.name) || '';
@@ -1401,6 +1415,229 @@ app.get('/api/facility/connect/refresh', async (req, res) => {
     return errBack();
   }
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// v95 (2026-06-13): PROFESSIONAL Connect onboarding (mirrors facility) + BOOKING PAYMENTS.
+//   Charges are DIRECT on the facility's / pro's connected account (Stripe-Account header via
+//   { stripeAccount }). FFP never holds funds; zero application fee. Cash session + package purchases
+//   redirect to Stripe Checkout; the success_url returns to /api/pay/confirm which finalises idempotently
+//   (mark_booking_paid / grant_member_plan / grant_pro_package) then bounces to the booking site.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+const PRO_DASH_URL  = process.env.PRO_DASH_URL  || (SITE_URL + '/ffp-professional-dashboard.html');
+const BOOKINGS_URL  = process.env.BOOKINGS_URL  || 'https://findfitpeople.com';
+function withFlag(url, flag) { return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'pay=' + flag; }
+
+function buildProAccountLink(professionalId, accountId) {
+  const t = signConnectState(professionalId);
+  return stripe.accountLinks.create({
+    account: accountId,
+    refresh_url: BACKEND_BASE + '/api/pro/connect/refresh?pid=' + encodeURIComponent(t),
+    return_url:  BACKEND_BASE + '/api/pro/connect/return?pid='  + encodeURIComponent(t),
+    type: 'account_onboarding'
+  });
+}
+
+// PRO onboarding — same flow as facility, keyed on professionals.stripe_account_id (owner = professionals.member_id).
+app.post('/api/pro/connect/start', async (req, res) => {
+  try {
+    const { refresh, professional_id } = req.body || {};
+    const v = refresh ? verifyRefreshToken(refresh) : null;
+    if (!v) return res.status(401).json({ error: 'Not signed in' });
+    if (!professional_id) return res.status(400).json({ error: 'Missing professional_id' });
+    const { data: pro, error } = await supabase
+      .from('professionals').select('id, member_id, display_name, work_email, stripe_account_id, payments_status')
+      .eq('id', professional_id).maybeSingle();
+    if (error) throw error;
+    if (!pro || String(pro.member_id) !== String(v.memberId)) return res.status(403).json({ error: 'Not your professional account' });
+    let acctId = pro.stripe_account_id;
+    if (acctId) {
+      try {
+        const acct = await stripe.accounts.retrieve(acctId);
+        if (acct && acct.charges_enabled) {
+          if (pro.payments_status !== 'connected') {
+            await supabase.from('professionals').update({ payments_status: 'connected', stripe_connected_at: new Date().toISOString() }).eq('id', professional_id);
+          }
+          return res.json({ already_connected: true });
+        }
+      } catch (e) { acctId = null; }
+    }
+    if (!acctId) {
+      const account = await stripe.accounts.create({
+        type: 'standard',
+        email: pro.work_email || undefined,
+        business_profile: pro.display_name ? { name: pro.display_name } : undefined
+      });
+      acctId = account.id;
+      await supabase.from('professionals').update({ stripe_account_id: acctId, payments_status: 'onboarding' }).eq('id', professional_id);
+    }
+    const link = await buildProAccountLink(professional_id, acctId);
+    res.json({ url: link.url });
+  } catch (e) { console.error('[pro connect/start]', e); res.status(500).json({ error: 'Could not start Stripe setup' }); }
+});
+app.get('/api/pro/connect/return', async (req, res) => {
+  const back = (flag) => res.redirect(PRO_DASH_URL + '?panel=checkin&stripe=' + flag);
+  try {
+    const pid = verifyConnectState(req.query && req.query.pid);
+    if (!pid) return back('error');
+    const { data: pro } = await supabase.from('professionals').select('stripe_account_id').eq('id', pid).maybeSingle();
+    if (!pro || !pro.stripe_account_id) return back('error');
+    const acct = await stripe.accounts.retrieve(pro.stripe_account_id);
+    const done = !!(acct && acct.charges_enabled);
+    const upd = { payments_status: done ? 'connected' : 'onboarding' };
+    if (done) upd.stripe_connected_at = new Date().toISOString();
+    await supabase.from('professionals').update(upd).eq('id', pid);
+    return back(done ? 'connected' : 'incomplete');
+  } catch (e) { console.error('[pro connect/return]', e); return back('error'); }
+});
+app.get('/api/pro/connect/refresh', async (req, res) => {
+  const errBack = () => res.redirect(PRO_DASH_URL + '?panel=checkin&stripe=error');
+  try {
+    const pid = verifyConnectState(req.query && req.query.pid);
+    if (!pid) return errBack();
+    const { data: pro } = await supabase.from('professionals').select('stripe_account_id').eq('id', pid).maybeSingle();
+    if (!pro || !pro.stripe_account_id) return errBack();
+    const link = await buildProAccountLink(pid, pro.stripe_account_id);
+    return res.redirect(link.url);
+  } catch (e) { console.error('[pro connect/refresh]', e); return errBack(); }
+});
+
+// Create a Checkout Session ON a connected account (direct charge; FFP holds no funds, zero application fee).
+async function connectedCheckout(acctId, o) {
+  return stripe.checkout.sessions.create({
+    mode: 'payment',
+    line_items: [{ price_data: { currency: 'aed', unit_amount: o.amount_fils, product_data: { name: o.name } }, quantity: 1 }],
+    metadata: o.metadata,
+    payment_intent_data: { metadata: o.metadata },
+    success_url: o.success_url,
+    cancel_url: o.cancel_url
+  }, { stripeAccount: acctId });
+}
+
+// Facility session (cash). Booking already exists (book_session …'cash'). Charges the facility's account.
+app.post('/api/pay/session-checkout', async (req, res) => {
+  try {
+    const { booking_id, success_url, cancel_url } = req.body || {};
+    if (!booking_id) return res.status(400).json({ error: 'Missing booking_id' });
+    const { data: bk } = await supabase.from('bookings').select('id, provider_id, total_aed, payment_status').eq('id', booking_id).maybeSingle();
+    if (!bk) return res.status(404).json({ error: 'Booking not found' });
+    if (bk.payment_status === 'paid') return res.json({ already_paid: true });
+    if (!bk.provider_id) return res.status(400).json({ error: 'No facility on booking' });
+    const { data: prov } = await supabase.from('providers').select('stripe_account_id, payments_status, business_name').eq('id', bk.provider_id).maybeSingle();
+    if (!prov || prov.payments_status !== 'connected' || !prov.stripe_account_id) return res.status(409).json({ error: 'Facility not accepting payments yet' });
+    const amount = Math.round(Number(bk.total_aed || 0) * 100);
+    if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
+    const to = success_url || BOOKINGS_URL;
+    const sess = await connectedCheckout(prov.stripe_account_id, {
+      amount_fils: amount, name: (prov.business_name || 'Session') + ' — booking', metadata: { kind: 'session', booking_id: String(booking_id) },
+      success_url: BACKEND_BASE + '/api/pay/confirm?kind=session&acct=' + prov.stripe_account_id + '&ref=' + booking_id + '&sid={CHECKOUT_SESSION_ID}&to=' + encodeURIComponent(to),
+      cancel_url: cancel_url || BOOKINGS_URL
+    });
+    res.json({ url: sess.url });
+  } catch (e) { console.error('[pay/session-checkout]', e); res.status(500).json({ error: 'Could not start payment' }); }
+});
+
+// Pro session (cash). Booking item_type='professional_session', item_id=pro_slots id → professional.
+app.post('/api/pay/pro-session-checkout', async (req, res) => {
+  try {
+    const { booking_id, success_url, cancel_url } = req.body || {};
+    if (!booking_id) return res.status(400).json({ error: 'Missing booking_id' });
+    const { data: bk } = await supabase.from('bookings').select('id, item_id, total_aed, payment_status').eq('id', booking_id).maybeSingle();
+    if (!bk) return res.status(404).json({ error: 'Booking not found' });
+    if (bk.payment_status === 'paid') return res.json({ already_paid: true });
+    const { data: slot } = await supabase.from('pro_slots').select('professional_id').eq('id', bk.item_id).maybeSingle();
+    if (!slot) return res.status(400).json({ error: 'Slot not found' });
+    const { data: pro } = await supabase.from('professionals').select('stripe_account_id, payments_status, display_name').eq('id', slot.professional_id).maybeSingle();
+    if (!pro || pro.payments_status !== 'connected' || !pro.stripe_account_id) return res.status(409).json({ error: 'Pro not accepting payments yet' });
+    const amount = Math.round(Number(bk.total_aed || 0) * 100);
+    if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
+    const to = success_url || BOOKINGS_URL;
+    const sess = await connectedCheckout(pro.stripe_account_id, {
+      amount_fils: amount, name: (pro.display_name || 'Coach') + ' — session', metadata: { kind: 'pro_session', booking_id: String(booking_id) },
+      success_url: BACKEND_BASE + '/api/pay/confirm?kind=pro_session&acct=' + pro.stripe_account_id + '&ref=' + booking_id + '&sid={CHECKOUT_SESSION_ID}&to=' + encodeURIComponent(to),
+      cancel_url: cancel_url || BOOKINGS_URL
+    });
+    res.json({ url: sess.url });
+  } catch (e) { console.error('[pay/pro-session-checkout]', e); res.status(500).json({ error: 'Could not start payment' }); }
+});
+
+// Buy a facility package (credits granted on payment success).
+app.post('/api/pay/buy-plan', async (req, res) => {
+  try {
+    const { member_id, provider_id, plan_id, success_url, cancel_url } = req.body || {};
+    if (!member_id || !provider_id || !plan_id) return res.status(400).json({ error: 'Missing fields' });
+    const { data: plan } = await supabase.from('provider_plans').select('id, name, price_aed').eq('id', plan_id).eq('provider_id', provider_id).maybeSingle();
+    if (!plan) return res.status(404).json({ error: 'Plan not found' });
+    const { data: prov } = await supabase.from('providers').select('stripe_account_id, payments_status, business_name').eq('id', provider_id).maybeSingle();
+    if (!prov || prov.payments_status !== 'connected' || !prov.stripe_account_id) return res.status(409).json({ error: 'Facility not accepting payments yet' });
+    const amount = Math.round(Number(plan.price_aed || 0) * 100);
+    if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
+    const to = success_url || BOOKINGS_URL;
+    const sess = await connectedCheckout(prov.stripe_account_id, {
+      amount_fils: amount, name: (prov.business_name || 'Facility') + ' — ' + (plan.name || 'package'),
+      metadata: { kind: 'plan', member_id: String(member_id), provider_id: String(provider_id), plan_id: String(plan_id) },
+      success_url: BACKEND_BASE + '/api/pay/confirm?kind=plan&acct=' + prov.stripe_account_id + '&member=' + member_id + '&provider=' + provider_id + '&plan=' + plan_id + '&sid={CHECKOUT_SESSION_ID}&to=' + encodeURIComponent(to),
+      cancel_url: cancel_url || BOOKINGS_URL
+    });
+    res.json({ url: sess.url });
+  } catch (e) { console.error('[pay/buy-plan]', e); res.status(500).json({ error: 'Could not start payment' }); }
+});
+
+// Buy a pro package (credits granted on payment success).
+app.post('/api/pay/buy-pro-package', async (req, res) => {
+  try {
+    const { member_id, professional_id, package_id, success_url, cancel_url } = req.body || {};
+    if (!member_id || !professional_id || !package_id) return res.status(400).json({ error: 'Missing fields' });
+    const { data: pk } = await supabase.from('pro_packages').select('id, name, price_aed').eq('id', package_id).eq('professional_id', professional_id).maybeSingle();
+    if (!pk) return res.status(404).json({ error: 'Package not found' });
+    const { data: pro } = await supabase.from('professionals').select('stripe_account_id, payments_status, display_name').eq('id', professional_id).maybeSingle();
+    if (!pro || pro.payments_status !== 'connected' || !pro.stripe_account_id) return res.status(409).json({ error: 'Pro not accepting payments yet' });
+    const amount = Math.round(Number(pk.price_aed || 0) * 100);
+    if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
+    const to = success_url || BOOKINGS_URL;
+    const sess = await connectedCheckout(pro.stripe_account_id, {
+      amount_fils: amount, name: (pro.display_name || 'Coach') + ' — ' + (pk.name || 'package'),
+      metadata: { kind: 'pro_package', member_id: String(member_id), professional_id: String(professional_id), package_id: String(package_id) },
+      success_url: BACKEND_BASE + '/api/pay/confirm?kind=pro_package&acct=' + pro.stripe_account_id + '&member=' + member_id + '&pro=' + professional_id + '&package=' + package_id + '&sid={CHECKOUT_SESSION_ID}&to=' + encodeURIComponent(to),
+      cancel_url: cancel_url || BOOKINGS_URL
+    });
+    res.json({ url: sess.url });
+  } catch (e) { console.error('[pay/buy-pro-package]', e); res.status(500).json({ error: 'Could not start payment' }); }
+});
+
+// Stripe returns here after a successful Checkout. Retrieve the session ON the connected account, and if paid,
+// finalise idempotently, then bounce to the booking site. (Webhook below is a backup for the same finalise.)
+app.get('/api/pay/confirm', async (req, res) => {
+  const q = req.query || {};
+  const to = q.to ? decodeURIComponent(q.to) : BOOKINGS_URL;
+  const fail = () => res.redirect(withFlag(to, 'error'));
+  try {
+    if (!q.acct || !q.sid) return fail();
+    const sess = await stripe.checkout.sessions.retrieve(q.sid, { stripeAccount: q.acct });
+    if (!sess || sess.payment_status !== 'paid') return fail();
+    const intent = (typeof sess.payment_intent === 'string') ? sess.payment_intent : (sess.payment_intent && sess.payment_intent.id) || null;
+    await finalisePaidCheckout(q.kind, q, sess, intent);
+    return res.redirect(withFlag(to, 'ok'));
+  } catch (e) { console.error('[pay/confirm]', e); return fail(); }
+});
+
+// Shared finaliser (used by confirm + the webhook). Idempotent.
+async function finalisePaidCheckout(kind, p, sess, intent) {
+  if (kind === 'session' || kind === 'pro_session') {
+    await supabase.rpc('mark_booking_paid', { p_booking: p.ref || p.booking_id, p_payment_intent: intent, p_charge: null });
+  } else if (kind === 'plan') {
+    const { data: ex } = await supabase.from('provider_member_plans').select('id').eq('stripe_session_id', sess.id).maybeSingle();
+    if (!ex) {
+      const { data: g } = await supabase.rpc('grant_member_plan', { p_member: p.member || p.member_id, p_provider: p.provider || p.provider_id, p_plan: p.plan || p.plan_id });
+      if (g && g.member_plan_id) await supabase.from('provider_member_plans').update({ stripe_session_id: sess.id }).eq('id', g.member_plan_id);
+    }
+  } else if (kind === 'pro_package') {
+    const { data: ex } = await supabase.from('pro_client_packages').select('id').eq('stripe_session_id', sess.id).maybeSingle();
+    if (!ex) {
+      const { data: g } = await supabase.rpc('grant_pro_package', { p_member: p.member || p.member_id, p_professional: p.pro || p.professional_id, p_package: p.package || p.package_id });
+      if (g && g.client_package_id) await supabase.from('pro_client_packages').update({ stripe_session_id: sess.id }).eq('id', g.client_package_id);
+    }
+  }
+}
 
 // ── v74: MEMBER IMAGE UPLOAD (proper, server-validated) ──────────────────────────────────────
 // Members reach Supabase as the `anon` role (custom FFP JWT + anon key), so they can't write Storage
