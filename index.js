@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v96
+// FFP Passport — Express Server (Vercel, CommonJS) — v97
+// v97 (2026-06-14): MULTI-CURRENCY (phase 1). connectedCheckout now charges in the PARTNER'S currency
+//      (providers.currency / professionals.currency, default AED) instead of hardcoded 'aed' — the four
+//      /api/pay/* charge endpoints read + pass it. Connect Standard settles natively in the partner's currency.
 // v96 (2026-06-14): REFUNDS + PAID NOTIFICATION. (a) POST /api/pay/refund {booking_id} — issues the Stripe refund
 //      on the SAME connected account as the charge (direct-charge refund) for the amount cancel_booking computed
 //      (refunded_aed); resolves acct via providers/pro_slots->professionals; idempotent (idempotencyKey). (b)
@@ -1511,7 +1514,7 @@ app.get('/api/pro/connect/refresh', async (req, res) => {
 async function connectedCheckout(acctId, o) {
   return stripe.checkout.sessions.create({
     mode: 'payment',
-    line_items: [{ price_data: { currency: 'aed', unit_amount: o.amount_fils, product_data: { name: o.name } }, quantity: 1 }],
+    line_items: [{ price_data: { currency: String(o.currency || 'AED').toLowerCase(), unit_amount: o.amount_fils, product_data: { name: o.name } }, quantity: 1 }],
     metadata: o.metadata,
     payment_intent_data: { metadata: o.metadata },
     success_url: o.success_url,
@@ -1528,13 +1531,13 @@ app.post('/api/pay/session-checkout', async (req, res) => {
     if (!bk) return res.status(404).json({ error: 'Booking not found' });
     if (bk.payment_status === 'paid') return res.json({ already_paid: true });
     if (!bk.provider_id) return res.status(400).json({ error: 'No facility on booking' });
-    const { data: prov } = await supabase.from('providers').select('stripe_account_id, payments_status, business_name').eq('id', bk.provider_id).maybeSingle();
+    const { data: prov } = await supabase.from('providers').select('stripe_account_id, payments_status, business_name, currency').eq('id', bk.provider_id).maybeSingle();
     if (!prov || prov.payments_status !== 'connected' || !prov.stripe_account_id) return res.status(409).json({ error: 'Facility not accepting payments yet' });
     const amount = Math.round(Number(bk.total_aed || 0) * 100);
     if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
     const to = success_url || BOOKINGS_URL;
     const sess = await connectedCheckout(prov.stripe_account_id, {
-      amount_fils: amount, name: (prov.business_name || 'Session') + ' — booking', metadata: { kind: 'session', booking_id: String(booking_id) },
+      amount_fils: amount, currency: prov.currency, name: (prov.business_name || 'Session') + ' — booking', metadata: { kind: 'session', booking_id: String(booking_id) },
       success_url: BACKEND_BASE + '/api/pay/confirm?kind=session&acct=' + prov.stripe_account_id + '&ref=' + booking_id + '&sid={CHECKOUT_SESSION_ID}&to=' + encodeURIComponent(to),
       cancel_url: cancel_url || BOOKINGS_URL
     });
@@ -1552,13 +1555,13 @@ app.post('/api/pay/pro-session-checkout', async (req, res) => {
     if (bk.payment_status === 'paid') return res.json({ already_paid: true });
     const { data: slot } = await supabase.from('pro_slots').select('professional_id').eq('id', bk.item_id).maybeSingle();
     if (!slot) return res.status(400).json({ error: 'Slot not found' });
-    const { data: pro } = await supabase.from('professionals').select('stripe_account_id, payments_status, display_name').eq('id', slot.professional_id).maybeSingle();
+    const { data: pro } = await supabase.from('professionals').select('stripe_account_id, payments_status, display_name, currency').eq('id', slot.professional_id).maybeSingle();
     if (!pro || pro.payments_status !== 'connected' || !pro.stripe_account_id) return res.status(409).json({ error: 'Pro not accepting payments yet' });
     const amount = Math.round(Number(bk.total_aed || 0) * 100);
     if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
     const to = success_url || BOOKINGS_URL;
     const sess = await connectedCheckout(pro.stripe_account_id, {
-      amount_fils: amount, name: (pro.display_name || 'Coach') + ' — session', metadata: { kind: 'pro_session', booking_id: String(booking_id) },
+      amount_fils: amount, currency: pro.currency, name: (pro.display_name || 'Coach') + ' — session', metadata: { kind: 'pro_session', booking_id: String(booking_id) },
       success_url: BACKEND_BASE + '/api/pay/confirm?kind=pro_session&acct=' + pro.stripe_account_id + '&ref=' + booking_id + '&sid={CHECKOUT_SESSION_ID}&to=' + encodeURIComponent(to),
       cancel_url: cancel_url || BOOKINGS_URL
     });
@@ -1573,13 +1576,13 @@ app.post('/api/pay/buy-plan', async (req, res) => {
     if (!member_id || !provider_id || !plan_id) return res.status(400).json({ error: 'Missing fields' });
     const { data: plan } = await supabase.from('provider_plans').select('id, name, price_aed').eq('id', plan_id).eq('provider_id', provider_id).maybeSingle();
     if (!plan) return res.status(404).json({ error: 'Plan not found' });
-    const { data: prov } = await supabase.from('providers').select('stripe_account_id, payments_status, business_name').eq('id', provider_id).maybeSingle();
+    const { data: prov } = await supabase.from('providers').select('stripe_account_id, payments_status, business_name, currency').eq('id', provider_id).maybeSingle();
     if (!prov || prov.payments_status !== 'connected' || !prov.stripe_account_id) return res.status(409).json({ error: 'Facility not accepting payments yet' });
     const amount = Math.round(Number(plan.price_aed || 0) * 100);
     if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
     const to = success_url || BOOKINGS_URL;
     const sess = await connectedCheckout(prov.stripe_account_id, {
-      amount_fils: amount, name: (prov.business_name || 'Facility') + ' — ' + (plan.name || 'package'),
+      amount_fils: amount, currency: prov.currency, name: (prov.business_name || 'Facility') + ' — ' + (plan.name || 'package'),
       metadata: { kind: 'plan', member_id: String(member_id), provider_id: String(provider_id), plan_id: String(plan_id) },
       success_url: BACKEND_BASE + '/api/pay/confirm?kind=plan&acct=' + prov.stripe_account_id + '&member=' + member_id + '&provider=' + provider_id + '&plan=' + plan_id + '&sid={CHECKOUT_SESSION_ID}&to=' + encodeURIComponent(to),
       cancel_url: cancel_url || BOOKINGS_URL
@@ -1595,13 +1598,13 @@ app.post('/api/pay/buy-pro-package', async (req, res) => {
     if (!member_id || !professional_id || !package_id) return res.status(400).json({ error: 'Missing fields' });
     const { data: pk } = await supabase.from('pro_packages').select('id, name, price_aed').eq('id', package_id).eq('professional_id', professional_id).maybeSingle();
     if (!pk) return res.status(404).json({ error: 'Package not found' });
-    const { data: pro } = await supabase.from('professionals').select('stripe_account_id, payments_status, display_name').eq('id', professional_id).maybeSingle();
+    const { data: pro } = await supabase.from('professionals').select('stripe_account_id, payments_status, display_name, currency').eq('id', professional_id).maybeSingle();
     if (!pro || pro.payments_status !== 'connected' || !pro.stripe_account_id) return res.status(409).json({ error: 'Pro not accepting payments yet' });
     const amount = Math.round(Number(pk.price_aed || 0) * 100);
     if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
     const to = success_url || BOOKINGS_URL;
     const sess = await connectedCheckout(pro.stripe_account_id, {
-      amount_fils: amount, name: (pro.display_name || 'Coach') + ' — ' + (pk.name || 'package'),
+      amount_fils: amount, currency: pro.currency, name: (pro.display_name || 'Coach') + ' — ' + (pk.name || 'package'),
       metadata: { kind: 'pro_package', member_id: String(member_id), professional_id: String(professional_id), package_id: String(package_id) },
       success_url: BACKEND_BASE + '/api/pay/confirm?kind=pro_package&acct=' + pro.stripe_account_id + '&member=' + member_id + '&pro=' + professional_id + '&package=' + package_id + '&sid={CHECKOUT_SESSION_ID}&to=' + encodeURIComponent(to),
       cancel_url: cancel_url || BOOKINGS_URL
