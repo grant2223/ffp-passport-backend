@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v97
+// FFP Passport — Express Server (Vercel, CommonJS) — v98
+// v98 (2026-06-14): MULTI-CURRENCY minor-units. toMinorUnits(amount,currency) replaces hardcoded ×100 in all
+//      charge endpoints + refund — zero-decimal currencies (JPY, VND, KRW, …) charge ×1 not ×100 (no 100×
+//      overcharge). Refund response returns the native refunded amount + currency. Tourist-market currencies safe.
 // v97 (2026-06-14): MULTI-CURRENCY (phase 1). connectedCheckout now charges in the PARTNER'S currency
 //      (providers.currency / professionals.currency, default AED) instead of hardcoded 'aed' — the four
 //      /api/pay/* charge endpoints read + pass it. Connect Standard settles natively in the partner's currency.
@@ -1510,6 +1513,15 @@ app.get('/api/pro/connect/refresh', async (req, res) => {
   } catch (e) { console.error('[pro connect/refresh]', e); return errBack(); }
 });
 
+// Currency minor-unit conversion. Most currencies are 2-decimal (×100). Stripe zero-decimal currencies take the
+// whole-number amount (×1) — multiplying by 100 there would overcharge 100×. (3-decimal currencies are excluded
+// from the supported set, so 2 vs 0 is sufficient.)
+const ZERO_DECIMAL_CCY = new Set(['BIF','CLP','DJF','GNF','JPY','KMF','KRW','MGA','PYG','RWF','UGX','VND','VUV','XAF','XOF','XPF']);
+function toMinorUnits(amount, currency) {
+  const a = Number(amount || 0);
+  return ZERO_DECIMAL_CCY.has(String(currency || 'AED').toUpperCase()) ? Math.round(a) : Math.round(a * 100);
+}
+
 // Create a Checkout Session ON a connected account (direct charge; FFP holds no funds, zero application fee).
 async function connectedCheckout(acctId, o) {
   return stripe.checkout.sessions.create({
@@ -1533,7 +1545,7 @@ app.post('/api/pay/session-checkout', async (req, res) => {
     if (!bk.provider_id) return res.status(400).json({ error: 'No facility on booking' });
     const { data: prov } = await supabase.from('providers').select('stripe_account_id, payments_status, business_name, currency').eq('id', bk.provider_id).maybeSingle();
     if (!prov || prov.payments_status !== 'connected' || !prov.stripe_account_id) return res.status(409).json({ error: 'Facility not accepting payments yet' });
-    const amount = Math.round(Number(bk.total_aed || 0) * 100);
+    const amount = toMinorUnits(bk.total_aed, prov.currency);
     if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
     const to = success_url || BOOKINGS_URL;
     const sess = await connectedCheckout(prov.stripe_account_id, {
@@ -1557,7 +1569,7 @@ app.post('/api/pay/pro-session-checkout', async (req, res) => {
     if (!slot) return res.status(400).json({ error: 'Slot not found' });
     const { data: pro } = await supabase.from('professionals').select('stripe_account_id, payments_status, display_name, currency').eq('id', slot.professional_id).maybeSingle();
     if (!pro || pro.payments_status !== 'connected' || !pro.stripe_account_id) return res.status(409).json({ error: 'Pro not accepting payments yet' });
-    const amount = Math.round(Number(bk.total_aed || 0) * 100);
+    const amount = toMinorUnits(bk.total_aed, pro.currency);
     if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
     const to = success_url || BOOKINGS_URL;
     const sess = await connectedCheckout(pro.stripe_account_id, {
@@ -1578,7 +1590,7 @@ app.post('/api/pay/buy-plan', async (req, res) => {
     if (!plan) return res.status(404).json({ error: 'Plan not found' });
     const { data: prov } = await supabase.from('providers').select('stripe_account_id, payments_status, business_name, currency').eq('id', provider_id).maybeSingle();
     if (!prov || prov.payments_status !== 'connected' || !prov.stripe_account_id) return res.status(409).json({ error: 'Facility not accepting payments yet' });
-    const amount = Math.round(Number(plan.price_aed || 0) * 100);
+    const amount = toMinorUnits(plan.price_aed, prov.currency);
     if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
     const to = success_url || BOOKINGS_URL;
     const sess = await connectedCheckout(prov.stripe_account_id, {
@@ -1600,7 +1612,7 @@ app.post('/api/pay/buy-pro-package', async (req, res) => {
     if (!pk) return res.status(404).json({ error: 'Package not found' });
     const { data: pro } = await supabase.from('professionals').select('stripe_account_id, payments_status, display_name, currency').eq('id', professional_id).maybeSingle();
     if (!pro || pro.payments_status !== 'connected' || !pro.stripe_account_id) return res.status(409).json({ error: 'Pro not accepting payments yet' });
-    const amount = Math.round(Number(pk.price_aed || 0) * 100);
+    const amount = toMinorUnits(pk.price_aed, pro.currency);
     if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
     const to = success_url || BOOKINGS_URL;
     const sess = await connectedCheckout(pro.stripe_account_id, {
@@ -1671,14 +1683,14 @@ app.post('/api/pay/refund', async (req, res) => {
     const { booking_id } = req.body || {};
     if (!booking_id) return res.status(400).json({ error: 'Missing booking_id' });
     const { data: bk } = await supabase.from('bookings')
-      .select('id, provider_id, item_type, item_id, status, payment_status, refunded_aed, payment_ref, stripe_payment_intent_id, stripe_charge_id')
+      .select('id, provider_id, item_type, item_id, status, payment_status, refunded_aed, payment_ref, currency, stripe_payment_intent_id, stripe_charge_id')
       .eq('id', booking_id).maybeSingle();
     if (!bk) return res.status(404).json({ error: 'Booking not found' });
     if (bk.status !== 'cancelled') return res.status(409).json({ error: 'Booking is not cancelled — call cancel_booking first' });
     if (!['refunded', 'partially_refunded'].includes(bk.payment_status)) {
       return res.json({ ok: true, refunded: 0, note: 'No refund due per the cancellation policy' });
     }
-    const amtFils = Math.round(Number(bk.refunded_aed || 0) * 100);
+    const amtFils = toMinorUnits(bk.refunded_aed, bk.currency);
     if (!amtFils || amtFils <= 0) return res.json({ ok: true, refunded: 0, note: 'No refund amount' });
     if (!bk.stripe_payment_intent_id && !bk.stripe_charge_id) {
       return res.status(409).json({ error: 'No Stripe charge on this booking (credit or unpaid) — nothing to refund' });
@@ -1697,7 +1709,7 @@ app.post('/api/pay/refund', async (req, res) => {
     if (bk.stripe_payment_intent_id) args.payment_intent = bk.stripe_payment_intent_id; else args.charge = bk.stripe_charge_id;
     const refund = await stripe.refunds.create(args, { stripeAccount: acctId, idempotencyKey: 'refund_' + booking_id });
     await supabase.from('bookings').update({ payment_ref: (bk.payment_ref ? bk.payment_ref + ';' : '') + 'refund:' + refund.id }).eq('id', booking_id);
-    return res.json({ ok: true, refunded: amtFils / 100, refund_id: refund.id, status: refund.status });
+    return res.json({ ok: true, refunded: Number(bk.refunded_aed || 0), currency: bk.currency || 'AED', refund_id: refund.id, status: refund.status });
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
