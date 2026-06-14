@@ -1517,9 +1517,13 @@ app.get('/api/pro/connect/refresh', async (req, res) => {
 // whole-number amount (×1) — multiplying by 100 there would overcharge 100×. (3-decimal currencies are excluded
 // from the supported set, so 2 vs 0 is sufficient.)
 const ZERO_DECIMAL_CCY = new Set(['BIF','CLP','DJF','GNF','JPY','KMF','KRW','MGA','PYG','RWF','UGX','VND','VUV','XAF','XOF','XPF']);
+const THREE_DECIMAL_CCY = new Set(['BHD','JOD','KWD','OMR','TND']); // Stripe wants thousandths, rounded to a multiple of 10
 function toMinorUnits(amount, currency) {
   const a = Number(amount || 0);
-  return ZERO_DECIMAL_CCY.has(String(currency || 'AED').toUpperCase()) ? Math.round(a) : Math.round(a * 100);
+  const c = String(currency || 'AED').toUpperCase();
+  if (ZERO_DECIMAL_CCY.has(c)) return Math.round(a);
+  if (THREE_DECIMAL_CCY.has(c)) return Math.round((a * 1000) / 10) * 10;
+  return Math.round(a * 100);
 }
 
 // Create a Checkout Session ON a connected account (direct charge; FFP holds no funds, zero application fee).
