@@ -420,13 +420,46 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
     try { await onInvoicePaid(event.data.object); } catch (e) { console.error('[webhook invoice.paid]', e.message); }
     return res.json({ received: true });
   }
-  if (event.type === 'customer.subscription.deleted' || event.type === 'customer.subscription.updated') {
+  if (event.type === 'customer.subscription.created' || event.type === 'customer.subscription.deleted' || event.type === 'customer.subscription.updated') {
     try { await onSubscriptionChange(event.data.object); } catch (e) { console.error('[webhook subscription change]', e.message); }
     return res.json({ received: true });
   }
   res.json({ received: true });
 });
 app.use(express.json({ limit: '50mb' }));
+
+// ────────────────────────────────────────────────────────────
+// ADMIN: re-sync passport_expires_at from Stripe truth. Fixes any member whose date got stuck
+// (e.g. a 7-day trial that converted to paid before the invoice.paid / customer.subscription.*
+// webhook events were being delivered). Re-reads each subscribed member's live subscription and
+// writes the real status + period end via setMemberFromSubscription.
+// Guard: send header  x-admin-key: <ADMIN_RESYNC_KEY>  (set ADMIN_RESYNC_KEY in the backend env).
+//   curl -X POST https://ffp-passport-backend.vercel.app/api/billing/resync -H "x-admin-key: <KEY>"
+// ────────────────────────────────────────────────────────────
+app.post('/api/billing/resync', async (req, res) => {
+  const key = req.headers['x-admin-key'] || (req.body && req.body.key) || '';
+  if (!process.env.ADMIN_RESYNC_KEY || key !== process.env.ADMIN_RESYNC_KEY) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const { data: rows, error } = await supabase
+      .from('members').select('id, email, plan, stripe_subscription_id')
+      .not('stripe_subscription_id', 'is', null);
+    if (error) return res.status(500).json({ error: error.message });
+    let updated = 0, failed = 0;
+    for (const m of (rows || [])) {
+      try {
+        const sub = await stripe.subscriptions.retrieve(m.stripe_subscription_id);
+        await setMemberFromSubscription(sub, m.plan || (sub.metadata && sub.metadata.plan) || null, m.id, m.email);
+        updated++;
+      } catch (e) { failed++; console.error('[resync]', m.id, e.message); }
+    }
+    return res.json({ ok: true, total: (rows || []).length, updated, failed });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 // ────────────────────────────────────────────────────────────
 // v3 — ATOMIC ONBOARDING ENDPOINT  (v4 — adds welcome email)
 // ────────────────────────────────────────────────────────────
@@ -1066,7 +1099,13 @@ const PRICE_MONTHLY = process.env.STRIPE_PRICE_MONTHLY || 'price_1Tg3pBBnpbSTlIO
 // current_period_end. Finds the member by id (metadata/client_reference_id), then existing sub id, email, customer.
 async function setMemberFromSubscription(sub, plan, hintMemberId, hintEmail) {
   if (!sub) return;
-  const periodEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null;
+  // current_period_end moved from the subscription object to its items in newer Stripe API versions.
+  // Read the top-level value, else fall back to the first item, so a SDK/API bump can never silently
+  // null the expiry (which is what stranded converted trials at their 7-day date).
+  const _cpe = sub.current_period_end
+    || (sub.items && sub.items.data && sub.items.data[0] && sub.items.data[0].current_period_end)
+    || null;
+  const periodEnd = _cpe ? new Date(_cpe * 1000).toISOString() : null;
   const active = (sub.status === 'active' || sub.status === 'trialing');
   const upd = {
     paid: true,
