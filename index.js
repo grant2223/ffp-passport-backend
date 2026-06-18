@@ -424,6 +424,14 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
     try { await onSubscriptionChange(event.data.object); } catch (e) { console.error('[webhook subscription change]', e.message); }
     return res.json({ received: true });
   }
+  if (event.type === 'invoice.payment_failed') {
+    try { await onInvoicePaymentFailed(event.data.object); } catch (e) { console.error('[webhook invoice.payment_failed]', e.message); }
+    return res.json({ received: true });
+  }
+  if (event.type === 'customer.subscription.trial_will_end') {
+    try { await onTrialWillEnd(event.data.object); } catch (e) { console.error('[webhook trial_will_end]', e.message); }
+    return res.json({ received: true });
+  }
   res.json({ received: true });
 });
 app.use(express.json({ limit: '50mb' }));
@@ -953,6 +961,25 @@ async function sendReferralEmail(toEmail, referrerName, newMemberName, rewardUsd
    +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html#referrals" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">View your earnings</a></td></tr></table>';
   await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'You have a new referral on FFP Passport', html: brandEmail('Referral', body) });
 }
+async function sendPaymentFailedEmail(toEmail, name) {
+  if (!toEmail) return;
+  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">We couldn’t process your payment</div>'
+   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 16px;">Hi'+(name?(' '+escapeHtml(name)):'')+', your latest FFP Passport payment didn’t go through — usually just an expired or declined card. We’ll automatically try again over the next few days.</p>'
+   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 18px;">To keep your Passport active without interruption, update your card when you get a moment.</p>'
+   +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">Update my card</a></td></tr></table>';
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'Your FFP Passport payment didn’t go through', html: brandEmail('Payment', body) });
+}
+async function sendTrialEndingEmail(toEmail, name, planLabel, amountLabel, endLabel) {
+  if (!toEmail) return;
+  var detail = amountLabel
+    ? ('After that, your membership continues at <strong style="color:#0f2c47;">'+escapeHtml(amountLabel)+'</strong>'+(planLabel?(' ('+escapeHtml(planLabel)+')'):'')+' — nothing to do, it carries on automatically.')
+    : 'After that, your membership continues automatically.';
+  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">Your free trial ends in 3 days</div>'
+   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 16px;">Hi'+(name?(' '+escapeHtml(name)):'')+', hope you’ve been making the most of your FFP Passport.'+(endLabel?(' Your 7-day free trial ends on <strong style="color:#0f2c47;">'+escapeHtml(endLabel)+'</strong>.'):'')+'</p>'
+   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 18px;">'+detail+' Want to make a change? You can manage or cancel anytime before then.</p>'
+   +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">Open my Passport</a></td></tr></table>';
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'Your FFP Passport free trial ends in 3 days', html: brandEmail('Your trial', body) });
+}
 
 app.get('/', (req, res) => {
   res.json({ status: 'FFP Passport API running' });
@@ -1168,6 +1195,40 @@ async function onSubscriptionChange(sub) {
   const memberId = (sub.metadata && sub.metadata.member_id) || null;
   const plan = (sub.metadata && sub.metadata.plan) || null;
   await setMemberFromSubscription(sub, plan, memberId, null);
+}
+// A renewal charge failed → branded heads-up so they can fix their card before access lapses.
+// We do NOT change access here; Stripe auto-retries and will fire subscription.updated/deleted,
+// which setMemberFromSubscription already handles.
+async function onInvoicePaymentFailed(invoice) {
+  if (!invoice || !invoice.subscription) return;   // only subscription (renewal) invoices
+  let email = invoice.customer_email || null, name = null, row = null;
+  if (invoice.customer) {
+    const { data } = await supabase.from('members').select('email, given_names, full_name').eq('stripe_customer_id', invoice.customer).maybeSingle();
+    if (data) row = data;
+  }
+  if (!row && email) {
+    const { data } = await supabase.from('members').select('email, given_names, full_name').eq('email', String(email).toLowerCase()).maybeSingle();
+    if (data) row = data;
+  }
+  if (row) { email = row.email || email; name = row.given_names || (row.full_name ? String(row.full_name).split(' ')[0] : null); }
+  if (email) { try { await sendPaymentFailedEmail(email, name); } catch (e) { console.warn('[payment_failed email]', e.message); } }
+}
+// 3 days before a trial converts → friendly heads-up with the date + what they'll be charged.
+async function onTrialWillEnd(sub) {
+  if (!sub) return;
+  const plan = (sub.metadata && sub.metadata.plan) || null;
+  let row = null;
+  const mid = (sub.metadata && sub.metadata.member_id) || null;
+  if (mid) { const { data } = await supabase.from('members').select('email, given_names, full_name').eq('id', mid).maybeSingle(); if (data) row = data; }
+  if (!row && sub.customer) { const { data } = await supabase.from('members').select('email, given_names, full_name').eq('stripe_customer_id', sub.customer).maybeSingle(); if (data) row = data; }
+  if (!row && sub.id) { const { data } = await supabase.from('members').select('email, given_names, full_name').eq('stripe_subscription_id', sub.id).maybeSingle(); if (data) row = data; }
+  if (!row || !row.email) return;
+  const name = row.given_names || (row.full_name ? String(row.full_name).split(' ')[0] : null);
+  const planLabel = plan === 'annual' ? 'annual' : (plan === 'monthly' ? 'monthly' : null);
+  const amountLabel = plan === 'annual' ? '$149 / year' : (plan === 'monthly' ? '$20 / month' : null);
+  let endLabel = null;
+  if (sub.trial_end) { try { endLabel = new Date(sub.trial_end * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }); } catch (e) {} }
+  try { await sendTrialEndingEmail(row.email, name, planLabel, amountLabel, endLabel); } catch (e) { console.warn('[trial_will_end email]', e.message); }
 }
 
 // ── v81: REFERRALS (recurring) ───────────────────────────────────────────────────────────────
