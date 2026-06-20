@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v98
+// FFP Passport — Express Server (Vercel, CommonJS) — v99
+// v99 (2026-06-16): GAP #1 — generic POST /api/pay/booking-checkout {booking_id} → {url}. Charges any unpaid
+//      bookings row (Experiences/Trips via create_booking, paid Events via book_event_order — both carry
+//      provider_id + total_aed) on the listing's connected facility account; success → /api/pay/confirm
+//      kind='booking' → mark_booking_paid (+ "Payment confirmed" notify). Same Connect Standard / zero-fee /
+//      idempotent finalise as session-checkout; webhook backup covers kind='booking' too.
 // v98 (2026-06-14): MULTI-CURRENCY minor-units. toMinorUnits(amount,currency) replaces hardcoded ×100 in all
 //      charge endpoints + refund — zero-decimal currencies (JPY, VND, KRW, …) charge ×1 not ×100 (no 100×
 //      overcharge). Refund response returns the native refunded amount + currency. Tourist-market currencies safe.
@@ -333,7 +338,7 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
         return res.status(200).json({ received: true, subscription: true });
       }
       // v95: booking payments on connected accounts (backup to /api/pay/confirm — same idempotent finalise).
-      if (session.mode === 'payment' && session.metadata && ['session','pro_session','plan','pro_package'].indexOf(session.metadata.kind) >= 0) {
+      if (session.mode === 'payment' && session.metadata && ['session','pro_session','booking','plan','pro_package'].indexOf(session.metadata.kind) >= 0) {
         try {
           const intent = (typeof session.payment_intent === 'string') ? session.payment_intent : (session.payment_intent && session.payment_intent.id) || null;
           if (session.payment_status === 'paid') await finalisePaidCheckout(session.metadata.kind, session.metadata, session, intent);
@@ -1685,6 +1690,31 @@ app.post('/api/pay/pro-session-checkout', async (req, res) => {
   } catch (e) { console.error('[pay/pro-session-checkout]', e); res.status(500).json({ error: 'Could not start payment' }); }
 });
 
+// Generic paid booking — Experiences / Trips (create_booking) and paid Events (book_event_order). Both insert
+// into bookings with provider_id + total_aed (unpaid). Charges the listing's connected FACILITY account, same
+// Connect Standard / zero-fee / auto-confirm pattern as session-checkout. (v99, gap #1)
+app.post('/api/pay/booking-checkout', async (req, res) => {
+  try {
+    const { booking_id, success_url, cancel_url } = req.body || {};
+    if (!booking_id) return res.status(400).json({ error: 'Missing booking_id' });
+    const { data: bk } = await supabase.from('bookings').select('id, provider_id, item_type, total_aed, payment_status').eq('id', booking_id).maybeSingle();
+    if (!bk) return res.status(404).json({ error: 'Booking not found' });
+    if (bk.payment_status === 'paid') return res.json({ already_paid: true });
+    if (!bk.provider_id) return res.status(400).json({ error: 'No facility on booking' });
+    const { data: prov } = await supabase.from('providers').select('stripe_account_id, payments_status, business_name, currency').eq('id', bk.provider_id).maybeSingle();
+    if (!prov || prov.payments_status !== 'connected' || !prov.stripe_account_id) return res.status(409).json({ error: 'Facility not accepting payments yet' });
+    const amount = toMinorUnits(bk.total_aed, prov.currency);
+    if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
+    const to = success_url || BOOKINGS_URL;
+    const sess = await connectedCheckout(prov.stripe_account_id, {
+      amount_fils: amount, currency: prov.currency, name: (prov.business_name || 'Booking') + ' — booking', metadata: { kind: 'booking', booking_id: String(booking_id) },
+      success_url: BACKEND_BASE + '/api/pay/confirm?kind=booking&acct=' + prov.stripe_account_id + '&ref=' + booking_id + '&sid={CHECKOUT_SESSION_ID}&to=' + encodeURIComponent(to),
+      cancel_url: cancel_url || BOOKINGS_URL
+    });
+    res.json({ url: sess.url });
+  } catch (e) { console.error('[pay/booking-checkout]', e); res.status(500).json({ error: 'Could not start payment' }); }
+});
+
 // Buy a facility package (credits granted on payment success).
 app.post('/api/pay/buy-plan', async (req, res) => {
   try {
@@ -1747,7 +1777,7 @@ app.get('/api/pay/confirm', async (req, res) => {
 
 // Shared finaliser (used by confirm + the webhook). Idempotent.
 async function finalisePaidCheckout(kind, p, sess, intent) {
-  if (kind === 'session' || kind === 'pro_session') {
+  if (kind === 'session' || kind === 'pro_session' || kind === 'booking') {
     const bid = p.ref || p.booking_id;
     // Idempotent: confirm + webhook both call this. Only finalise + notify on the first transition to paid.
     const { data: bk } = await supabase.from('bookings')
