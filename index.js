@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v99
+// FFP Passport — Express Server (Vercel, CommonJS) — v100
+// v100 (2026-06-20): MEET-UP LEAVE NOTIFY — /api/meetups/notify supports {kind:'leave', meetup_id, member_id, pending}
+//      → emails the HOST that an attendee cancelled their spot / withdrew a request. The in-app host
+//      notification is written transactionally by the leave_meetup RPC (so it fires even if the email POST is missed).
 // v99 (2026-06-16): GAP #1 — generic POST /api/pay/booking-checkout {booking_id} → {url}. Charges any unpaid
 //      bookings row (Experiences/Trips via create_booking, paid Events via book_event_order — both carry
 //      provider_id + total_aed) on the listing's connected facility account; success → /api/pay/confirm
@@ -1994,6 +1997,17 @@ async function sendMeetupRequestEmail(toEmail, hostName, requesterName, m) {
    + mtgDetailBlock(m) + mtgCta('Review request');
   await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: who + ' wants to join your meet-up', html: brandEmail('Meet & Move', body) });
 }
+// v100: emailed to the HOST when an attendee cancels their spot / withdraws a request (in-app notice via leave_meetup RPC).
+async function sendMeetupLeaveEmail(toEmail, hostName, leaverName, m, wasPending) {
+  var hi = hostName ? ('Hi ' + escapeHtml(hostName) + '. ') : '';
+  var who = leaverName ? escapeHtml(leaverName) : 'A member';
+  var verb = wasPending ? 'withdrawn their request to join' : 'cancelled their spot for';
+  var head = wasPending ? 'A request was withdrawn' : 'Someone left your meet-up';
+  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">' + head + '</div>'
+   + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + '<strong style="color:#0f2c47;">' + who + '</strong> has ' + verb + ' your meet-up. A spot has opened back up.</p>'
+   + mtgDetailBlock(m) + mtgCta('View meet-up');
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: who + (wasPending ? ' withdrew from your meet-up' : ' left your meet-up'), html: brandEmail('Meet & Move', body) });
+}
 
 // Event-driven notify: request→host (v72), confirmation on APPROVE, cancellation on host-cancel (client calls after the RPC).
 app.post('/api/meetups/notify', async (req, res) => {
@@ -2055,6 +2069,17 @@ app.post('/api/meetups/notify', async (req, res) => {
         try { await notifyMember(a.member_id, { title: 'Meet-up cancelled', body: (m.title || 'A meet-up') + ' has been cancelled', icon: 'event_busy', link: '/ffp-member-dashboard.html#panel-meetups' }); } catch (e) {}
       }
       return res.json({ success: true, emailed: sent });
+    }
+    if (kind === 'leave') {
+      // v100: an attendee cancelled their spot / withdrew a request → EMAIL the host.
+      // (The in-app host notification is written transactionally by the leave_meetup RPC.)
+      if (!memberId) return res.status(400).json({ error: 'member_id required' });
+      if (!m.host_member_id) return res.json({ success: true });
+      var wasPending = !!(req.body && req.body.pending);
+      const { data: host } = await supabase.from('members').select('email, full_name').eq('id', m.host_member_id).maybeSingle();
+      const { data: lvr } = await supabase.from('members').select('full_name').eq('id', memberId).maybeSingle();
+      if (host && host.email) { try { await sendMeetupLeaveEmail(host.email, host.full_name, lvr && lvr.full_name, m, wasPending); } catch (e) { console.warn('meetup leave email:', e.message); } }
+      return res.json({ success: true });
     }
     return res.status(400).json({ error: 'unknown kind' });
   } catch (e) { return res.status(500).json({ error: e.message }); }
