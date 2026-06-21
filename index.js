@@ -1121,6 +1121,68 @@ app.post('/api/auth/refresh', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// ── v96: HYBRID AUTH — exchange a VERIFIED native Supabase session for the FFP app-JWT.
+// The dashboard/booking platform logs the member in with native Supabase Auth (OTP / magic-link —
+// rate-limited, single-use, MFA-capable: no stored 6-digit code). The native session's access_token
+// is POSTed here; we validate it with the service client, resolve the platform member by the
+// members.user_id link (or by email, linking on first use, or create), then mint the SAME short
+// app-JWT (sub=members.id) the rest of the app already uses — so the entire RLS layer is unchanged.
+// Runs in PARALLEL with /api/auth/signin (access_code) until the legacy path is retired.
+app.post('/api/auth/exchange', async (req, res) => {
+  try {
+    const accessToken = (req.body && (req.body.access_token || req.body.accessToken)) || '';
+    if (!accessToken) return res.status(400).json({ error: 'Missing access_token' });
+
+    // 1) Validate the native Supabase session (signature + expiry handled by the SDK)
+    const { data: u, error: uErr } = await supabase.auth.getUser(accessToken);
+    const nativeUser = u && u.user;
+    if (uErr || !nativeUser || !nativeUser.id) return res.status(401).json({ error: 'Invalid or expired session' });
+    const nativeId = nativeUser.id;
+    const email = String(nativeUser.email || '').trim().toLowerCase();
+
+    // 2) Resolve the platform member — by user_id link, then by email (link on first use), then create
+    let member = null;
+    {
+      const { data: byLink } = await supabase.from('members').select('*').eq('user_id', nativeId).maybeSingle();
+      member = byLink || null;
+    }
+    if (!member && email) {
+      const { data: byEmail } = await supabase.from('members').select('*').eq('email', email).maybeSingle();
+      if (byEmail) {
+        if (!byEmail.user_id) {
+          // link this native auth user to the existing member (idempotent; never overwrite a set value)
+          await supabase.from('members').update({ user_id: nativeId }).eq('id', byEmail.id).is('user_id', null);
+        }
+        member = byEmail; member.user_id = byEmail.user_id || nativeId;
+      }
+    }
+    if (!member) {
+      const { data: created, error: cErr } = await supabase.from('members')
+        .insert({ email, membership: 'free', role: 'member', status: 'active', user_id: nativeId })
+        .select('*').single();
+      if (cErr || !created) return res.status(500).json({ error: (cErr && cErr.message) || 'Could not create member' });
+      member = created;
+    }
+
+    if (member.status && member.status !== 'active') return res.status(403).json({ error: 'Account suspended' });
+    try { await supabase.from('members').update({ last_login: new Date().toISOString() }).eq('id', member.id); } catch (e) {}
+
+    const { access_code: _ac, ...memberSafe } = member;
+    res.json({
+      success: true,
+      jwt: mintSupabaseJwt(member),       // short (7d) app-JWT, sub=members.id → RLS unchanged
+      refresh: mintRefreshToken(member),  // long-lived refresh → /api/auth/refresh (same as signin)
+      member: memberSafe,
+      redirect: member.profile_complete
+        ? ((member.role === 'admin' || member.role === 'super_admin') ? '/ffp-admin.html'
+           : member.role === 'provider' ? '/ffp-provider.html'
+           : '/ffp-member-dashboard.html')
+        : '/ffp-profile-complete.html'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 app.post('/api/auth/reset', async (req, res) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase(); // v75: case-insensitive lookup — fixes "account does not exist" on capitalized email
