@@ -969,6 +969,25 @@ async function sendReferralEmail(toEmail, referrerName, newMemberName, rewardUsd
    +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html#referrals" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">View your earnings</a></td></tr></table>';
   await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'You have a new referral on FFP Passport', html: brandEmail('Referral', body) });
 }
+// New-booking alert to the host (professional or partner). Payload comes from the
+// booking_host_notify_payload RPC (host email/name, member, session label, when, paid_with).
+async function sendBookingHostEmail(p) {
+  if (!p || !p.host_email) return;
+  var paid = p.paid_with === 'credit' ? 'Paid by package credit'
+           : p.paid_with === 'paid' ? 'Paid' : 'Payment pending';
+  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">New booking</div>'
+   + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 18px;">Hi '+escapeHtml(p.host_name||'there')+', <strong style="color:#0f2c47;">'+escapeHtml(p.member_name||'A member')+'</strong> just booked into <strong style="color:#0f2c47;">'+escapeHtml(p.label||'a session')+'</strong>.</p>'
+   + '<table role="presentation" width="100%" style="background:#f7fafc;border:1px solid #e7eef4;border-radius:10px;"><tr><td style="padding:14px 16px;font-size:13px;color:#44586a;line-height:2;">'
+   + '<span style="color:#8196a6;">Who</span> &nbsp; <strong style="color:#0f2c47;">'+escapeHtml(p.member_name||'—')+'</strong><br>'
+   + '<span style="color:#8196a6;">Session</span> &nbsp; '+escapeHtml(p.label||'—')+'<br>'
+   + '<span style="color:#8196a6;">When</span> &nbsp; '+escapeHtml(p.when||'—')+'<br>'
+   + '<span style="color:#8196a6;">Payment</span> &nbsp; '+escapeHtml(paid)
+   + '</td></tr></table>'
+   + '<p style="font-size:13px;color:#5b7186;line-height:1.6;margin:16px 0 0;">It is now in your dashboard schedule.</p>';
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: p.host_email,
+    subject: 'New booking — '+(p.member_name||'a member')+' · '+(p.label||'session'),
+    html: brandEmail('New booking', body) });
+}
 async function sendPaymentFailedEmail(toEmail, name) {
   if (!toEmail) return;
   var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">We couldn’t process your payment</div>'
@@ -2914,6 +2933,27 @@ app.post('/api/calorie/save', async (req, res) => {
     res.json({ success: true, data });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+// New-booking host alert. Called by the DB trigger (net.http_post) on every new
+// professional/provider-session booking. Verifies a shared secret, resolves the host
+// email via the booking_host_notify_payload RPC, and emails the pro/partner.
+const BOOKINGS_NOTIFY_SECRET = process.env.BOOKINGS_NOTIFY_SECRET || '';
+app.post('/api/bookings/notify-host', async (req, res) => {
+  try {
+    if (!BOOKINGS_NOTIFY_SECRET || req.get('x-ffp-secret') !== BOOKINGS_NOTIFY_SECRET) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const bid = req.body && req.body.booking_id;
+    if (!bid) return res.status(400).json({ error: 'booking_id required' });
+    const { data, error } = await supabase.rpc('booking_host_notify_payload', { p_booking: bid });
+    if (error) { console.error('[booking notify] rpc:', error); return res.status(500).json({ error: 'lookup failed' }); }
+    if (!data) return res.json({ ok: true, skipped: 'no_payload' });
+    await sendBookingHostEmail(data);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[booking notify]:', e);
+    res.status(500).json({ error: 'failed' });
   }
 });
 app.post('/api/visits/log', async (req, res) => {
