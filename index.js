@@ -988,6 +988,17 @@ async function sendBookingHostEmail(p) {
     subject: 'New booking — '+(p.member_name||'a member')+' · '+(p.label||'session'),
     html: brandEmail('New booking', body) });
 }
+// Member-facing booking email (cancellation / reschedule / credit returned), driven by the
+// notifications trigger -> member_notify_email_payload RPC.
+async function sendMemberNotifyEmail(p) {
+  if (!p || !p.to_email) return;
+  var body = '<div style="font-size:23px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">'+escapeHtml(p.title||'Update')+'</div>'
+   + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 18px;">Hi '+escapeHtml(p.name||'there')+', '+escapeHtml(p.body||'')+'</p>'
+   + '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">Open your bookings</a></td></tr></table>';
+  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: p.to_email,
+    subject: 'FFP Passport — '+(p.title||'Booking update'),
+    html: brandEmail(p.title||'Booking update', body) });
+}
 async function sendPaymentFailedEmail(toEmail, name) {
   if (!toEmail) return;
   var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">We couldn’t process your payment</div>'
@@ -2953,6 +2964,24 @@ app.post('/api/bookings/notify-host', async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     console.error('[booking notify]:', e);
+    res.status(500).json({ error: 'failed' });
+  }
+});
+// Member-facing booking email (cancel / reschedule / credit returned). Called by the notifications trigger.
+app.post('/api/notifications/email-member', async (req, res) => {
+  try {
+    if (!BOOKINGS_NOTIFY_SECRET || req.get('x-ffp-secret') !== BOOKINGS_NOTIFY_SECRET) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const nid = req.body && req.body.notification_id;
+    if (!nid) return res.status(400).json({ error: 'notification_id required' });
+    const { data, error } = await supabase.rpc('member_notify_email_payload', { p_notif: nid });
+    if (error) { console.error('[member notify] rpc:', error); return res.status(500).json({ error: 'lookup failed' }); }
+    if (!data) return res.json({ ok: true, skipped: 'no_payload' });
+    await sendMemberNotifyEmail(data);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[member notify]:', e);
     res.status(500).json({ error: 'failed' });
   }
 });
