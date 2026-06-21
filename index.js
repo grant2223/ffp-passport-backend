@@ -1156,6 +1156,10 @@ app.post('/api/auth/exchange', async (req, res) => {
         member = byEmail; member.user_id = byEmail.user_id || nativeId;
       }
     }
+    // allow_create:false (sign-in funnel) → never auto-create a member for an unknown email; the
+    // front then shows "Become a member". Default true (signup / booking-platform link flows).
+    const allowCreate = !(req.body && req.body.allow_create === false);
+    if (!member && !allowCreate) return res.status(404).json({ error: 'no_account' });
     if (!member) {
       const { data: created, error: cErr } = await supabase.from('members')
         .insert({ email, membership: 'free', role: 'member', status: 'active', user_id: nativeId })
