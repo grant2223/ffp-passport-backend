@@ -1,4 +1,6 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v100
+// FFP Passport — Express Server (Vercel, CommonJS) — v101
+// v101 (2026-06-22): ACTIVITY MULTI-PHOTO — GET /api/members/:id/activity-logs now also returns the
+//      photos text[] column (up to 8 images per activity). photo_url stays the cover (photos[0]).
 // v100 (2026-06-20): MEET-UP LEAVE NOTIFY — /api/meetups/notify supports {kind:'leave', meetup_id, member_id, pending}
 //      → emails the HOST that an attendee cancelled their spot / withdrew a request. The in-app host
 //      notification is written transactionally by the leave_meetup RPC (so it fires even if the email POST is missed).
@@ -2625,7 +2627,7 @@ app.get('/api/members/:id/activity-logs', async (req, res) => {
     const { id } = req.params;
     const { data: logs, error } = await supabase
       .from('activity_logs')
-      .select('id, activity, category, venue, provider_id, duration_min, duration_sec, intensity, calories, distance_km, avg_heart_rate, notes, logged_at, city, country, verified, checkin_lat, checkin_lng, photo_url, shared')
+      .select('id, activity, category, venue, provider_id, duration_min, duration_sec, intensity, calories, distance_km, avg_heart_rate, notes, logged_at, city, country, verified, checkin_lat, checkin_lng, photo_url, photos, shared')
       .eq('member_id', id)
       .order('logged_at', { ascending: false })
       .limit(500);
