@@ -2461,6 +2461,91 @@ app.post('/api/push/test', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
+// ──────────────────────────────────────────────────────────────────────────────────────────
+// GOOGLE PLACES (New) PROXY — venue search for Log Activity. The API key lives ONLY here
+// (env GOOGLE_PLACES_KEY); the app never sees it. Place Details are cached in places_cache so
+// repeat venues don't re-bill. Autocomplete is session-billed (free) when ended with a Details call.
+// ──────────────────────────────────────────────────────────────────────────────────────────
+const GPLACES_KEY = process.env.GOOGLE_PLACES_KEY || '';
+
+// Type-ahead venue search → minimal predictions.
+app.get('/api/places/suggest', async (req, res) => {
+  try {
+    if (!GPLACES_KEY) return res.status(503).json({ error: 'places_not_configured', suggestions: [] });
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json({ suggestions: [] });
+    const body = { input: q };
+    const lat = parseFloat(req.query.lat), lng = parseFloat(req.query.lng);
+    if (!isNaN(lat) && !isNaN(lng)) {
+      body.locationBias = { circle: { center: { latitude: lat, longitude: lng }, radius: 50000.0 } };
+    }
+    if (req.query.session) body.sessionToken = String(req.query.session);
+    const r = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': GPLACES_KEY,
+        'X-Goog-FieldMask': 'suggestions.placePrediction.placeId,suggestions.placePrediction.text.text,suggestions.placePrediction.structuredFormat.mainText.text,suggestions.placePrediction.structuredFormat.secondaryText.text'
+      },
+      body: JSON.stringify(body)
+    });
+    const j = await r.json();
+    if (!r.ok) return res.status(502).json({ error: (j.error && j.error.message) || 'places_error', suggestions: [] });
+    const out = ((j.suggestions) || []).map(function (s) {
+      const p = s.placePrediction; if (!p) return null;
+      const sf = p.structuredFormat || {};
+      return {
+        place_id: p.placeId,
+        main: (sf.mainText && sf.mainText.text) || (p.text && p.text.text) || '',
+        secondary: (sf.secondaryText && sf.secondaryText.text) || '',
+        text: (p.text && p.text.text) || ''
+      };
+    }).filter(Boolean);
+    return res.json({ suggestions: out });
+  } catch (e) { return res.status(500).json({ error: e.message, suggestions: [] }); }
+});
+
+// Resolve a chosen place_id → name + exact coords. Cached to avoid re-billing.
+app.get('/api/places/details', async (req, res) => {
+  try {
+    if (!GPLACES_KEY) return res.status(503).json({ error: 'places_not_configured' });
+    const placeId = String(req.query.place_id || '').trim();
+    if (!placeId) return res.status(400).json({ error: 'place_id required' });
+    try {
+      const { data: hit } = await supabase.from('places_cache').select('*').eq('place_id', placeId).maybeSingle();
+      if (hit && hit.lat != null && hit.lng != null) {
+        return res.json({ place_id: hit.place_id, name: hit.name, address: hit.address, lat: Number(hit.lat), lng: Number(hit.lng), maps_url: hit.maps_url, cached: true });
+      }
+    } catch (e) {}
+    let url = 'https://places.googleapis.com/v1/places/' + encodeURIComponent(placeId);
+    if (req.query.session) url += '?sessionToken=' + encodeURIComponent(String(req.query.session));
+    const r = await fetch(url, {
+      headers: {
+        'X-Goog-Api-Key': GPLACES_KEY,
+        'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,googleMapsUri,types'
+      }
+    });
+    const j = await r.json();
+    if (!r.ok) return res.status(502).json({ error: (j.error && j.error.message) || 'places_error' });
+    const loc = j.location || {};
+    const out = {
+      place_id: j.id || placeId,
+      name: (j.displayName && j.displayName.text) || '',
+      address: j.formattedAddress || '',
+      lat: (loc.latitude != null) ? loc.latitude : null,
+      lng: (loc.longitude != null) ? loc.longitude : null,
+      maps_url: j.googleMapsUri || ''
+    };
+    try {
+      await supabase.from('places_cache').upsert({
+        place_id: out.place_id, name: out.name, address: out.address, lat: out.lat, lng: out.lng,
+        maps_url: out.maps_url, types: j.types || null, updated_at: new Date().toISOString()
+      }, { onConflict: 'place_id' });
+    } catch (e) {}
+    return res.json(out);
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/provider/signup', async (req, res) => {
   try {
     const {
