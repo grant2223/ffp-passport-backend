@@ -2797,6 +2797,37 @@ app.get('/api/quests/:id', async (req, res) => {
   }
 });
 // v88: A member shares a logged activity → notify everyone in their collection (member_connections).
+// Phone push for activity TAGS. The in-app bell row for each tagged connection is written transactionally
+// by the activity_add_partners RPC; this just rides the phone push so the "you were tagged" alert isn't
+// missed. Pushes to the PENDING tags on the activity (those just created by the tagger).
+app.post('/api/activity/notify-tags', async (req, res) => {
+  try {
+    const taggerId = (req.body && req.body.member_id) || null;
+    const activityId = (req.body && req.body.activity_id) || null;
+    if (!taggerId || !activityId) return res.status(400).json({ error: 'Missing member or activity' });
+    const { data: act } = await supabase.from('activity_logs').select('id, member_id, activity, city').eq('id', activityId).maybeSingle();
+    if (!act || act.member_id !== taggerId) return res.status(404).json({ error: 'Activity not found' });
+    const { data: tagger } = await supabase.from('members').select('full_name').eq('id', taggerId).maybeSingle();
+    const who = (tagger && tagger.full_name) ? tagger.full_name : 'A connection';
+    const { data: tags } = await supabase.from('activity_partners')
+      .select('partner_member_id').eq('activity_id', activityId).eq('tagged_by', taggerId).eq('status', 'pending');
+    const what = act.activity || 'an activity';
+    const where = act.city ? (' · ' + act.city) : '';
+    let pushed = 0;
+    for (const t of (tags || [])) {
+      try {
+        await sendPushToMember(t.partner_member_id, {
+          title: who + ' added you to an activity',
+          body: what + where + ' — tap to confirm it on your journey',
+          url: '/ffp-member-dashboard.html#activity-tags',
+          icon: '/assets/icons/ffp-icon-192.png'
+        });
+        pushed++;
+      } catch (e) {}
+    }
+    return res.json({ success: true, pushed });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
 app.post('/api/activity/notify', async (req, res) => {
   try {
     const memberId = (req.body && (req.body.member_id || req.body.from_member_id)) || null;
