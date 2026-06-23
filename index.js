@@ -2622,6 +2622,79 @@ app.get('/api/places/details', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
+// ──────────────────────────────────────────────────────────────────────────────────────────
+// OPEN FOOD FACTS PROXY — world-class food database for the Calorie Tracker. OFF is free + keyless;
+// we proxy it (CSP-safe, lets us normalize the messy nutriments + cache barcode lookups in foods_cache).
+// All values normalized to a per-100g basis (serving:100, unit:'g') so the client scales by grams.
+// ──────────────────────────────────────────────────────────────────────────────────────────
+const OFF_BASE = 'https://world.openfoodfacts.org';
+const OFF_UA = 'FFPPassport/1.0 (https://findfitpeople.com)';   // OFF asks every client to send a UA
+
+function offNormalize(p) {
+  if (!p) return null;
+  const n = p.nutriments || {};
+  const energy = (n['energy-kcal_100g'] != null) ? n['energy-kcal_100g'] : n['energy-kcal'];
+  const kcal = Math.round(Number(energy) || 0);
+  if (!kcal) return null;   // no usable energy → not worth showing
+  const name = String(p.product_name || p.product_name_en || '').trim();
+  if (!name) return null;
+  const brand = String(p.brands || '').split(',')[0].trim();
+  const num = (v) => +(Number(v) || 0).toFixed(1);
+  return {
+    barcode: String(p.code || p._id || ''),
+    name: brand ? (name + ' (' + brand + ')') : name,
+    serving: 100, unit: 'g',
+    kcal: kcal,
+    p: num(n.proteins_100g),
+    c: num(n.carbohydrates_100g),
+    f: num(n.fat_100g)
+  };
+}
+
+// Live text search → normalized foods (per-100g).
+app.get('/api/food/search', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json({ foods: [] });
+    const url = OFF_BASE + '/cgi/search.pl?search_terms=' + encodeURIComponent(q)
+      + '&search_simple=1&action=process&json=1&page_size=20&sort_by=unique_scans_n'
+      + '&fields=code,product_name,product_name_en,brands,nutriments';
+    const r = await fetch(url, { headers: { 'User-Agent': OFF_UA } });
+    if (!r.ok) return res.status(502).json({ error: 'off_error', foods: [] });
+    const j = await r.json();
+    const foods = ((j && j.products) || []).map(offNormalize).filter(Boolean).slice(0, 20);
+    res.set('Cache-Control', 'public, max-age=86400');
+    return res.json({ foods });
+  } catch (e) { return res.status(500).json({ error: e.message, foods: [] }); }
+});
+
+// Barcode lookup → one normalized food. Cached in foods_cache so repeat scans are instant.
+app.get('/api/food/barcode', async (req, res) => {
+  try {
+    const code = String(req.query.code || '').replace(/[^0-9]/g, '');
+    if (!code) return res.status(400).json({ error: 'code required' });
+    try {
+      const { data: hit } = await supabase.from('foods_cache').select('*').eq('barcode', code).maybeSingle();
+      if (hit && hit.kcal != null) {
+        return res.json({ food: { barcode: hit.barcode, name: hit.name, serving: 100, unit: 'g',
+          kcal: Number(hit.kcal), p: Number(hit.protein_g || 0), c: Number(hit.carbs_g || 0), f: Number(hit.fat_g || 0) }, cached: true });
+      }
+    } catch (e) {}
+    const r = await fetch(OFF_BASE + '/api/v2/product/' + encodeURIComponent(code) + '.json?fields=code,product_name,product_name_en,brands,nutriments', { headers: { 'User-Agent': OFF_UA } });
+    const j = await r.json();
+    if (!j || j.status === 0 || !j.product) return res.status(404).json({ error: 'not_found' });
+    const food = offNormalize(j.product);
+    if (!food) return res.status(404).json({ error: 'no_nutrition' });
+    try {
+      await supabase.from('foods_cache').upsert({
+        barcode: food.barcode || code, name: food.name, kcal: food.kcal,
+        protein_g: food.p, carbs_g: food.c, fat_g: food.f, updated_at: new Date().toISOString()
+      }, { onConflict: 'barcode' });
+    } catch (e) {}
+    return res.json({ food });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/provider/signup', async (req, res) => {
   try {
     const {
