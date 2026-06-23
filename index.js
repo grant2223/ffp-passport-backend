@@ -347,7 +347,7 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
         return res.status(200).json({ received: true, subscription: true });
       }
       // v95: booking payments on connected accounts (backup to /api/pay/confirm — same idempotent finalise).
-      if (session.mode === 'payment' && session.metadata && ['session','pro_session','booking','plan','pro_package'].indexOf(session.metadata.kind) >= 0) {
+      if (session.mode === 'payment' && session.metadata && ['session','pro_session','booking','plan','pro_package','invoice'].indexOf(session.metadata.kind) >= 0) {
         try {
           const intent = (typeof session.payment_intent === 'string') ? session.payment_intent : (session.payment_intent && session.payment_intent.id) || null;
           if (session.payment_status === 'paid') await finalisePaidCheckout(session.metadata.kind, session.metadata, session, intent);
@@ -1906,6 +1906,30 @@ app.post('/api/pay/buy-pro-package', async (req, res) => {
   } catch (e) { console.error('[pay/buy-pro-package]', e); res.status(500).json({ error: 'Could not start payment' }); }
 });
 
+// v98: Ad-hoc INVOICE pay-link — lets a pro's client pay a pending invoice online by card on the pro's
+// connected account (direct charge, zero fee). 409 if the pro isn't Stripe-connected → caller omits the link.
+app.post('/api/pay/invoice-checkout', async (req, res) => {
+  try {
+    const { payment_id, success_url, cancel_url } = req.body || {};
+    if (!payment_id) return res.status(400).json({ error: 'Missing payment_id' });
+    const { data: inv } = await supabase.from('pro_payments').select('id, professional_id, description, amount_aed, status').eq('id', payment_id).maybeSingle();
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (inv.status === 'paid') return res.json({ already_paid: true });
+    const { data: pro } = await supabase.from('professionals').select('stripe_account_id, payments_status, display_name, currency').eq('id', inv.professional_id).maybeSingle();
+    if (!pro || pro.payments_status !== 'connected' || !pro.stripe_account_id) return res.status(409).json({ error: 'Pro not accepting online payments yet' });
+    const amount = toMinorUnits(inv.amount_aed, pro.currency);
+    if (amount <= 0) return res.status(400).json({ error: 'Nothing to charge' });
+    const to = success_url || BOOKINGS_URL;
+    const sess = await connectedCheckout(pro.stripe_account_id, {
+      amount_fils: amount, currency: pro.currency, name: (inv.description || 'Invoice') + (pro.display_name ? ' — ' + pro.display_name : ''),
+      metadata: { kind: 'invoice', invoice_id: String(payment_id) },
+      success_url: BACKEND_BASE + '/api/pay/confirm?kind=invoice&acct=' + pro.stripe_account_id + '&ref=' + payment_id + '&sid={CHECKOUT_SESSION_ID}&to=' + encodeURIComponent(to),
+      cancel_url: cancel_url || BOOKINGS_URL
+    });
+    res.json({ url: sess.url });
+  } catch (e) { console.error('[pay/invoice-checkout]', e); res.status(500).json({ error: 'Could not start payment' }); }
+});
+
 // Stripe returns here after a successful Checkout. Retrieve the session ON the connected account, and if paid,
 // finalise idempotently, then bounce to the booking site. (Webhook below is a backup for the same finalise.)
 app.get('/api/pay/confirm', async (req, res) => {
@@ -1952,6 +1976,12 @@ async function finalisePaidCheckout(kind, p, sess, intent) {
       const { data: g } = await supabase.rpc('grant_pro_package', { p_member: p.member || p.member_id, p_professional: p.pro || p.professional_id, p_package: p.package || p.package_id });
       if (g && g.client_package_id) await supabase.from('pro_client_packages').update({ stripe_session_id: sess.id }).eq('id', g.client_package_id);
       try { await notifyMember(p.member || p.member_id, { title: 'Package active', body: 'Your package is paid — your credits are ready to book.', icon: 'redeem', link: '/ffp-member-dashboard.html' }); } catch (e) {}
+    }
+  } else if (kind === 'invoice') {
+    const invId = p.ref || p.invoice_id;
+    const { data: row } = await supabase.from('pro_payments').select('id, status').eq('id', invId).maybeSingle();
+    if (row && row.status !== 'paid') {
+      await supabase.from('pro_payments').update({ status: 'paid', method: 'online', paid_on: new Date().toISOString().slice(0,10), updated_at: new Date().toISOString() }).eq('id', invId);
     }
   }
 }
