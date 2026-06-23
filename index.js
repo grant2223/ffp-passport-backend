@@ -321,17 +321,21 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 // ────────────────────────────────────────────────────────────
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
-  const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!secret) {
+  // v97: this same URL backs TWO Stripe destinations — the platform "Your account" endpoint AND a separate
+  // "Connected accounts" endpoint (required so partner account.updated + connected checkout.session.completed
+  // reach us). Each destination has its OWN signing secret, so verify against whichever one matches.
+  const secrets = [process.env.STRIPE_WEBHOOK_SECRET, process.env.STRIPE_WEBHOOK_SECRET_CONNECT].filter(Boolean);
+  if (!secrets.length) {
     console.error('STRIPE_WEBHOOK_SECRET not set');
     return res.status(500).send('Webhook secret not configured');
   }
-  let event;
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, secret);
-  } catch (err) {
-    console.error('Stripe webhook signature failed:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+  let event = null, lastErr = null;
+  for (const s of secrets) {
+    try { event = stripe.webhooks.constructEvent(req.body, sig, s); break; } catch (e) { lastErr = e; }
+  }
+  if (!event) {
+    console.error('Stripe webhook signature failed:', lastErr && lastErr.message);
+    return res.status(400).send(`Webhook Error: ${lastErr && lastErr.message}`);
   }
   if (event.type === 'checkout.session.completed') {
     try {
