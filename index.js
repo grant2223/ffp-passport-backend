@@ -442,6 +442,12 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
     try { await onTrialWillEnd(event.data.object); } catch (e) { console.error('[webhook trial_will_end]', e.message); }
     return res.json({ received: true });
   }
+  // v97 (reliability): connected-account capability changed over time — keep our status truthful so a
+  // partner who later becomes restricted / has payouts paused is reflected, instead of a stale 'connected'.
+  if (event.type === 'account.updated') {
+    try { await syncConnectAccount(event.data.object); } catch (e) { console.error('[webhook account.updated]', e.message); }
+    return res.json({ received: true });
+  }
   res.json({ received: true });
 });
 app.use(express.json({ limit: '50mb' }));
@@ -1551,6 +1557,44 @@ function buildAccountLink(providerId, accountId) {
     type: 'account_onboarding'
   });
 }
+// v97 (reliability): map a Stripe Account's LIVE capability into our status columns. Stripe is the source of truth.
+//   charges_enabled            → can they take payments right now?
+//   details_submitted=false    → still mid-onboarding (not "restricted", just unfinished)
+//   charges off + submitted    → 'restricted' (Stripe paused them — action needed)
+//   requirements.currently/past_due → what Stripe still needs (surfaced to the partner)
+function accountStatusPatch(acct) {
+  const charges = !!(acct && acct.charges_enabled);
+  const payouts = !!(acct && acct.payouts_enabled);
+  const req = (acct && acct.requirements) || {};
+  const due = [].concat(req.currently_due || []).concat(req.past_due || []);
+  const disabled = (req && req.disabled_reason) || null;
+  const status = charges ? 'connected' : ((acct && acct.details_submitted) ? 'restricted' : 'onboarding');
+  return {
+    charges_enabled: charges,
+    payouts_enabled: payouts,
+    requirements_due: due.length ? Array.from(new Set(due)).join(',') : null,
+    disabled_reason: disabled,
+    payments_status: status,
+    payments_updated_at: new Date().toISOString()
+  };
+}
+// v97 (reliability): account.updated handler — re-sync whichever facility/pro owns this connected account so a
+// partner who later gets restricted/payouts-paused is reflected immediately (instead of a stale 'connected').
+async function syncConnectAccount(acct) {
+  if (!acct || !acct.id) return;
+  const patch = accountStatusPatch(acct);
+  const { data: prov } = await supabase.from('providers').select('id, stripe_connected_at').eq('stripe_account_id', acct.id).maybeSingle();
+  if (prov) {
+    if (patch.payments_status === 'connected' && !prov.stripe_connected_at) patch.stripe_connected_at = new Date().toISOString();
+    await supabase.from('providers').update(patch).eq('id', prov.id);
+    return;
+  }
+  const { data: pro } = await supabase.from('professionals').select('id, stripe_connected_at').eq('stripe_account_id', acct.id).maybeSingle();
+  if (pro) {
+    if (patch.payments_status === 'connected' && !pro.stripe_connected_at) patch.stripe_connected_at = new Date().toISOString();
+    await supabase.from('professionals').update(patch).eq('id', pro.id);
+  }
+}
 
 // Begin onboarding: portal posts the signed-in member's refresh token + provider_id. We confirm they
 // OWN that facility, ensure a Standard connected account exists, and return a Stripe-hosted onboarding link.
@@ -1607,11 +1651,10 @@ app.get('/api/facility/connect/return', async (req, res) => {
     const { data: prov } = await supabase.from('providers').select('stripe_account_id').eq('id', pid).maybeSingle();
     if (!prov || !prov.stripe_account_id) return back('error');
     const acct = await stripe.accounts.retrieve(prov.stripe_account_id);
-    const done = !!(acct && acct.charges_enabled);
-    const upd = { payments_status: done ? 'connected' : 'onboarding' };
-    if (done) upd.stripe_connected_at = new Date().toISOString();
+    const upd = accountStatusPatch(acct);
+    if (upd.payments_status === 'connected') upd.stripe_connected_at = new Date().toISOString();
     await supabase.from('providers').update(upd).eq('id', pid);
-    return back(done ? 'connected' : 'incomplete');
+    return back(upd.payments_status === 'connected' ? 'connected' : 'incomplete');
   } catch (e) {
     console.error('[connect/return]', e);
     return back('error');
@@ -1700,11 +1743,10 @@ app.get('/api/pro/connect/return', async (req, res) => {
     const { data: pro } = await supabase.from('professionals').select('stripe_account_id').eq('id', pid).maybeSingle();
     if (!pro || !pro.stripe_account_id) return back('error');
     const acct = await stripe.accounts.retrieve(pro.stripe_account_id);
-    const done = !!(acct && acct.charges_enabled);
-    const upd = { payments_status: done ? 'connected' : 'onboarding' };
-    if (done) upd.stripe_connected_at = new Date().toISOString();
+    const upd = accountStatusPatch(acct);
+    if (upd.payments_status === 'connected') upd.stripe_connected_at = new Date().toISOString();
     await supabase.from('professionals').update(upd).eq('id', pid);
-    return back(done ? 'connected' : 'incomplete');
+    return back(upd.payments_status === 'connected' ? 'connected' : 'incomplete');
   } catch (e) { console.error('[pro connect/return]', e); return back('error'); }
 });
 app.get('/api/pro/connect/refresh', async (req, res) => {
