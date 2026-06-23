@@ -2850,13 +2850,22 @@ app.post('/api/activity/notify', async (req, res) => {
       .map(c => (c.requester_id === memberId ? c.addressee_id : c.requester_id))
       .filter(x => x && x !== memberId)));
 
+    // Don't DOUBLE-notify people tagged on this activity — they get the specific "added you to an
+    // activity" tag notification instead, so the generic "logged an activity" share is skipped for them.
+    const tagged = new Set();
+    try {
+      const { data: taggedRows } = await supabase.from('activity_partners').select('partner_member_id').eq('activity_id', activityId);
+      (taggedRows || []).forEach(t => { if (t.partner_member_id) tagged.add(t.partner_member_id); });
+    } catch (e) {}
+    const ids2 = ids.filter(x => !tagged.has(x));
+
     const { data: me } = await supabase.from('members').select('full_name').eq('id', memberId).maybeSingle();
     const who = (me && me.full_name) ? me.full_name : 'A connection';
     const what = act.activity || 'an activity';
     const where = act.city ? (' in ' + act.city) : '';
 
     let notified = 0;
-    for (const toId of ids) {
+    for (const toId of ids2) {
       try {
         await notifyMember(toId, {
           title: who + ' logged an activity',
