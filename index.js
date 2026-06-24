@@ -2818,6 +2818,85 @@ app.post('/api/ai/parse', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
+// ──────────────────────────────────────────────────────────────────────────────────────────
+// FFP ASSISTANT — in-dashboard agent for partners (facility) + professionals (coach).
+// v1: guides setup + day-to-day, answers from the context the dashboard already holds, and NAVIGATES
+// the user to the right screen (navigate tool). No data mutation yet (confirmed actions come next).
+// Logged to ai_agent_events (surface = partner|pro) for analytics.
+// ──────────────────────────────────────────────────────────────────────────────────────────
+const AGENT_MODEL = process.env.AGENT_MODEL || 'claude-sonnet-4-6';
+const PARTNER_PANELS = ['overview', 'checkins', 'members', 'plans', 'scheduling', 'appointments', 'staff', 'billing', 'announcements', 'classes', 'events', 'experiences', 'quests', 'challenges', 'deals', 'profile', 'settings'];
+const PRO_PANELS = ['overview', 'scheduling', 'checkin', 'clients', 'payments', 'profile', 'services', 'packages', 'comms'];
+
+function agentSystem(role, ctx) {
+  var isPro = role === 'pro';
+  var who = isPro ? 'an individual fitness professional / coach' : 'a fitness facility / partner business';
+  var panels = isPro
+    ? 'overview (today + key numbers), scheduling (your availability and bookable sessions), checkin (client check-in by code/QR), clients (your client list + profiles, notes, forms, packages), payments (earnings, invoices, bank details, Stripe Connect), profile (your public storefront), services (the session types you offer), packages (multi-session bundles), comms (message clients)'
+    : 'overview (today + key numbers), checkins (member QR check-in), members (your client list), plans (packages & memberships), scheduling (your timetable: classes & sessions), appointments (bookings calendar), staff (team), billing (payments, invoices & Stripe Connect), announcements (broadcast to members), classes/events/experiences (your public listings), profile (business profile & branding), settings';
+  return 'You are the FFP Assistant, a helpful in-app guide inside the FFP ' + (isPro ? 'Professional' : 'Partner') + ' dashboard. ' +
+    'The user is ' + who + ' on FFP Passport (an active-lifestyle platform in the UAE). Help them set up their account and run day-to-day tasks. ' +
+    'Screens you can open with the navigate tool: ' + panels + '. ' +
+    'Getting fully set up means: a complete public profile, at least one service/class, availability set in scheduling, packages/memberships if they sell them, Stripe Connect connected (in ' + (isPro ? 'payments' : 'billing') + ') to take online payment, and any waiver/health forms. ' +
+    'Right now you GUIDE, NAVIGATE and DRAFT — you cannot change their data yourself yet, so: explain clearly, use the navigate tool to take them to the exact screen, and when useful draft the text/values for them to paste or enter. ' +
+    'Be concise, warm and specific. Prefer one short paragraph or a few short steps. Use the navigate tool whenever the next step lives on a screen. ' +
+    'Current account context (use it; do not invent data you were not given): ' + JSON.stringify(ctx || {}).slice(0, 1500) + '.';
+}
+
+async function anthropicMessages(system, messages, tools, maxTokens) {
+  var body = { model: AGENT_MODEL, max_tokens: maxTokens || 1024, system: system, messages: messages };
+  if (tools && tools.length) body.tools = tools;
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify(body)
+  });
+  const j = await r.json();
+  if (!r.ok) { console.error('[agent] anthropic:', j && j.error); return { error: (j && j.error && j.error.message) || 'ai_error' }; }
+  return { content: j.content || [], stop_reason: j.stop_reason };
+}
+
+app.post('/api/agent/chat', async (req, res) => {
+  try {
+    if (!ANTHROPIC_KEY) return res.status(503).json({ error: 'ai_not_configured' });
+    const b = req.body || {};
+    const role = (b.role === 'pro') ? 'pro' : 'partner';
+    const inMsgs = Array.isArray(b.messages) ? b.messages.slice(-16) : [];
+    if (!inMsgs.length) return res.status(400).json({ error: 'messages required' });
+    const sys = agentSystem(role, b.context || {});
+    const panelEnum = (role === 'pro') ? PRO_PANELS : PARTNER_PANELS;
+    const tools = [{
+      name: 'navigate',
+      description: 'Open a specific screen in the user\'s dashboard so they can act on what you suggested. Use when the next step lives on a screen.',
+      input_schema: { type: 'object', properties: { panel: { type: 'string', enum: panelEnum }, reason: { type: 'string', description: 'one short phrase shown to the user, e.g. "to connect Stripe"' } }, required: ['panel'] }
+    }];
+    var convo = inMsgs.map(function (m) { return { role: (m.role === 'assistant' ? 'assistant' : 'user'), content: String(m.content || '') }; });
+    var navAction = null;
+    for (var iter = 0; iter < 3; iter++) {
+      var resp = await anthropicMessages(sys, convo, tools, 1024);
+      if (resp.error) return res.status(502).json({ error: 'ai_error' });
+      var textParts = [], toolUses = [];
+      (resp.content || []).forEach(function (blk) { if (blk.type === 'text') textParts.push(blk.text); else if (blk.type === 'tool_use') toolUses.push(blk); });
+      if (!toolUses.length) {
+        try {
+          var lastUser = ''; for (var i = inMsgs.length - 1; i >= 0; i--) { if (inMsgs[i].role !== 'assistant') { lastUser = String(inMsgs[i].content || ''); break; } }
+          await supabase.from('ai_agent_events').insert({ member_id: b.member_id || null, session_id: b.session || null, surface: role, kind: 'query', query: lastUser.slice(0, 1000), meta: navAction ? { navigate: navAction } : null });
+        } catch (e) {}
+        return res.json({ reply: textParts.join('\n').trim() || 'How can I help with your account?', navigate: navAction });
+      }
+      convo.push({ role: 'assistant', content: resp.content });
+      var results = toolUses.map(function (tu) {
+        if (tu.name === 'navigate' && tu.input && panelEnum.indexOf(tu.input.panel) >= 0) {
+          navAction = { panel: tu.input.panel, reason: String(tu.input.reason || '') };
+          return { type: 'tool_result', tool_use_id: tu.id, content: 'Opened the ' + tu.input.panel + ' screen for the user. Briefly tell them what to do there.' };
+        }
+        return { type: 'tool_result', tool_use_id: tu.id, content: 'unknown tool', is_error: true };
+      });
+      convo.push({ role: 'user', content: results });
+    }
+    return res.json({ reply: 'Sorry — could you rephrase that?', navigate: navAction });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
 // AI WORKOUT SUMMARY — short, concise coaching note from the sets the member actually performed.
 app.post('/api/workout/summary', async (req, res) => {
   try {
