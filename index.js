@@ -2772,14 +2772,19 @@ app.post('/api/ai/parse', async (req, res) => {
         'qty is a short human label like "2 eggs" or "1 cup". Output JSON only.';
     } else if (kind === 'activity') {
       sys = 'You convert a typed/spoken description of a workout or activity into structured data. ' +
-        'Return ONLY valid minified JSON: {"activity":string,"duration_min":number,"distance_km":number,"calories":number,"notes":string}. ' +
-        'activity is a short title like "Running" or "Yoga". Estimate duration_min and a realistic calories burned; ' +
-        'set distance_km to 0 if no distance was mentioned. notes is a short optional remark. Output JSON only.';
+        'Return ONLY valid minified JSON: {"activity":string,"duration_min":number,"distance_km":number,"calories":number,"avg_heart_rate":number,"date":string,"time":string,"location":string,"notes":string}. ' +
+        'activity is a short title like "Running" or "Yoga". Estimate duration_min and realistic calories burned; distance_km 0 if none. ' +
+        'avg_heart_rate is bpm if mentioned (e.g. "avg HR 121") else 0. ' +
+        'Resolve relative dates/times (e.g. "this morning", "yesterday at 6am") against the current local datetime given in the user message: ' +
+        'date as "YYYY-MM-DD" and time as 24-hour "HH:MM"; use "" if not stated. ' +
+        'location is the place/venue name if mentioned (e.g. "Kite Beach") else "". notes is a short remark. Output JSON only.';
     } else { return res.status(400).json({ error: 'bad kind' }); }
+    const now = String((req.body && req.body.now) || '').trim();
+    const userContent = text + (now ? ('\n\nCurrent local datetime: ' + now) : '');
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1000, system: sys, messages: [{ role: 'user', content: text }] })
+      body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1000, system: sys, messages: [{ role: 'user', content: userContent }] })
     });
     const j = await r.json();
     if (!r.ok) { console.error('[ai/parse] anthropic:', j && j.error); return res.status(502).json({ error: 'ai_error', detail: (j && j.error && j.error.message) || '' }); }
@@ -2797,14 +2802,40 @@ app.post('/api/ai/parse', async (req, res) => {
       return res.json({ items: items });
     } else {
       var dk = Number(parsed.distance_km);
+      var hr = Number(parsed.avg_heart_rate);
+      var d = String(parsed.date || '').trim(); if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) d = '';
+      var tm = String(parsed.time || '').trim(); if (!/^\d{2}:\d{2}$/.test(tm)) tm = '';
       return res.json({ activity: {
         activity: String(parsed.activity || '').trim() || 'Activity',
         duration_min: Math.max(0, Math.round(Number(parsed.duration_min) || 0)),
         distance_km: (isNaN(dk) || dk <= 0) ? null : +dk.toFixed(2),
         calories: Math.max(0, Math.round(Number(parsed.calories) || 0)),
+        avg_heart_rate: (isNaN(hr) || hr <= 0) ? null : Math.round(hr),
+        date: d, time: tm, location: String(parsed.location || '').trim(),
         notes: String(parsed.notes || '').trim()
       } });
     }
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// AI WORKOUT SUMMARY — short, concise coaching note from the sets the member actually performed.
+app.post('/api/workout/summary', async (req, res) => {
+  try {
+    if (!ANTHROPIC_KEY) return res.status(503).json({ error: 'ai_not_configured' });
+    const b = req.body || {};
+    const payload = JSON.stringify({ title: b.title || 'Workout', duration_sec: b.duration_sec || 0, total_volume: b.total_volume || 0, sets: Array.isArray(b.sets) ? b.sets.slice(0, 80) : [] });
+    const sys = 'You are a supportive, knowledgeable strength coach. Given a completed workout (title, the sets performed with reps and weight, duration and total volume), write a SHORT performance note for the member: 2 to 3 sentences, max ~45 words. ' +
+      'Acknowledge one thing they did well and give one specific, actionable tip to improve next time (e.g. progression, rep targets, rest, form focus). Friendly, plain language, no markdown, no lists, no headings. Output plain text only.';
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 300, system: sys, messages: [{ role: 'user', content: payload }] })
+    });
+    const j = await r.json();
+    if (!r.ok) { console.error('[workout/summary] anthropic:', j && j.error); return res.status(502).json({ error: 'ai_error' }); }
+    var txt = '';
+    try { txt = (j.content || []).map(function (x) { return x.text || ''; }).join('').trim(); } catch (e) {}
+    return res.json({ summary: txt });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
