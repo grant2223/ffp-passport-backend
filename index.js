@@ -2701,7 +2701,7 @@ app.get('/api/food/barcode', async (req, res) => {
 // Output is normalized to a strict shape the app's guided runner can drive directly.
 // ──────────────────────────────────────────────────────────────────────────────────────────
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || '';
-const WORKOUT_MODEL = process.env.WORKOUT_MODEL || 'claude-3-5-haiku-latest';
+const WORKOUT_MODEL = process.env.WORKOUT_MODEL || 'claude-haiku-4-5-20251001';
 
 function parseWorkoutJSON(text) {
   if (!text) return null;
