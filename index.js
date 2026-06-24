@@ -2757,6 +2757,57 @@ app.post('/api/workout/generate', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
+// AI PARSE — natural language → structured food items or an activity (Calorie Tracker + Log Activity voice/text).
+app.post('/api/ai/parse', async (req, res) => {
+  try {
+    if (!ANTHROPIC_KEY) return res.status(503).json({ error: 'ai_not_configured' });
+    const kind = String((req.body && req.body.kind) || '').trim();
+    const text = String((req.body && req.body.text) || '').trim();
+    if (text.length < 2) return res.status(400).json({ error: 'text required' });
+    let sys;
+    if (kind === 'food') {
+      sys = 'You convert a typed/spoken description of food eaten into structured nutrition data. ' +
+        'Return ONLY valid minified JSON: {"items":[{"name":string,"qty":string,"kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number}]}. ' +
+        'Split a meal into its component foods (e.g. "two eggs and toast" -> 2 items). Estimate realistic macros for the stated portion. ' +
+        'qty is a short human label like "2 eggs" or "1 cup". Output JSON only.';
+    } else if (kind === 'activity') {
+      sys = 'You convert a typed/spoken description of a workout or activity into structured data. ' +
+        'Return ONLY valid minified JSON: {"activity":string,"duration_min":number,"distance_km":number,"calories":number,"notes":string}. ' +
+        'activity is a short title like "Running" or "Yoga". Estimate duration_min and a realistic calories burned; ' +
+        'set distance_km to 0 if no distance was mentioned. notes is a short optional remark. Output JSON only.';
+    } else { return res.status(400).json({ error: 'bad kind' }); }
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1000, system: sys, messages: [{ role: 'user', content: text }] })
+    });
+    const j = await r.json();
+    if (!r.ok) { console.error('[ai/parse] anthropic:', j && j.error); return res.status(502).json({ error: 'ai_error', detail: (j && j.error && j.error.message) || '' }); }
+    var out = '';
+    try { out = (j.content || []).map(function (b) { return b.text || ''; }).join('').trim(); } catch (e) {}
+    var parsed = parseWorkoutJSON(out);
+    if (!parsed) return res.status(502).json({ error: 'ai_bad_output' });
+    if (kind === 'food') {
+      var items = (Array.isArray(parsed.items) ? parsed.items : []).map(function (it) {
+        return { name: String(it.name || '').trim(), qty: String(it.qty || '').trim(),
+          kcal: Math.max(0, Math.round(Number(it.kcal) || 0)),
+          protein_g: +(Number(it.protein_g) || 0).toFixed(1), carbs_g: +(Number(it.carbs_g) || 0).toFixed(1), fat_g: +(Number(it.fat_g) || 0).toFixed(1) };
+      }).filter(function (it) { return it.name && it.kcal; });
+      if (!items.length) return res.status(502).json({ error: 'ai_bad_output' });
+      return res.json({ items: items });
+    } else {
+      var dk = Number(parsed.distance_km);
+      return res.json({ activity: {
+        activity: String(parsed.activity || '').trim() || 'Activity',
+        duration_min: Math.max(0, Math.round(Number(parsed.duration_min) || 0)),
+        distance_km: (isNaN(dk) || dk <= 0) ? null : +dk.toFixed(2),
+        calories: Math.max(0, Math.round(Number(parsed.calories) || 0)),
+        notes: String(parsed.notes || '').trim()
+      } });
+    }
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/provider/signup', async (req, res) => {
   try {
     const {
