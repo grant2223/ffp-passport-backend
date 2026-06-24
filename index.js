@@ -2695,6 +2695,68 @@ app.get('/api/food/barcode', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
+// ──────────────────────────────────────────────────────────────────────────────────────────
+// AI WORKOUT GENERATOR — prompt (text/voice) → a structured, guided workout plan via Claude.
+// Key lives ONLY here (env ANTHROPIC_API_KEY). Model overridable via env WORKOUT_MODEL.
+// Output is normalized to a strict shape the app's guided runner can drive directly.
+// ──────────────────────────────────────────────────────────────────────────────────────────
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || '';
+const WORKOUT_MODEL = process.env.WORKOUT_MODEL || 'claude-3-5-haiku-latest';
+
+function parseWorkoutJSON(text) {
+  if (!text) return null;
+  try { return JSON.parse(text); } catch (e) {}
+  var m = String(text).replace(/```json/gi, '').replace(/```/g, '');
+  var s = m.indexOf('{'), e2 = m.lastIndexOf('}');
+  if (s >= 0 && e2 > s) { try { return JSON.parse(m.slice(s, e2 + 1)); } catch (e) {} }
+  return null;
+}
+function normalizeWorkout(plan) {
+  if (!plan || typeof plan !== 'object') return null;
+  var arr = function (x) { return Array.isArray(x) ? x : []; };
+  var num = function (x, d) { var n = Number(x); return isFinite(n) ? n : d; };
+  var str = function (x) { return (x == null) ? '' : String(x).trim(); };
+  return {
+    title: str(plan.title) || 'Workout',
+    focus: str(plan.focus),
+    duration_min: num(plan.duration_min, 0),
+    warmup: arr(plan.warmup).map(function (w) { return { name: str(w.name), duration_sec: num(w.duration_sec, 30), note: str(w.note) }; }).filter(function (w) { return w.name; }),
+    exercises: arr(plan.exercises).map(function (e) { return { name: str(e.name), sets: Math.max(1, Math.round(num(e.sets, 3))), reps: str(e.reps) || '10', rest_sec: num(e.rest_sec, 75), weight: str(e.weight), note: str(e.note) }; }).filter(function (e) { return e.name; }),
+    cooldown: arr(plan.cooldown).map(function (c) { return { name: str(c.name), duration_sec: num(c.duration_sec, 30), note: str(c.note) }; }).filter(function (c) { return c.name; })
+  };
+}
+
+app.post('/api/workout/generate', async (req, res) => {
+  try {
+    if (!ANTHROPIC_KEY) return res.status(503).json({ error: 'ai_not_configured' });
+    const prompt = String((req.body && req.body.prompt) || '').trim();
+    if (prompt.length < 3) return res.status(400).json({ error: 'prompt required' });
+    const sys =
+      'You are an expert strength & conditioning coach creating ONE workout session for a fitness app. ' +
+      'Return ONLY valid minified JSON (no markdown, no prose) with this exact shape: ' +
+      '{"title":string,"focus":string,"duration_min":number,' +
+      '"warmup":[{"name":string,"duration_sec":number,"note":string}],' +
+      '"exercises":[{"name":string,"sets":number,"reps":string,"rest_sec":number,"weight":string,"note":string}],' +
+      '"cooldown":[{"name":string,"duration_sec":number,"note":string}]}. ' +
+      'Rules: 3-7 main exercises; ALWAYS include 2-4 warm-up mobility/activation moves and 2-4 cool-down stretches/mobility; ' +
+      'reps may be a range like "8-12" or a hold like "30s"; weight is a short suggestion like "bodyweight","moderate","15-20kg"; ' +
+      'rest_sec between 30 and 150; respect any stated equipment, level, time or injury limits; keep it safe; ' +
+      'note is a short coaching cue of 8 words or fewer. Output JSON only.';
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1600, system: sys, messages: [{ role: 'user', content: prompt }] })
+    });
+    const j = await r.json();
+    if (!r.ok) { console.error('[workout] anthropic:', j && j.error); return res.status(502).json({ error: 'ai_error', detail: (j && j.error && j.error.message) || '' }); }
+    var text = '';
+    try { text = (j.content || []).map(function (b) { return b.text || ''; }).join('').trim(); } catch (e) {}
+    var plan = normalizeWorkout(parseWorkoutJSON(text));
+    if (!plan || !plan.exercises.length) return res.status(502).json({ error: 'ai_bad_output' });
+    return res.json({ plan });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/provider/signup', async (req, res) => {
   try {
     const {
