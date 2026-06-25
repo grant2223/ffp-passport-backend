@@ -2838,7 +2838,9 @@ function agentSystem(role, ctx) {
     'The user is ' + who + ' on FFP Passport (an active-lifestyle platform in the UAE). Help them set up their account and run day-to-day tasks. ' +
     'Screens you can open with the navigate tool: ' + panels + '. ' +
     'Getting fully set up means: a complete public profile, at least one service/class, availability set in scheduling, packages/memberships if they sell them, Stripe Connect connected (in ' + (isPro ? 'payments' : 'billing') + ') to take online payment, and any waiver/health forms. ' +
-    'Right now you GUIDE, NAVIGATE and DRAFT — you cannot change their data yourself yet, so: explain clearly, use the navigate tool to take them to the exact screen, and when useful draft the text/values for them to paste or enter. ' +
+    (isPro
+      ? 'For now you guide, navigate and draft — you cannot change data yet, so explain clearly, use the navigate tool to open the exact screen, and draft text/values they can enter. '
+      : 'You can take these actions for the partner, and each one is shown to them to CONFIRM before it runs: create a package, create a class/session, set a staff member’s availability, post an announcement, and add a staff member. Gather the details conversationally (sensible defaults are fine — do not interrogate; ask only for what you truly need), then call the matching tool to PROPOSE it. For adding availability you need the staff member’s name. For anything else, guide them and use the navigate tool to open the right screen. ') +
     'Be concise, warm and specific. Prefer one short paragraph or a few short steps. Use the navigate tool whenever the next step lives on a screen. ' +
     'Current account context (use it; do not invent data you were not given): ' + JSON.stringify(ctx || {}).slice(0, 1500) + '.';
 }
@@ -2864,23 +2866,29 @@ app.post('/api/agent/chat', async (req, res) => {
     if (!inMsgs.length) return res.status(400).json({ error: 'messages required' });
     const sys = agentSystem(role, b.context || {});
     const panelEnum = (role === 'pro') ? PRO_PANELS : PARTNER_PANELS;
-    const tools = [{
+    var tools = [{
       name: 'navigate',
       description: 'Open a specific screen in the user\'s dashboard so they can act on what you suggested. Use when the next step lives on a screen.',
       input_schema: { type: 'object', properties: { panel: { type: 'string', enum: panelEnum }, reason: { type: 'string', description: 'one short phrase shown to the user, e.g. "to connect Stripe"' } }, required: ['panel'] }
     }];
+    if (role === 'partner') tools = tools.concat(PARTNER_WRITE_TOOLS);
     var convo = inMsgs.map(function (m) { return { role: (m.role === 'assistant' ? 'assistant' : 'user'), content: String(m.content || '') }; });
     var navAction = null;
+    var lastUser = ''; for (var i = inMsgs.length - 1; i >= 0; i--) { if (inMsgs[i].role !== 'assistant') { lastUser = String(inMsgs[i].content || ''); break; } }
     for (var iter = 0; iter < 3; iter++) {
       var resp = await anthropicMessages(sys, convo, tools, 1024);
       if (resp.error) return res.status(502).json({ error: 'ai_error' });
       var textParts = [], toolUses = [];
       (resp.content || []).forEach(function (blk) { if (blk.type === 'text') textParts.push(blk.text); else if (blk.type === 'tool_use') toolUses.push(blk); });
+      // A write-action proposal: do NOT execute — surface a confirm card to the user.
+      var writeUse = toolUses.filter(function (t) { return WRITE_ACTIONS.indexOf(t.name) >= 0; })[0];
+      if (writeUse) {
+        var args = writeUse.input || {};
+        try { await supabase.from('ai_agent_events').insert({ member_id: b.member_id || null, session_id: b.session || null, surface: role, kind: 'propose', query: lastUser.slice(0, 1000), meta: { action: writeUse.name, args: args } }); } catch (e) {}
+        return res.json({ reply: textParts.join('\n').trim(), proposal: { action: writeUse.name, args: args, summary: actionSummary(writeUse.name, args) }, navigate: navAction });
+      }
       if (!toolUses.length) {
-        try {
-          var lastUser = ''; for (var i = inMsgs.length - 1; i >= 0; i--) { if (inMsgs[i].role !== 'assistant') { lastUser = String(inMsgs[i].content || ''); break; } }
-          await supabase.from('ai_agent_events').insert({ member_id: b.member_id || null, session_id: b.session || null, surface: role, kind: 'query', query: lastUser.slice(0, 1000), meta: navAction ? { navigate: navAction } : null });
-        } catch (e) {}
+        try { await supabase.from('ai_agent_events').insert({ member_id: b.member_id || null, session_id: b.session || null, surface: role, kind: 'query', query: lastUser.slice(0, 1000), meta: navAction ? { navigate: navAction } : null }); } catch (e) {}
         return res.json({ reply: textParts.join('\n').trim() || 'How can I help with your account?', navigate: navAction });
       }
       convo.push({ role: 'assistant', content: resp.content });
@@ -2894,6 +2902,84 @@ app.post('/api/agent/chat', async (req, res) => {
       convo.push({ role: 'user', content: results });
     }
     return res.json({ reply: 'Sorry — could you rephrase that?', navigate: navAction });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// ── FFP ASSISTANT — confirmed write-actions (partner onboarding). Each is PROPOSED by the chat agent,
+// CONFIRMED by the user, then executed here with the user's own JWT so the SECURITY DEFINER provider_* RPCs
+// enforce ownership (a partner can only ever write to their own business). ──
+const SB_ANON = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt4enl1b2ZlY210eW1hYmxubWFrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk0NDM1MTYsImV4cCI6MjA5NTAxOTUxNn0.cWn0x1AeD-x9C-HHf9MShXbFRWdkWi5RMgHLgWJwOuE';
+function userClient(jwt) { return createClient(process.env.SUPABASE_URL, SB_ANON, { global: { headers: { Authorization: 'Bearer ' + jwt } }, auth: { persistSession: false, autoRefreshToken: false } }); }
+const DAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const WRITE_ACTIONS = ['create_package', 'create_class', 'set_availability', 'post_announcement', 'add_staff'];
+const ACTION_PANEL = { create_package: 'plans', create_class: 'scheduling', set_availability: 'scheduling', post_announcement: 'announcements', add_staff: 'staff' };
+const PARTNER_WRITE_TOOLS = [
+  { name: 'create_package', description: 'Create a package / membership / class-pack the partner sells. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { name: { type: 'string' }, plan_type: { type: 'string', enum: ['recurring', 'pack', 'term'] }, price_aed: { type: 'number' }, credits: { type: 'number', description: 'sessions included (for a pack)' }, period_days: { type: 'number', description: 'validity in days' }, pay_requirement: { type: 'string', enum: ['free', 'required', 'optional'] }, notes: { type: 'string' } }, required: ['name'] } },
+  { name: 'create_class', description: 'Create a class/session type on the timetable. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { title: { type: 'string' }, activity: { type: 'string', description: 'discipline, e.g. Yoga, HIIT, Spin' }, capacity: { type: 'number' }, price_aed: { type: 'number' }, duration_min: { type: 'number' }, pay_requirement: { type: 'string', enum: ['free', 'required', 'optional'] }, day_of_week: { type: 'integer', minimum: 0, maximum: 6, description: '0=Sun..6=Sat (optional first time slot)' }, slot_time: { type: 'string', description: 'HH:MM 24h (optional first time slot)' }, description: { type: 'string' } }, required: ['title', 'activity'] } },
+  { name: 'set_availability', description: 'Add an availability slot for a staff member. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { staff_name: { type: 'string', description: 'the staff member this availability is for' }, day_of_week: { type: 'integer', minimum: 0, maximum: 6, description: '0=Sun..6=Sat for a weekly slot' }, slot_date: { type: 'string', description: 'YYYY-MM-DD for a one-off slot' }, start_time: { type: 'string', description: 'HH:MM' }, end_time: { type: 'string', description: 'HH:MM' }, duration_min: { type: 'number' } }, required: ['start_time', 'end_time'] } },
+  { name: 'post_announcement', description: 'Post an announcement to members. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' }, channel: { type: 'string', enum: ['email', 'push', 'sms'] } }, required: ['body'] } },
+  { name: 'add_staff', description: 'Add a staff / team member. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { full_name: { type: 'string' }, email: { type: 'string' }, phone: { type: 'string' }, role: { type: 'string', enum: ['Coach', 'Manager', 'Front desk', 'Owner', 'Other'] }, access_level: { type: 'string', enum: ['full', 'manage', 'coach', 'view'] }, bio: { type: 'string' } }, required: ['full_name'] } }
+];
+function actionSummary(action, a) {
+  a = a || {};
+  if (action === 'create_package') return 'Create package “' + (a.name || '') + '”' + (a.price_aed != null ? (' · AED ' + a.price_aed) : '') + (a.credits != null ? (' · ' + a.credits + ' sessions') : '') + ' (' + (a.plan_type || 'recurring') + ')';
+  if (action === 'create_class') return 'Create class “' + (a.title || '') + '” · ' + (a.activity || '') + ((a.day_of_week != null && a.slot_time) ? (' · ' + DAY[a.day_of_week] + ' ' + a.slot_time) : '') + (a.price_aed != null ? (' · AED ' + a.price_aed) : '');
+  if (action === 'set_availability') return 'Add availability' + (a.staff_name ? (' for ' + a.staff_name) : '') + ' · ' + (a.slot_date || (a.day_of_week != null ? DAY[a.day_of_week] : '') || '') + ' ' + (a.start_time || '') + '–' + (a.end_time || '');
+  if (action === 'post_announcement') return 'Post announcement: “' + String(a.subject || a.body || '').slice(0, 70) + '” to all members';
+  if (action === 'add_staff') return 'Add staff: ' + (a.full_name || '') + (a.role ? (' (' + a.role + ')') : '');
+  return action;
+}
+
+app.post('/api/agent/execute', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const action = String(b.action || '');
+    const a = b.args || {};
+    const providerId = String(b.provider_id || '');
+    const jwt = String(b.jwt || '');
+    if (WRITE_ACTIONS.indexOf(action) < 0) return res.status(400).json({ error: 'unknown action' });
+    if (!jwt) return res.status(401).json({ error: 'not_authenticated' });
+    if (!providerId) return res.status(400).json({ error: 'provider required' });
+    const us = userClient(jwt);
+    const enumOr = function (v, list, d) { return list.indexOf(v) >= 0 ? v : d; };
+    const sv = function (v) { return (v == null) ? '' : String(v); };
+    var rpc, params, okMsg;
+    if (action === 'create_package') {
+      if (!sv(a.name).trim()) return res.json({ ok: false, error: 'A package name is needed.' });
+      params = { p_provider: providerId, p_id: null, p: { name: sv(a.name).trim(), plan_type: enumOr(a.plan_type, ['recurring', 'pack', 'term'], 'recurring'), price_aed: sv(a.price_aed), credits: sv(a.credits), period_days: sv(a.period_days), notes: sv(a.notes), pay_requirement: enumOr(a.pay_requirement, ['free', 'required', 'optional'], 'optional'), template_ids: [] } };
+      rpc = 'provider_save_plan'; okMsg = 'Created the package “' + sv(a.name).trim() + '”.';
+    } else if (action === 'create_class') {
+      if (!sv(a.title).trim() || !sv(a.activity).trim()) return res.json({ ok: false, error: 'A class title and activity are needed.' });
+      var slots = (a.day_of_week != null && a.slot_time) ? [{ day_of_week: Number(a.day_of_week), slot_time: sv(a.slot_time), coach: null }] : [];
+      params = { p_provider: providerId, p_id: null, p: { title: sv(a.title).trim(), activity: sv(a.activity).trim(), description: a.description ? sv(a.description) : null, capacity: sv(a.capacity != null ? a.capacity : 10), price_aed: sv(a.price_aed), duration_min: sv(a.duration_min != null ? a.duration_min : 60), free_cancellation_hours: '24', pay_requirement: enumOr(a.pay_requirement, ['free', 'required', 'optional'], 'optional'), hero_image_url: null, fitness_level: null, slots: slots, gallery: [] } };
+      rpc = 'provider_save_session_template'; okMsg = 'Created the class “' + sv(a.title).trim() + '”.';
+    } else if (action === 'post_announcement') {
+      if (!sv(a.body).trim()) return res.json({ ok: false, error: 'The announcement needs a message.' });
+      params = { p_provider: providerId, p: { channel: enumOr(a.channel, ['email', 'push', 'sms'], 'email'), audience_type: 'all', audience_ref: '', audience_label: 'Everyone', subject: sv(a.subject), body: sv(a.body).trim() } };
+      rpc = 'provider_save_broadcast'; okMsg = 'Posted the announcement.';
+    } else if (action === 'add_staff') {
+      if (!sv(a.full_name).trim()) return res.json({ ok: false, error: 'A name is needed.' });
+      params = { p_provider: providerId, p_id: null, p: { full_name: sv(a.full_name).trim(), email: sv(a.email), phone: sv(a.phone), role: enumOr(a.role, ['Coach', 'Manager', 'Front desk', 'Owner', 'Other'], 'Coach'), access_level: enumOr(a.access_level, ['full', 'manage', 'coach', 'view'], 'coach'), status: 'active', notes: '', bio: sv(a.bio), photo_url: '' } };
+      rpc = 'provider_save_staff'; okMsg = 'Added ' + sv(a.full_name).trim() + ' to your team.';
+    } else { // set_availability
+      if (!sv(a.start_time) || !sv(a.end_time)) return res.json({ ok: false, error: 'A start and end time are needed.' });
+      var staffId = null;
+      try {
+        var sl = await us.rpc('provider_list_staff', { p_provider: providerId });
+        var list = (sl && sl.data) || [];
+        if (a.staff_name) { var nm = String(a.staff_name).toLowerCase(); staffId = (list.filter(function (s) { return String(s.full_name || '').toLowerCase() === nm; })[0] || list.filter(function (s) { return String(s.full_name || '').toLowerCase().indexOf(nm) >= 0; })[0] || {}).id || null; }
+        if (!staffId && list.length === 1) staffId = list[0].id;
+      } catch (e) {}
+      if (!staffId) return res.json({ ok: false, error: 'I couldn’t match that staff member — add the staff member first, then set their availability.' });
+      var pp = { staff_id: staffId, service_id: '', start_time: sv(a.start_time), end_time: sv(a.end_time), duration_min: sv(a.duration_min != null ? a.duration_min : 60) };
+      if (a.slot_date) pp.slot_date = sv(a.slot_date); else if (a.day_of_week != null) pp.day_of_week = sv(a.day_of_week);
+      params = { p_provider: providerId, p_id: null, p: pp };
+      rpc = 'provider_save_trainer_slot'; okMsg = 'Added the availability slot.';
+    }
+    var rr = await us.rpc(rpc, params);
+    if (rr.error) { console.error('[agent execute]', action, rr.error); return res.json({ ok: false, error: rr.error.message || 'That didn’t go through — please try from the screen.' }); }
+    try { await supabase.from('ai_agent_events').insert({ member_id: b.member_id || null, session_id: b.session || null, surface: 'partner', kind: 'action', query: action, meta: { args: a } }); } catch (e) {}
+    return res.json({ ok: true, message: okMsg, navigate: ACTION_PANEL[action] || null });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
