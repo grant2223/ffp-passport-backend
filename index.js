@@ -2778,6 +2778,22 @@ app.post('/api/ai/parse', async (req, res) => {
         'Resolve relative dates/times (e.g. "this morning", "yesterday at 6am") against the current local datetime given in the user message: ' +
         'date as "YYYY-MM-DD" and time as 24-hour "HH:MM"; use "" if not stated. ' +
         'location is the place/venue name if mentioned (e.g. "Kite Beach") else "". notes is a short remark. Output JSON only.';
+    } else if (kind === 'meetup_search') {
+      sys = 'You convert a member\'s natural-language request for a fitness MEETUP into a structured search intent. ' +
+        'Return ONLY valid minified JSON: {"sport":string,"category":string,"fitness_level":string,"city":string,"country":string,"date_from":string,"date_to":string,"gender":string,"keywords":[string],"sort":string}. ' +
+        'category MUST be one of: racquet,running,cycling,swimming,team,combat,fitness,mind-body,adventure (best fit, else ""). ' +
+        'fitness_level one of: Not Tried,Social,Competitive,Representative,Professional (else ""). gender one of: any,women,men. ' +
+        'Resolve relative dates (e.g. "this weekend","tonight","next week") against the current local datetime given in the user message: ' +
+        'date_from and date_to as "YYYY-MM-DD" (else ""). keywords = up to 4 salient words not already captured. ' +
+        'sort one of: best,soonest,nearest (default "best"). Use ""/[] for anything not stated. Output JSON only.';
+    } else if (kind === 'meetup_compose') {
+      sys = 'You convert a member\'s description of a fitness MEETUP they want to host into a structured draft for a form. ' +
+        'Return ONLY valid minified JSON: {"title":string,"sport":string,"category":string,"fitness_level":string,"city":string,"country":string,"venue":string,"date":string,"time":string,"max_people":number,"gender":string,"age_from":number,"age_to":number,"description":string}. ' +
+        'category one of: racquet,running,cycling,swimming,team,combat,fitness,mind-body,adventure. ' +
+        'fitness_level one of: Not Tried,Social,Competitive,Representative,Professional (else ""). gender one of: any,male,female. ' +
+        'title short (<=40 chars). max_people 2-8 (default 8). Resolve date/time against the current local datetime given in the user message: ' +
+        'date "YYYY-MM-DD", time 24-hour "HH:MM" (default "18:00" if a day is given but no time; "" if no day). ' +
+        'venue = place name if stated else "". description = a short friendly blurb (<=160 chars). Use ""/0 for anything not stated. Output JSON only.';
     } else { return res.status(400).json({ error: 'bad kind' }); }
     const now = String((req.body && req.body.now) || '').trim();
     const userContent = text + (now ? ('\n\nCurrent local datetime: ' + now) : '');
@@ -2800,7 +2816,7 @@ app.post('/api/ai/parse', async (req, res) => {
       }).filter(function (it) { return it.name && it.kcal; });
       if (!items.length) return res.status(502).json({ error: 'ai_bad_output' });
       return res.json({ items: items });
-    } else {
+    } else if (kind === 'activity') {
       var dk = Number(parsed.distance_km);
       var hr = Number(parsed.avg_heart_rate);
       var d = String(parsed.date || '').trim(); if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) d = '';
@@ -2813,6 +2829,44 @@ app.post('/api/ai/parse', async (req, res) => {
         avg_heart_rate: (isNaN(hr) || hr <= 0) ? null : Math.round(hr),
         date: d, time: tm, location: String(parsed.location || '').trim(),
         notes: String(parsed.notes || '').trim()
+      } });
+    } else if (kind === 'meetup_search') {
+      var MS_CATS = ['racquet','running','cycling','swimming','team','combat','fitness','mind-body','adventure'];
+      var MS_LV = ['Not Tried','Social','Competitive','Representative','Professional'];
+      var msPick = function (v, allow) { v = String(v || '').trim(); for (var i = 0; i < allow.length; i++) { if (allow[i].toLowerCase() === v.toLowerCase()) return allow[i]; } return ''; };
+      var msDate = function (v) { v = String(v || '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : ''; };
+      var I = parsed || {};
+      return res.json({ intent: {
+        sport: String(I.sport || '').trim(),
+        category: msPick(I.category, MS_CATS).toLowerCase(),
+        fitness_level: msPick(I.fitness_level, MS_LV),
+        city: String(I.city || '').trim(),
+        country: String(I.country || '').trim(),
+        date_from: msDate(I.date_from), date_to: msDate(I.date_to),
+        gender: msPick(I.gender, ['any', 'women', 'men']),
+        keywords: (Array.isArray(I.keywords) ? I.keywords : []).slice(0, 4).map(function (x) { return String(x || '').trim(); }).filter(Boolean),
+        sort: msPick(I.sort, ['best', 'soonest', 'nearest']) || 'best'
+      } });
+    } else if (kind === 'meetup_compose') {
+      var MC_CATS = ['racquet','running','cycling','swimming','team','combat','fitness','mind-body','adventure'];
+      var MC_LV = ['Not Tried','Social','Competitive','Representative','Professional'];
+      var mcPick = function (v, allow) { v = String(v || '').trim(); for (var i = 0; i < allow.length; i++) { if (allow[i].toLowerCase() === v.toLowerCase()) return allow[i]; } return ''; };
+      var D = parsed || {};
+      var dd = String(D.date || '').trim(); if (!/^\d{4}-\d{2}-\d{2}$/.test(dd)) dd = '';
+      var tt = String(D.time || '').trim(); if (!/^\d{2}:\d{2}$/.test(tt)) tt = dd ? '18:00' : '';
+      var af = Math.round(Number(D.age_from) || 0), at = Math.round(Number(D.age_to) || 0);
+      return res.json({ draft: {
+        title: String(D.title || '').trim().slice(0, 40),
+        sport: String(D.sport || '').trim(),
+        category: mcPick(D.category, MC_CATS).toLowerCase(),
+        fitness_level: mcPick(D.fitness_level, MC_LV),
+        city: String(D.city || '').trim(), country: String(D.country || '').trim(),
+        venue: String(D.venue || '').trim(),
+        date: dd, time: tt,
+        max_people: Math.max(2, Math.min(8, Math.round(Number(D.max_people) || 8))),
+        gender: mcPick(D.gender, ['any', 'male', 'female']) || 'any',
+        age_from: af > 0 ? af : null, age_to: at > 0 ? at : null,
+        description: String(D.description || '').trim().slice(0, 160)
       } });
     }
   } catch (e) { return res.status(500).json({ error: e.message }); }
