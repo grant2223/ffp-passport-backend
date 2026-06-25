@@ -2830,19 +2830,31 @@ const PRO_PANELS = ['overview', 'scheduling', 'checkin', 'clients', 'payments', 
 
 function agentSystem(role, ctx) {
   var isPro = role === 'pro';
-  var who = isPro ? 'an individual fitness professional / coach' : 'a fitness facility / partner business';
-  var panels = isPro
-    ? 'overview (today + key numbers), scheduling (your availability and bookable sessions), checkin (client check-in by code/QR), clients (your client list + profiles, notes, forms, packages), payments (earnings, invoices, bank details, Stripe Connect), profile (your public storefront), services (the session types you offer), packages (multi-session bundles), comms (message clients)'
-    : 'overview (today + key numbers), checkins (member QR check-in), members (your client list), plans (packages & memberships), scheduling (your timetable: classes & sessions), appointments (bookings calendar), staff (team), billing (payments, invoices & Stripe Connect), announcements (broadcast to members), classes/events/experiences (your public listings), profile (business profile & branding), settings';
-  return 'You are the FFP Assistant, a helpful in-app guide inside the FFP ' + (isPro ? 'Professional' : 'Partner') + ' dashboard. ' +
-    'The user is ' + who + ' on FFP Passport (an active-lifestyle platform in the UAE). Help them set up their account and run day-to-day tasks. ' +
-    'Screens you can open with the navigate tool: ' + panels + '. ' +
-    'Getting fully set up means: a complete public profile, at least one service/class, availability set in scheduling, packages/memberships if they sell them, Stripe Connect connected (in ' + (isPro ? 'payments' : 'billing') + ') to take online payment, and any waiver/health forms. ' +
-    (isPro
-      ? 'For now you guide, navigate and draft — you cannot change data yet, so explain clearly, use the navigate tool to open the exact screen, and draft text/values they can enter. '
-      : 'You can take these actions for the partner, and each one is shown to them to CONFIRM before it runs: create a package, create a class/session, set a staff member’s availability, post an announcement, and add a staff member. Gather the details conversationally (sensible defaults are fine — do not interrogate; ask only for what you truly need), then call the matching tool to PROPOSE it. For adding availability you need the staff member’s name. For anything else, guide them and use the navigate tool to open the right screen. ') +
-    'Be concise, warm and specific. Prefer one short paragraph or a few short steps. Use the navigate tool whenever the next step lives on a screen. ' +
-    'Current account context (use it; do not invent data you were not given): ' + JSON.stringify(ctx || {}).slice(0, 1500) + '.';
+  var common = 'You are FFP Coach, a warm, concise in-app guide inside the FFP ' + (isPro ? 'Professional (coach)' : 'Partner (facility)') + ' dashboard on FFP Passport — an active-lifestyle platform in the UAE. ' +
+    'Help the user set up their account and run day-to-day tasks. Be specific and brief: one short paragraph or a few short steps, never a wall of text. ' +
+    'Always use the on-screen LABELS the user sees — never internal/database words. Use the navigate tool to open the exact screen when the next step lives there. ';
+  var structure, actions, setup;
+  if (isPro) {
+    structure = 'The dashboard screens: Overview (your numbers), Scheduling (set your availability and bookable session slots), Check-in (clients check in by code/QR), ' +
+      'Clients (your client list, profiles, notes, forms and the packages they hold), Payments (earnings, invoices, bank details, and Stripe Connect to take online payment), ' +
+      'Profile (your public storefront members see), Services (the session types you offer — e.g. 1:1 PT or a group class), Packages (multi-session bundles you sell), Messages (message your clients). ';
+    actions = 'You can DO these for the coach, and each is shown to them to CONFIRM before it runs: create a service, create a package, add availability (a bookable slot — you need to know which service it is for), and message members. ' +
+      'Gather only what you truly need (sensible defaults are fine — do not interrogate), then call the matching tool to PROPOSE it. For anything else, guide them and use navigate. ';
+    setup = 'To get fully set up: complete your Profile, add your Services, set availability in Scheduling, create your Packages, and connect Stripe in Payments. ';
+  } else {
+    structure = 'The dashboard has two areas. BUSINESS (run your business): Overview & Analytics (your numbers), Check-ins (member check-in by QR), Members (your client list), ' +
+      'Packages (the memberships and class-packs you sell), Sessions (your bookable timetable — the recurring classes / PT sessions members book), Appointments (the bookings calendar), ' +
+      'Staff (your team), Payments & Invoices (Stripe Connect + invoicing), Announcements (broadcast to members). ' +
+      'ENGAGEMENT (promote yourself to the FFP community — these are public listings members discover in the FFP app, NOT your timetable): Experiences (one-off classes promoted as experiences), Events, Trips, Quests, Challenges, Deals. ' +
+      'Important so you are not confused by internal naming: a “Session” is an item on the weekly timetable; “Experiences”, “Trips” and “Events” are separate promotional listings. ' +
+      'Some Business areas are still being built (Members, Staff and Payments are early) — be honest if something is not fully ready. ';
+    actions = 'You can DO these for the partner, and each is shown to them to CONFIRM before it runs: create a package, create a session (on the timetable), set a staff member’s availability (you need the staff member’s name), post an announcement, and add a staff member. ' +
+      'Gather only what you truly need (sensible defaults are fine — do not interrogate), then call the matching tool to PROPOSE it. For anything else, guide them and use navigate. ';
+    setup = 'To get fully set up: complete your Profile, add Staff, create your Sessions and set availability, create your Packages, connect Stripe in Payments — and optionally promote Experiences / Events / Trips in Engagement. ';
+  }
+  return common + structure + actions + setup +
+    'When the user is new, briefly explain how the dashboard is organised, then coach them to the next best step. ' +
+    'Current account context (use it; do not invent data you were not given): ' + JSON.stringify(ctx || {}).slice(0, 1200) + '.';
 }
 
 async function anthropicMessages(system, messages, tools, maxTokens) {
@@ -2872,6 +2884,7 @@ app.post('/api/agent/chat', async (req, res) => {
       input_schema: { type: 'object', properties: { panel: { type: 'string', enum: panelEnum }, reason: { type: 'string', description: 'one short phrase shown to the user, e.g. "to connect Stripe"' } }, required: ['panel'] }
     }];
     if (role === 'partner') tools = tools.concat(PARTNER_WRITE_TOOLS);
+    else if (role === 'pro') tools = tools.concat(PRO_WRITE_TOOLS);
     var convo = inMsgs.map(function (m) { return { role: (m.role === 'assistant' ? 'assistant' : 'user'), content: String(m.content || '') }; });
     var navAction = null;
     var lastUser = ''; for (var i = inMsgs.length - 1; i >= 0; i--) { if (inMsgs[i].role !== 'assistant') { lastUser = String(inMsgs[i].content || ''); break; } }
@@ -2885,7 +2898,7 @@ app.post('/api/agent/chat', async (req, res) => {
       if (writeUse) {
         var args = writeUse.input || {};
         try { await supabase.from('ai_agent_events').insert({ member_id: b.member_id || null, session_id: b.session || null, surface: role, kind: 'propose', query: lastUser.slice(0, 1000), meta: { action: writeUse.name, args: args } }); } catch (e) {}
-        return res.json({ reply: textParts.join('\n').trim(), proposal: { action: writeUse.name, args: args, summary: actionSummary(writeUse.name, args) }, navigate: navAction });
+        return res.json({ reply: textParts.join('\n').trim(), proposal: { action: writeUse.name, args: args, summary: actionSummary(role, writeUse.name, args) }, navigate: navAction });
       }
       if (!toolUses.length) {
         try { await supabase.from('ai_agent_events').insert({ member_id: b.member_id || null, session_id: b.session || null, surface: role, kind: 'query', query: lastUser.slice(0, 1000), meta: navAction ? { navigate: navAction } : null }); } catch (e) {}
@@ -2911,20 +2924,37 @@ app.post('/api/agent/chat', async (req, res) => {
 const SB_ANON = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt4enl1b2ZlY210eW1hYmxubWFrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk0NDM1MTYsImV4cCI6MjA5NTAxOTUxNn0.cWn0x1AeD-x9C-HHf9MShXbFRWdkWi5RMgHLgWJwOuE';
 function userClient(jwt) { return createClient(process.env.SUPABASE_URL, SB_ANON, { global: { headers: { Authorization: 'Bearer ' + jwt } }, auth: { persistSession: false, autoRefreshToken: false } }); }
 const DAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const WRITE_ACTIONS = ['create_package', 'create_class', 'set_availability', 'post_announcement', 'add_staff'];
-const ACTION_PANEL = { create_package: 'plans', create_class: 'scheduling', set_availability: 'scheduling', post_announcement: 'announcements', add_staff: 'staff' };
+const WRITE_ACTIONS = ['create_package', 'create_session', 'set_availability', 'post_announcement', 'add_staff', 'create_service', 'message_members'];
+function actionPanel(role, action) {
+  if (role === 'pro') return ({ create_service: 'services', create_package: 'packages', set_availability: 'scheduling', message_members: 'comms' })[action] || null;
+  return ({ create_package: 'plans', create_session: 'scheduling', set_availability: 'scheduling', post_announcement: 'announcements', add_staff: 'staff' })[action] || null;
+}
 const PARTNER_WRITE_TOOLS = [
   { name: 'create_package', description: 'Create a package / membership / class-pack the partner sells. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { name: { type: 'string' }, plan_type: { type: 'string', enum: ['recurring', 'pack', 'term'] }, price_aed: { type: 'number' }, credits: { type: 'number', description: 'sessions included (for a pack)' }, period_days: { type: 'number', description: 'validity in days' }, pay_requirement: { type: 'string', enum: ['free', 'required', 'optional'] }, notes: { type: 'string' } }, required: ['name'] } },
-  { name: 'create_class', description: 'Create a class/session type on the timetable. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { title: { type: 'string' }, activity: { type: 'string', description: 'discipline, e.g. Yoga, HIIT, Spin' }, capacity: { type: 'number' }, price_aed: { type: 'number' }, duration_min: { type: 'number' }, pay_requirement: { type: 'string', enum: ['free', 'required', 'optional'] }, day_of_week: { type: 'integer', minimum: 0, maximum: 6, description: '0=Sun..6=Sat (optional first time slot)' }, slot_time: { type: 'string', description: 'HH:MM 24h (optional first time slot)' }, description: { type: 'string' } }, required: ['title', 'activity'] } },
+  { name: 'create_session', description: 'Create a session on the timetable (a bookable class / PT session members book). Propose it for the user to confirm.', input_schema: { type: 'object', properties: { title: { type: 'string' }, activity: { type: 'string', description: 'discipline, e.g. Yoga, HIIT, Spin' }, capacity: { type: 'number' }, price_aed: { type: 'number' }, duration_min: { type: 'number' }, pay_requirement: { type: 'string', enum: ['free', 'required', 'optional'] }, day_of_week: { type: 'integer', minimum: 0, maximum: 6, description: '0=Sun..6=Sat (optional first time slot)' }, slot_time: { type: 'string', description: 'HH:MM 24h (optional first time slot)' }, description: { type: 'string' } }, required: ['title', 'activity'] } },
   { name: 'set_availability', description: 'Add an availability slot for a staff member. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { staff_name: { type: 'string', description: 'the staff member this availability is for' }, day_of_week: { type: 'integer', minimum: 0, maximum: 6, description: '0=Sun..6=Sat for a weekly slot' }, slot_date: { type: 'string', description: 'YYYY-MM-DD for a one-off slot' }, start_time: { type: 'string', description: 'HH:MM' }, end_time: { type: 'string', description: 'HH:MM' }, duration_min: { type: 'number' } }, required: ['start_time', 'end_time'] } },
   { name: 'post_announcement', description: 'Post an announcement to members. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' }, channel: { type: 'string', enum: ['email', 'push', 'sms'] } }, required: ['body'] } },
   { name: 'add_staff', description: 'Add a staff / team member. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { full_name: { type: 'string' }, email: { type: 'string' }, phone: { type: 'string' }, role: { type: 'string', enum: ['Coach', 'Manager', 'Front desk', 'Owner', 'Other'] }, access_level: { type: 'string', enum: ['full', 'manage', 'coach', 'view'] }, bio: { type: 'string' } }, required: ['full_name'] } }
 ];
-function actionSummary(action, a) {
+const PRO_WRITE_TOOLS = [
+  { name: 'create_service', description: 'Create a service (a session type the coach offers, e.g. 1:1 PT or a group class). Propose it for the user to confirm.', input_schema: { type: 'object', properties: { name: { type: 'string' }, service_type: { type: 'string', description: 'e.g. pt_session, group_class' }, description: { type: 'string' }, duration_min: { type: 'number' }, capacity: { type: 'number' }, price_aed: { type: 'number' }, location: { type: 'string' }, bookable_online: { type: 'boolean' } }, required: ['name'] } },
+  { name: 'create_package', description: 'Create a multi-session package the coach sells. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { name: { type: 'string' }, service_names: { type: 'array', items: { type: 'string' }, description: 'which services this package covers (defaults to all)' }, pkg_type: { type: 'string', enum: ['sessions', 'recurring', 'term'] }, price_aed: { type: 'number' }, credits: { type: 'number', description: 'sessions included' }, period_days: { type: 'number' }, pay_requirement: { type: 'string', enum: ['free', 'required', 'optional'] }, notes: { type: 'string' } }, required: ['name'] } },
+  { name: 'set_availability', description: 'Add a weekly bookable slot for one of the coach\'s services. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { service_name: { type: 'string', description: 'which service this slot is for' }, day_of_week: { type: 'integer', minimum: 0, maximum: 6, description: '0=Sun..6=Sat' }, start_time: { type: 'string', description: 'HH:MM' }, duration_min: { type: 'number' }, capacity: { type: 'number' }, title: { type: 'string' } }, required: ['start_time'] } },
+  { name: 'message_members', description: 'Send a message / broadcast to the coach\'s members. Propose it for the user to confirm.', input_schema: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' }, channel: { type: 'string', enum: ['email', 'push', 'sms'] } }, required: ['body'] } }
+];
+function actionSummary(role, action, a) {
   a = a || {};
-  if (action === 'create_package') return 'Create package “' + (a.name || '') + '”' + (a.price_aed != null ? (' · AED ' + a.price_aed) : '') + (a.credits != null ? (' · ' + a.credits + ' sessions') : '') + ' (' + (a.plan_type || 'recurring') + ')';
-  if (action === 'create_class') return 'Create class “' + (a.title || '') + '” · ' + (a.activity || '') + ((a.day_of_week != null && a.slot_time) ? (' · ' + DAY[a.day_of_week] + ' ' + a.slot_time) : '') + (a.price_aed != null ? (' · AED ' + a.price_aed) : '');
-  if (action === 'set_availability') return 'Add availability' + (a.staff_name ? (' for ' + a.staff_name) : '') + ' · ' + (a.slot_date || (a.day_of_week != null ? DAY[a.day_of_week] : '') || '') + ' ' + (a.start_time || '') + '–' + (a.end_time || '');
+  if (action === 'create_service') return 'Create service “' + (a.name || '') + '”' + (a.duration_min != null ? (' · ' + a.duration_min + ' min') : '') + (a.price_aed != null ? (' · AED ' + a.price_aed) : '');
+  if (action === 'message_members') return 'Message members: “' + String(a.subject || a.body || '').slice(0, 70) + '”';
+  if (action === 'create_package') {
+    if (role === 'pro') return 'Create package “' + (a.name || '') + '”' + (a.price_aed != null ? (' · AED ' + a.price_aed) : '') + (a.credits != null ? (' · ' + a.credits + ' sessions') : '');
+    return 'Create package “' + (a.name || '') + '”' + (a.price_aed != null ? (' · AED ' + a.price_aed) : '') + (a.credits != null ? (' · ' + a.credits + ' sessions') : '') + ' (' + (a.plan_type || 'recurring') + ')';
+  }
+  if (action === 'create_session') return 'Create session “' + (a.title || '') + '” · ' + (a.activity || '') + ((a.day_of_week != null && a.slot_time) ? (' · ' + DAY[a.day_of_week] + ' ' + a.slot_time) : '') + (a.price_aed != null ? (' · AED ' + a.price_aed) : '');
+  if (action === 'set_availability') {
+    var whoFor = (role === 'pro') ? (a.service_name ? (' for ' + a.service_name) : '') : (a.staff_name ? (' for ' + a.staff_name) : '');
+    return 'Add availability' + whoFor + ' · ' + (a.slot_date || (a.day_of_week != null ? DAY[a.day_of_week] : '') || '') + ' ' + (a.start_time || '') + (a.end_time ? ('–' + a.end_time) : '');
+  }
   if (action === 'post_announcement') return 'Post announcement: “' + String(a.subject || a.body || '').slice(0, 70) + '” to all members';
   if (action === 'add_staff') return 'Add staff: ' + (a.full_name || '') + (a.role ? (' (' + a.role + ')') : '');
   return action;
@@ -2943,43 +2973,80 @@ app.post('/api/agent/execute', async (req, res) => {
     const us = userClient(jwt);
     const enumOr = function (v, list, d) { return list.indexOf(v) >= 0 ? v : d; };
     const sv = function (v) { return (v == null) ? '' : String(v); };
+    const role = (b.role === 'pro') ? 'pro' : 'partner';
     var rpc, params, okMsg;
-    if (action === 'create_package') {
-      if (!sv(a.name).trim()) return res.json({ ok: false, error: 'A package name is needed.' });
-      params = { p_provider: providerId, p_id: null, p: { name: sv(a.name).trim(), plan_type: enumOr(a.plan_type, ['recurring', 'pack', 'term'], 'recurring'), price_aed: sv(a.price_aed), credits: sv(a.credits), period_days: sv(a.period_days), notes: sv(a.notes), pay_requirement: enumOr(a.pay_requirement, ['free', 'required', 'optional'], 'optional'), template_ids: [] } };
-      rpc = 'provider_save_plan'; okMsg = 'Created the package “' + sv(a.name).trim() + '”.';
-    } else if (action === 'create_class') {
-      if (!sv(a.title).trim() || !sv(a.activity).trim()) return res.json({ ok: false, error: 'A class title and activity are needed.' });
-      var slots = (a.day_of_week != null && a.slot_time) ? [{ day_of_week: Number(a.day_of_week), slot_time: sv(a.slot_time), coach: null }] : [];
-      params = { p_provider: providerId, p_id: null, p: { title: sv(a.title).trim(), activity: sv(a.activity).trim(), description: a.description ? sv(a.description) : null, capacity: sv(a.capacity != null ? a.capacity : 10), price_aed: sv(a.price_aed), duration_min: sv(a.duration_min != null ? a.duration_min : 60), free_cancellation_hours: '24', pay_requirement: enumOr(a.pay_requirement, ['free', 'required', 'optional'], 'optional'), hero_image_url: null, fitness_level: null, slots: slots, gallery: [] } };
-      rpc = 'provider_save_session_template'; okMsg = 'Created the class “' + sv(a.title).trim() + '”.';
-    } else if (action === 'post_announcement') {
-      if (!sv(a.body).trim()) return res.json({ ok: false, error: 'The announcement needs a message.' });
-      params = { p_provider: providerId, p: { channel: enumOr(a.channel, ['email', 'push', 'sms'], 'email'), audience_type: 'all', audience_ref: '', audience_label: 'Everyone', subject: sv(a.subject), body: sv(a.body).trim() } };
-      rpc = 'provider_save_broadcast'; okMsg = 'Posted the announcement.';
-    } else if (action === 'add_staff') {
-      if (!sv(a.full_name).trim()) return res.json({ ok: false, error: 'A name is needed.' });
-      params = { p_provider: providerId, p_id: null, p: { full_name: sv(a.full_name).trim(), email: sv(a.email), phone: sv(a.phone), role: enumOr(a.role, ['Coach', 'Manager', 'Front desk', 'Owner', 'Other'], 'Coach'), access_level: enumOr(a.access_level, ['full', 'manage', 'coach', 'view'], 'coach'), status: 'active', notes: '', bio: sv(a.bio), photo_url: '' } };
-      rpc = 'provider_save_staff'; okMsg = 'Added ' + sv(a.full_name).trim() + ' to your team.';
-    } else { // set_availability
-      if (!sv(a.start_time) || !sv(a.end_time)) return res.json({ ok: false, error: 'A start and end time are needed.' });
-      var staffId = null;
-      try {
-        var sl = await us.rpc('provider_list_staff', { p_provider: providerId });
-        var list = (sl && sl.data) || [];
-        if (a.staff_name) { var nm = String(a.staff_name).toLowerCase(); staffId = (list.filter(function (s) { return String(s.full_name || '').toLowerCase() === nm; })[0] || list.filter(function (s) { return String(s.full_name || '').toLowerCase().indexOf(nm) >= 0; })[0] || {}).id || null; }
-        if (!staffId && list.length === 1) staffId = list[0].id;
-      } catch (e) {}
-      if (!staffId) return res.json({ ok: false, error: 'I couldn’t match that staff member — add the staff member first, then set their availability.' });
-      var pp = { staff_id: staffId, service_id: '', start_time: sv(a.start_time), end_time: sv(a.end_time), duration_min: sv(a.duration_min != null ? a.duration_min : 60) };
-      if (a.slot_date) pp.slot_date = sv(a.slot_date); else if (a.day_of_week != null) pp.day_of_week = sv(a.day_of_week);
-      params = { p_provider: providerId, p_id: null, p: pp };
-      rpc = 'provider_save_trainer_slot'; okMsg = 'Added the availability slot.';
+    if (role === 'pro') {
+      if (action === 'create_service') {
+        if (!sv(a.name).trim()) return res.json({ ok: false, error: 'A service name is needed.' });
+        params = { p_pro: providerId, p_id: null, p: { name: sv(a.name).trim(), service_type: sv(a.service_type) || 'pt_session', description: sv(a.description), duration_min: sv(a.duration_min != null ? a.duration_min : 60), capacity: sv(a.capacity != null ? a.capacity : 1), price_aed: sv(a.price_aed), location: sv(a.location), free_cancellation_hours: sv(a.free_cancellation_hours != null ? a.free_cancellation_hours : 24), bookable_online: a.bookable_online !== false } };
+        rpc = 'pro_save_service'; okMsg = 'Created the service “' + sv(a.name).trim() + '”.';
+      } else if (action === 'create_package') {
+        if (!sv(a.name).trim()) return res.json({ ok: false, error: 'A package name is needed.' });
+        var svcIds = [];
+        try {
+          var svl = await us.rpc('pro_list_services', { p_pro: providerId });
+          var svs = (svl && svl.data) || [];
+          if (Array.isArray(a.service_names) && a.service_names.length) { a.service_names.forEach(function (nm0) { var hit = svs.filter(function (s) { return String(s.name || '').toLowerCase().indexOf(String(nm0).toLowerCase()) >= 0; })[0]; if (hit) svcIds.push(hit.id); }); }
+          if (!svcIds.length) svcIds = svs.map(function (s) { return s.id; });
+        } catch (e) {}
+        if (!svcIds.length) return res.json({ ok: false, error: 'Add a service first, then create a package that uses it.' });
+        params = { p_pro: providerId, p_id: null, p: { name: sv(a.name).trim(), service_ids: svcIds, pkg_type: enumOr(a.pkg_type, ['sessions', 'recurring', 'term'], 'sessions'), price_aed: sv(a.price_aed), credits: sv(a.credits), period_days: sv(a.period_days), notes: sv(a.notes), pay_requirement: enumOr(a.pay_requirement, ['free', 'required', 'optional'], 'optional') } };
+        rpc = 'pro_save_package'; okMsg = 'Created the package “' + sv(a.name).trim() + '”.';
+      } else if (action === 'message_members') {
+        if (!sv(a.body).trim()) return res.json({ ok: false, error: 'The message needs a body.' });
+        params = { p_pro: providerId, p: { channel: enumOr(a.channel, ['email', 'push', 'sms'], 'email'), audience_type: 'all', audience_ref: '', audience_label: 'Everyone', subject: sv(a.subject), body: sv(a.body).trim() } };
+        rpc = 'pro_save_broadcast'; okMsg = 'Saved the message to your members.';
+      } else { // set_availability (pro slot — needs a service)
+        if (!sv(a.start_time)) return res.json({ ok: false, error: 'A start time is needed.' });
+        var svcId = null;
+        try {
+          var sl2 = await us.rpc('pro_list_services', { p_pro: providerId });
+          var list2 = (sl2 && sl2.data) || [];
+          if (a.service_name) { var nm2 = String(a.service_name).toLowerCase(); svcId = (list2.filter(function (s) { return String(s.name || '').toLowerCase() === nm2; })[0] || list2.filter(function (s) { return String(s.name || '').toLowerCase().indexOf(nm2) >= 0; })[0] || {}).id || null; }
+          if (!svcId && list2.length === 1) svcId = list2[0].id;
+        } catch (e) {}
+        if (!svcId) return res.json({ ok: false, error: 'I couldn’t match that service — create the service first, then add availability for it.' });
+        params = { p_pro: providerId, p_id: null, p: { service_id: svcId, slot_type: sv(a.slot_type) || 'one_to_one', title: sv(a.title), weekday: sv(a.day_of_week != null ? a.day_of_week : (a.weekday != null ? a.weekday : '')), start_time: sv(a.start_time), duration_min: sv(a.duration_min != null ? a.duration_min : 60), capacity: sv(a.capacity != null ? a.capacity : 1), location: sv(a.location), notes: sv(a.notes), client_ids: [] } };
+        rpc = 'pro_save_slot'; okMsg = 'Added the availability slot.';
+      }
+    } else {
+      if (action === 'create_package') {
+        if (!sv(a.name).trim()) return res.json({ ok: false, error: 'A package name is needed.' });
+        params = { p_provider: providerId, p_id: null, p: { name: sv(a.name).trim(), plan_type: enumOr(a.plan_type, ['recurring', 'pack', 'term'], 'recurring'), price_aed: sv(a.price_aed), credits: sv(a.credits), period_days: sv(a.period_days), notes: sv(a.notes), pay_requirement: enumOr(a.pay_requirement, ['free', 'required', 'optional'], 'optional'), template_ids: [] } };
+        rpc = 'provider_save_plan'; okMsg = 'Created the package “' + sv(a.name).trim() + '”.';
+      } else if (action === 'create_session') {
+        if (!sv(a.title).trim() || !sv(a.activity).trim()) return res.json({ ok: false, error: 'A session title and activity are needed.' });
+        var slots = (a.day_of_week != null && a.slot_time) ? [{ day_of_week: Number(a.day_of_week), slot_time: sv(a.slot_time), coach: null }] : [];
+        params = { p_provider: providerId, p_id: null, p: { title: sv(a.title).trim(), activity: sv(a.activity).trim(), description: a.description ? sv(a.description) : null, capacity: sv(a.capacity != null ? a.capacity : 10), price_aed: sv(a.price_aed), duration_min: sv(a.duration_min != null ? a.duration_min : 60), free_cancellation_hours: '24', pay_requirement: enumOr(a.pay_requirement, ['free', 'required', 'optional'], 'optional'), hero_image_url: null, fitness_level: null, slots: slots, gallery: [] } };
+        rpc = 'provider_save_session_template'; okMsg = 'Created the session “' + sv(a.title).trim() + '”.';
+      } else if (action === 'post_announcement') {
+        if (!sv(a.body).trim()) return res.json({ ok: false, error: 'The announcement needs a message.' });
+        params = { p_provider: providerId, p: { channel: enumOr(a.channel, ['email', 'push', 'sms'], 'email'), audience_type: 'all', audience_ref: '', audience_label: 'Everyone', subject: sv(a.subject), body: sv(a.body).trim() } };
+        rpc = 'provider_save_broadcast'; okMsg = 'Posted the announcement.';
+      } else if (action === 'add_staff') {
+        if (!sv(a.full_name).trim()) return res.json({ ok: false, error: 'A name is needed.' });
+        params = { p_provider: providerId, p_id: null, p: { full_name: sv(a.full_name).trim(), email: sv(a.email), phone: sv(a.phone), role: enumOr(a.role, ['Coach', 'Manager', 'Front desk', 'Owner', 'Other'], 'Coach'), access_level: enumOr(a.access_level, ['full', 'manage', 'coach', 'view'], 'coach'), status: 'active', notes: '', bio: sv(a.bio), photo_url: '' } };
+        rpc = 'provider_save_staff'; okMsg = 'Added ' + sv(a.full_name).trim() + ' to your team.';
+      } else { // set_availability (staff)
+        if (!sv(a.start_time) || !sv(a.end_time)) return res.json({ ok: false, error: 'A start and end time are needed.' });
+        var staffId = null;
+        try {
+          var sl = await us.rpc('provider_list_staff', { p_provider: providerId });
+          var list = (sl && sl.data) || [];
+          if (a.staff_name) { var nm = String(a.staff_name).toLowerCase(); staffId = (list.filter(function (s) { return String(s.full_name || '').toLowerCase() === nm; })[0] || list.filter(function (s) { return String(s.full_name || '').toLowerCase().indexOf(nm) >= 0; })[0] || {}).id || null; }
+          if (!staffId && list.length === 1) staffId = list[0].id;
+        } catch (e) {}
+        if (!staffId) return res.json({ ok: false, error: 'I couldn’t match that staff member — add the staff member first, then set their availability.' });
+        var pp = { staff_id: staffId, service_id: '', start_time: sv(a.start_time), end_time: sv(a.end_time), duration_min: sv(a.duration_min != null ? a.duration_min : 60) };
+        if (a.slot_date) pp.slot_date = sv(a.slot_date); else if (a.day_of_week != null) pp.day_of_week = sv(a.day_of_week);
+        params = { p_provider: providerId, p_id: null, p: pp };
+        rpc = 'provider_save_trainer_slot'; okMsg = 'Added the availability slot.';
+      }
     }
     var rr = await us.rpc(rpc, params);
     if (rr.error) { console.error('[agent execute]', action, rr.error); return res.json({ ok: false, error: rr.error.message || 'That didn’t go through — please try from the screen.' }); }
-    try { await supabase.from('ai_agent_events').insert({ member_id: b.member_id || null, session_id: b.session || null, surface: 'partner', kind: 'action', query: action, meta: { args: a } }); } catch (e) {}
-    return res.json({ ok: true, message: okMsg, navigate: ACTION_PANEL[action] || null });
+    try { await supabase.from('ai_agent_events').insert({ member_id: b.member_id || null, session_id: b.session || null, surface: role, kind: 'action', query: action, meta: { args: a } }); } catch (e) {}
+    return res.json({ ok: true, message: okMsg, navigate: actionPanel(role, action) });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
