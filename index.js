@@ -1142,6 +1142,26 @@ app.post('/api/auth/refresh', async (req, res) => {
 // Runs in PARALLEL with /api/auth/signin (access_code) until the legacy path is retired.
 app.post('/api/auth/exchange', async (req, res) => {
   try {
+    // ── One-time cross-origin HANDOFF code (booking-site signup → dashboard origin). Stateless 60s
+    // HMAC code (URL #fragment only). Returns the SAME {jwt, refresh, member} shape as the native path.
+    const handoffCode = (req.body && req.body.code) || '';
+    if (handoffCode) {
+      const hc = verifyHandoffCode(handoffCode);
+      if (!hc) return res.status(400).json({ error: 'invalid_or_expired_code' });
+      const { data: hm } = await supabase.from('members').select('*').eq('id', hc.memberId).maybeSingle();
+      if (!hm) return res.status(404).json({ error: 'no_account' });
+      if (hm.status && hm.status !== 'active') return res.status(403).json({ error: 'Account suspended' });
+      try { await supabase.from('members').update({ last_login: new Date().toISOString() }).eq('id', hm.id); } catch (e) {}
+      const { access_code: _hac, ...hmSafe } = hm;
+      return res.json({
+        success: true,
+        jwt: mintSupabaseJwt(hm),
+        refresh: mintRefreshToken(hm),
+        member: hmSafe,
+        redirect: '/ffp-provider-dashboard.html'
+      });
+    }
+
     const accessToken = (req.body && (req.body.access_token || req.body.accessToken)) || '';
     if (!accessToken) return res.status(400).json({ error: 'Missing access_token' });
 
@@ -1500,6 +1520,32 @@ function verifyRefreshToken(token) {
     const memberId = bits[0];
     const expMs = Number(bits[1]);
     if (!memberId || !expMs || Date.now() > expMs) return null;   // tampered or expired
+    return { memberId };
+  } catch (e) { return null; }
+}
+
+// ── Cross-origin HANDOFF code (booking-site signup on findfitpeople.com → dashboard origin
+// ffppassport.com). Stateless, short-lived (60s), HMAC-signed — same pattern as the refresh token,
+// so no store is needed. Transported only in the URL #fragment (never a query string / history).
+// Exchanged once at /api/auth/exchange {code} for the real {jwt, refresh, member} session.
+const HANDOFF_TTL_MS = 60 * 1000;   // 60 seconds
+function mintHandoffCode(member) {
+  const payload = `h.${member.id}.${Date.now() + HANDOFF_TTL_MS}`;
+  const sig = crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex');
+  return b64url(payload) + '.' + sig;
+}
+function verifyHandoffCode(code) {
+  try {
+    const parts = String(code).split('.');
+    if (parts.length !== 2) return null;
+    const payload = Buffer.from(parts[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const expect = crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex');
+    const a = Buffer.from(parts[1]); const b = Buffer.from(expect);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const bits = payload.split('.');           // ['h', memberId, expMs]
+    if (bits[0] !== 'h') return null;
+    const memberId = bits[1]; const expMs = Number(bits[2]);
+    if (!memberId || !expMs || Date.now() > expMs) return null;
     return { memberId };
   } catch (e) { return null; }
 }
@@ -3204,6 +3250,7 @@ app.post('/api/provider/signup', async (req, res) => {
       email: cleanEmail,
       email_sent,
       token,
+      handoff_code: mintHandoffCode(sessionMember), // 60s one-time cross-origin code → ffppassport.com/auth-handoff.html → /api/auth/exchange {code}
       jwt: mintSupabaseJwt(sessionMember),      // short Supabase JWT for RLS (null until env set; refresh re-mints on dashboard boot)
       refresh: mintRefreshToken(sessionMember), // long-lived refresh → /api/auth/refresh
       member: memberSafe,
