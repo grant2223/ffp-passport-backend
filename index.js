@@ -799,6 +799,15 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
       } catch (mailErr) {
         console.warn('Onboard: welcome email failed (non-blocking):', mailErr.message);
       }
+      // 5b-ii) Nudge: add Passport to the home screen (in-app bell now; push fires once they enable it).
+      try {
+        await notifyMember(memberId, {
+          title: 'Add FFP Passport to your home screen',
+          body: 'Open it like an app — iPhone: Share → Add to Home Screen. Android: ⋮ menu → Install app.',
+          icon: 'install_mobile',
+          link: '/ffp-member-dashboard.html'
+        });
+      } catch (e) {}
       // 5c) Admin alert — notify the FFP team of every new signup (non-blocking).
       try {
         await sendAdminNewSignupEmail({ full_name: fullName, email: email, city: city, referrer_name: referrerName });
@@ -916,6 +925,15 @@ async function sendWelcomeEmail(email, firstName, city) {
       <div style="padding:14px 16px;background:rgba(255,204,0,.06);border:1px solid rgba(255,204,0,.2);border-radius:10px;margin-bottom:24px;">
         <div style="font-size:11px;font-weight:800;color:#FFCC00;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:6px;">What's a Meet?</div>
         <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">They are small active meet ups (max 8 persons) to connect you to people with the same skill + ability. Eg; Yoga - beginner, Tennis - intermediate, Powerlifting - Advanced, etc.</div>
+      </div>
+
+      <!-- Add to Home Screen -->
+      <div style="padding:16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.25);border-radius:10px;margin-bottom:24px;">
+        <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:8px;">Add FFP Passport to your home screen</div>
+        <div style="font-size:12px;color:#9dbdd0;line-height:1.6;">Open it like a real app — one tap, full screen, no browser bars.<br><br>
+          <strong style="color:#fff;">iPhone / iPad (Safari):</strong> tap the Share icon, then <strong>Add to Home Screen</strong>, then Add.<br>
+          <strong style="color:#fff;">Android (Chrome):</strong> tap the menu (&#8942;), then <strong>Add to Home screen</strong> / <strong>Install app</strong>.
+        </div>
       </div>
 
       <div style="text-align:center;margin:24px 0 28px;">
@@ -1085,8 +1103,10 @@ app.post('/api/auth/signin', async (req, res) => {
     if (member.status !== 'active') return res.status(403).json({ error: 'Account suspended' });
     const token = crypto.randomBytes(32).toString('hex');
     await supabase.from('members').update({
-      last_login: new Date().toISOString()
+      last_login: new Date().toISOString(),
+      verified: true                       // a completed email-code sign-in proves the inbox is theirs
     }).eq('id', member.id);
+    member.verified = true;
     // v9: return the full member row so the dashboard loader has everything
     // it needs to populate the passport card (surname, given_names, DOB,
     // nationality, country, city, gender, photo_url, etc.). Strip the
@@ -3949,6 +3969,7 @@ function renderSundaySummary(name, d){
   +'<tr><td style="padding:32px 30px 0;text-align:center;"><img src="https://ffppassport.com/assets/ffp-emblem.png" alt="FFP" width="60" style="display:inline-block;border:0;"><div style="font-size:11px;color:'+C.accent+';letter-spacing:2.5px;text-transform:uppercase;font-weight:800;margin-top:14px;">Sunday Summary &nbsp;&middot;&nbsp; '+ss_date(d.week_start)+' &ndash; '+ss_date(d.week_end)+'</div></td></tr>'
   +'<tr><td style="padding:24px 30px 0;text-align:center;"><div style="font-size:11px;color:'+C.mut+';letter-spacing:2px;text-transform:uppercase;font-weight:700;">Your current status</div><div style="font-size:42px;font-weight:900;color:'+C.yellow+';letter-spacing:-1px;line-height:1;margin-top:8px;">'+tierName+'</div><div style="height:3px;width:46px;background:rgba(43,168,224,.5);border-radius:2px;margin:16px auto 0;"></div></td></tr>'
   +'<tr><td style="padding:24px 30px 0;"><div style="display:inline-block;font-size:25px;font-weight:900;color:'+C.white+';letter-spacing:-.5px;border-bottom:3px solid '+C.yellow+';padding-bottom:6px;">'+greet+'</div><div style="font-size:14px;color:'+C.soft+';line-height:1.6;margin-top:12px;">'+sub+'</div></td></tr>'
+  + (d.coach_note ? '<tr><td style="padding:18px 30px 0;"><table role="presentation" width="100%" style="background:rgba(255,204,0,.10);border:1px solid rgba(255,204,0,.32);border-radius:14px;"><tr><td style="padding:16px 18px;"><div style="font-size:11px;color:'+C.yellow+';letter-spacing:1.5px;text-transform:uppercase;font-weight:800;margin-bottom:6px;">Grant&#39;s note</div><div style="font-size:13.5px;color:'+C.white+';line-height:1.6;">'+d.coach_note+'</div></td></tr></table></td></tr>' : '')
   + fitHtml
   + worldHtml
   + statusHtml
@@ -3994,6 +4015,18 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
       var tprog = await supabase.rpc('member_tier_progress', { p_me: m.id });
       d.tier_progress = (tprog && !tprog.error && tprog.data) ? tprog.data : {};
       d.tier = m.tier || 'member';
+      // Grant's coaching note — one short, specific, encouraging line built from THIS member's week (Haiku, cheap).
+      d.coach_note = '';
+      try {
+        if (ANTHROPIC_KEY) {
+          var firstNm = String(m.given_names || m.full_name || 'there').split(' ')[0];
+          var csys = 'You are Grant from FFP, a warm, encouraging fitness coach. Write ONE short coaching note (max 2 sentences, ~35 words, NO emojis) about this member\'s past week. Reference their real numbers, celebrate a win, and give ONE concrete suggestion to be more active next week. Speak directly to them as "you".';
+          var cusr = 'Member first name: ' + firstNm + '. This week — meetups hosted ' + ((d.meetups && d.meetups.hosted) || 0) + ', joined ' + ((d.meetups && d.meetups.joined) || 0) + '; new connections ' + ((d.connections && d.connections.new_this_week) || 0) + '; new venues ' + ((d.places && d.places.venues_new) || 0) + ', new cities ' + ((d.places && d.places.cities_new) || 0) + '; tier ' + (d.tier || 'member') + '. Fitness rankings (JSON): ' + JSON.stringify(d.rankings || []).slice(0, 600);
+          var cr = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 120, system: csys, messages: [{ role: 'user', content: cusr }] }) });
+          var cj = await cr.json();
+          if (cr.ok) { d.coach_note = ((cj.content || []).map(function (b) { return b.text || ''; }).join('')).trim(); }
+        }
+      } catch (e) {}
       // Everyone gets the Sunday Summary — inactive members get a nudge (handled in the render), not a skip.
       var first = String(m.given_names || m.full_name || 'there').split(' ')[0];
       try {
