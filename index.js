@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v109
+// FFP Passport — Express Server (Vercel, CommonJS) — v110
+// v110 (2026-06-27): WHOOP SLEEP + RECOVERY + STRAIN (builds #2/#3). Scopes += read:sleep read:recovery read:cycles
+//      (must be ticked on the WHOOP app; existing users must RE-CONNECT). Sync now also pulls sleep/recovery/cycle
+//      → public.member_wearable_daily (sleep_hours/efficiency/performance, recovery_pct, resting_hr, hrv_ms, strain),
+//      merged per day. Webhook also handles sleep.updated. NEW POST /api/wearables/daily {refresh} → last 30 days.
+//      Backfill stays OPEN (no date cap, per Grant).
 // v109 (2026-06-27): WHOOP DURATION FIX — duration_sec must be the 0-59 SECONDS COMPONENT (check constraint
 //      activity_logs_duration_sec_check), but we were writing the whole workout length in seconds → every insert
 //      rejected. Now duration_min = floor(totalSec/60), duration_sec = totalSec % 60. (Found via wearable_debug.)
@@ -2917,9 +2922,9 @@ const WHOOP_AUTH  = 'https://api.prod.whoop.com/oauth/oauth2/auth';
 const WHOOP_TOKEN = 'https://api.prod.whoop.com/oauth/oauth2/token';
 const WHOOP_API   = 'https://api.prod.whoop.com/developer';
 const WHOOP_REDIRECT = process.env.WHOOP_REDIRECT_URI || 'https://ffp-passport-backend.vercel.app/api/wearables/whoop/callback';
-// Only what we currently use (workouts → activity log). Add read:sleep/read:recovery/read:cycles/read:body_measurement
-// here AND tick them on the WHOOP app when we surface those. NOTE the valid name is read:cycles (plural).
-const WHOOP_SCOPES = 'offline read:profile read:workout';
+// Workouts → activity log; sleep/recovery/cycle → member_wearable_daily. These scopes MUST also be ticked on the
+// WHOOP app, and existing users must RE-CONNECT to grant the new ones. (read:cycles is plural; read:cycles=strain.)
+const WHOOP_SCOPES = 'offline read:profile read:workout read:sleep read:recovery read:cycles';
 const WEARABLE_MEMBER_APP = process.env.MEMBER_APP_URL || 'https://ffppassport.com/ffp-member-dashboard.html';
 
 function mintWearableState(memberId, provider) {
@@ -2991,6 +2996,46 @@ async function whoopUpsertActivity(row, workout) {
   if (wres && wres.error) throw new Error('activity_logs ' + (ex ? 'update' : 'insert') + ': ' + wres.error.message);
   await supabase.from('member_wearables').update({ last_synced_at: new Date().toISOString() }).eq('id', row.id);
 }
+
+// ── Daily metrics (sleep / recovery / strain) → member_wearable_daily, merged per day ──
+function whoopDayKey(iso) { try { return new Date(iso).toISOString().slice(0, 10); } catch (e) { return null; } }
+async function whoopUpsertDaily(memberId, day, patch) {
+  if (!day) return;
+  const { data: ex } = await supabase.from('member_wearable_daily').select('id').eq('member_id', memberId).eq('provider', 'whoop').eq('day', day).maybeSingle();
+  patch.updated_at = new Date().toISOString();
+  let r;
+  if (ex && ex.id) r = await supabase.from('member_wearable_daily').update(patch).eq('id', ex.id);
+  else { patch.member_id = memberId; patch.provider = 'whoop'; patch.day = day; r = await supabase.from('member_wearable_daily').insert(patch); }
+  if (r && r.error) throw new Error('member_wearable_daily: ' + r.error.message);
+}
+async function whoopUpsertSleep(row, sleep) {
+  if (!sleep || sleep.nap || !sleep.score) return;
+  const ss = sleep.score.stage_summary || {};
+  const asleepMs = Math.max(0, (ss.total_in_bed_time_milli || 0) - (ss.total_awake_time_milli || 0));
+  await whoopUpsertDaily(row.member_id, whoopDayKey(sleep.end || sleep.start), {
+    sleep_hours: Math.round(asleepMs / 3600000 * 100) / 100,
+    sleep_efficiency: (sleep.score.sleep_efficiency_percentage != null) ? Math.round(sleep.score.sleep_efficiency_percentage) : null,
+    sleep_performance: (sleep.score.sleep_performance_percentage != null) ? Math.round(sleep.score.sleep_performance_percentage) : null
+  });
+}
+async function whoopUpsertRecovery(row, rec) {
+  if (!rec || !rec.score) return;
+  await whoopUpsertDaily(row.member_id, whoopDayKey(rec.created_at), {
+    recovery_pct: (rec.score.recovery_score != null) ? Math.round(rec.score.recovery_score) : null,
+    resting_hr: (rec.score.resting_heart_rate != null) ? Math.round(rec.score.resting_heart_rate) : null,
+    hrv_ms: (rec.score.hrv_rmssd_milli != null) ? Math.round(rec.score.hrv_rmssd_milli * 10) / 10 : null
+  });
+}
+async function whoopUpsertCycle(row, cyc) {
+  if (!cyc || !cyc.score) return;
+  await whoopUpsertDaily(row.member_id, whoopDayKey(cyc.start), {
+    strain: (cyc.score.strain != null) ? Math.round(cyc.score.strain * 10) / 10 : null
+  });
+}
+async function whoopGetJson(path, access) {
+  try { const r = await fetch(WHOOP_API + path, { headers: { Authorization: 'Bearer ' + access } }); if (!r.ok) return null; return await r.json().catch(() => null); } catch (e) { return null; }
+}
+
 async function handleWhoopWebhook(req, res) {
   try {
     const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body || {}));
@@ -3003,7 +3048,7 @@ async function handleWhoopWebhook(req, res) {
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).send('bad_signature');
     let evt = null; try { evt = JSON.parse(raw.toString('utf8')); } catch (e) {}
     if (!evt || !evt.type) return res.status(200).send('ok');
-    if (evt.type !== 'workout.updated' && evt.type !== 'workout.deleted') return res.status(200).send('ignored');
+    if (evt.type !== 'workout.updated' && evt.type !== 'workout.deleted' && evt.type !== 'sleep.updated') return res.status(200).send('ignored');
     const { data: row } = await supabase.from('member_wearables').select('*')
       .eq('provider', 'whoop').eq('external_user_id', String(evt.user_id)).maybeSingle();
     if (!row) return res.status(200).send('no_user');
@@ -3012,6 +3057,13 @@ async function handleWhoopWebhook(req, res) {
       return res.status(200).send('deleted');
     }
     const access = await getValidWhoopAccess(row);
+    if (evt.type === 'sleep.updated') {
+      const sr = await fetch(WHOOP_API + '/v2/activity/sleep/' + encodeURIComponent(evt.id), { headers: { Authorization: 'Bearer ' + access } });
+      if (!sr.ok) return res.status(200).send('sleep_fetch_failed');
+      const sleep = await sr.json();
+      if (sleep && sleep.score_state === 'SCORED' && !sleep.nap) await whoopUpsertSleep(row, sleep);
+      return res.status(200).send('ok');
+    }
     const wr = await fetch(WHOOP_API + '/v2/activity/workout/' + encodeURIComponent(evt.id), { headers: { Authorization: 'Bearer ' + access } });
     if (!wr.ok) return res.status(200).send('fetch_failed');
     const workout = await wr.json();
@@ -3102,19 +3154,43 @@ app.post('/api/wearables/whoop/sync', async (req, res) => {
     const { data: row } = await supabase.from('member_wearables').select('*').eq('member_id', v.memberId).eq('provider', 'whoop').maybeSingle();
     if (!row) return res.status(400).json({ error: 'not_connected' });
     const access = await getValidWhoopAccess(row);
-    const wr = await fetch(WHOOP_API + '/v2/activity/workout?limit=25', { headers: { Authorization: 'Bearer ' + access } });
-    if (!wr.ok) { console.error('[whoop sync] fetch', wr.status); return res.status(502).json({ error: 'whoop_fetch_failed', status: wr.status }); }
-    const j = await wr.json().catch(() => null);
-    const records = (j && Array.isArray(j.records)) ? j.records : [];
-    let synced = 0, firstErr = null;
-    for (const w of records) {
+    let synced = 0, daily = 0, firstErr = null;
+    const note = (e) => { if (!firstErr) firstErr = (e && e.message) || String(e); };
+    // Workouts → activity_logs
+    const jw = await whoopGetJson('/v2/activity/workout?limit=25', access);
+    for (const w of (jw && Array.isArray(jw.records) ? jw.records : [])) {
       if (w && w.score_state && w.score_state !== 'SCORED') continue;
-      try { await whoopUpsertActivity(row, w); synced++; }
-      catch (e) { if (!firstErr) firstErr = (e && e.message) || String(e); console.error('[whoop sync] upsert', e && e.message); }
+      try { await whoopUpsertActivity(row, w); synced++; } catch (e) { note(e); }
     }
+    // Sleep / Recovery / Strain → member_wearable_daily
+    const js = await whoopGetJson('/v2/activity/sleep?limit=25', access);
+    for (const s of (js && Array.isArray(js.records) ? js.records : [])) {
+      if (s && s.score_state === 'SCORED' && !s.nap) { try { await whoopUpsertSleep(row, s); daily++; } catch (e) { note(e); } }
+    }
+    const jr = await whoopGetJson('/v2/recovery?limit=25', access);
+    for (const rec of (jr && Array.isArray(jr.records) ? jr.records : [])) {
+      if (rec && rec.score_state === 'SCORED') { try { await whoopUpsertRecovery(row, rec); daily++; } catch (e) { note(e); } }
+    }
+    const jc = await whoopGetJson('/v2/cycle?limit=25', access);
+    for (const c of (jc && Array.isArray(jc.records) ? jc.records : [])) {
+      if (c && c.score_state === 'SCORED') { try { await whoopUpsertCycle(row, c); } catch (e) { note(e); } }
+    }
+    await supabase.from('member_wearables').update({ last_synced_at: new Date().toISOString() }).eq('id', row.id);
     if (firstErr) { try { await supabase.from('wearable_debug').insert({ context: 'whoop_sync', detail: firstErr }); } catch (e) {} }
-    return res.json({ ok: true, synced: synced, total: records.length, error: firstErr });
+    return res.json({ ok: true, synced: synced, daily: daily, error: firstErr });
   } catch (e) { console.error('[whoop sync]', e); return res.status(500).json({ error: e.message }); }
+});
+
+// Daily metrics (sleep / recovery / strain) for display. member app posts {refresh}. Returns the last 30 days.
+app.post('/api/wearables/daily', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    const { data } = await supabase.from('member_wearable_daily')
+      .select('day, provider, sleep_hours, sleep_efficiency, sleep_performance, recovery_pct, resting_hr, hrv_ms, strain')
+      .eq('member_id', v.memberId).order('day', { ascending: false }).limit(30);
+    return res.json({ days: data || [] });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
 // AI PARSE — natural language → structured food items or an activity (Calorie Tracker + Log Activity voice/text).
