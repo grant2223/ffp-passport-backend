@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v106
+// FFP Passport — Express Server (Vercel, CommonJS) — v107
+// v107 (2026-06-26): WEARABLES — (1) NEW POST /api/wearables/whoop/sync {refresh} PULLS recent workouts with the
+//      stored token → upserts (reconciliation/backfill, not just webhooks). (2) whoopUpsertActivity now stores
+//      per-workout extras in activity_logs.metrics jsonb (max_hr, strain, hr_zones_ms, sport_id). (3) GET
+//      /api/members/:id/activity-logs now also returns source + metrics (for the "via WHOOP" badge + richer card).
 // v106 (2026-06-26): WHOOP SCOPES FIX — invalid_scope was caused by the bad name `read:cycle` (valid is
 //      `read:cycles`). Trimmed the request to only what we use now: `offline read:profile read:workout`.
 // v105 (2026-06-26): WHOOP CONNECT FIX — the OAuth `state` is now a SHORT random hex token stored server-side
@@ -2963,7 +2967,14 @@ async function whoopUpsertActivity(row, workout) {
     calories: (sc.kilojoule != null) ? Math.round(sc.kilojoule / 4.184) : null,
     avg_heart_rate: (sc.average_heart_rate != null) ? Math.round(sc.average_heart_rate) : null,
     logged_at: start ? start.toISOString() : new Date().toISOString(),
-    source: 'whoop', external_id: String(workout.id), verified: false, shared: false
+    source: 'whoop', external_id: String(workout.id), verified: false, shared: false,
+    metrics: {
+      provider: 'whoop',
+      max_hr: (sc.max_heart_rate != null) ? Math.round(sc.max_heart_rate) : null,
+      strain: (sc.strain != null) ? Math.round(sc.strain * 10) / 10 : null,
+      hr_zones_ms: sc.zone_durations || null,
+      sport_id: (workout.sport_id != null) ? workout.sport_id : null
+    }
   };
   const { data: ex } = await supabase.from('activity_logs').select('id')
     .eq('member_id', row.member_id).eq('source', 'whoop').eq('external_id', String(workout.id)).maybeSingle();
@@ -3071,6 +3082,28 @@ app.post('/api/wearables/status', async (req, res) => {
     const { data } = await supabase.from('member_wearables').select('provider, status, last_synced_at').eq('member_id', v.memberId);
     return res.json({ providers: data || [] });
   } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// Sync now — PULL recent workouts directly from WHOOP (reconciliation / initial backfill, not just webhooks).
+// member app posts {refresh}. Fetches the latest workouts with the stored token → upserts into activity_logs.
+app.post('/api/wearables/whoop/sync', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    const { data: row } = await supabase.from('member_wearables').select('*').eq('member_id', v.memberId).eq('provider', 'whoop').maybeSingle();
+    if (!row) return res.status(400).json({ error: 'not_connected' });
+    const access = await getValidWhoopAccess(row);
+    const wr = await fetch(WHOOP_API + '/v2/activity/workout?limit=25', { headers: { Authorization: 'Bearer ' + access } });
+    if (!wr.ok) { console.error('[whoop sync] fetch', wr.status); return res.status(502).json({ error: 'whoop_fetch_failed', status: wr.status }); }
+    const j = await wr.json().catch(() => null);
+    const records = (j && Array.isArray(j.records)) ? j.records : [];
+    let synced = 0;
+    for (const w of records) {
+      if (w && w.score_state && w.score_state !== 'SCORED') continue;
+      try { await whoopUpsertActivity(row, w); synced++; } catch (e) { console.error('[whoop sync] upsert', e && e.message); }
+    }
+    return res.json({ ok: true, synced: synced, total: records.length });
+  } catch (e) { console.error('[whoop sync]', e); return res.status(500).json({ error: e.message }); }
 });
 
 // AI PARSE — natural language → structured food items or an activity (Calorie Tracker + Log Activity voice/text).
@@ -3665,7 +3698,7 @@ app.get('/api/members/:id/activity-logs', async (req, res) => {
     const { id } = req.params;
     const { data: logs, error } = await supabase
       .from('activity_logs')
-      .select('id, activity, category, venue, provider_id, duration_min, duration_sec, intensity, calories, distance_km, avg_heart_rate, notes, logged_at, city, country, verified, checkin_lat, checkin_lng, photo_url, photos, shared')
+      .select('id, activity, category, venue, provider_id, duration_min, duration_sec, intensity, calories, distance_km, avg_heart_rate, notes, logged_at, city, country, verified, checkin_lat, checkin_lng, photo_url, photos, shared, source, metrics')
       .eq('member_id', id)
       .order('logged_at', { ascending: false })
       .limit(500);
