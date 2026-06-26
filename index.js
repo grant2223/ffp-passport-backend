@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v104
+// FFP Passport — Express Server (Vercel, CommonJS) — v105
+// v105 (2026-06-26): WHOOP CONNECT FIX — the OAuth `state` is now a SHORT random hex token stored server-side
+//      (new table wearable_oauth_states: state→member_id, single-use, 10-min TTL) instead of a long signed token.
+//      WHOOP was mangling the long state on the round-trip → callback failed with reason=state. connect inserts
+//      the state; callback looks it up + deletes it. (mintWearableState/verifyWearableState now unused.)
 // v104 (2026-06-26): CALORIE FOOD PARSE — /api/ai/parse kind:'food' now returns a per-item "meal"
 //      (breakfast|lunch|dinner|snacks) assigned ONLY from what the user says (e.g. "eggs for breakfast and a
 //      salad for lunch" → split across sections); "" when unstated (frontend falls back to time-of-day). No
@@ -3001,11 +3005,14 @@ app.post('/api/wearables/connect', async (req, res) => {
     const provider = String((req.body && req.body.provider) || '').toLowerCase();
     if (provider === 'whoop') {
       if (!process.env.WHOOP_CLIENT_ID) return res.status(503).json({ error: 'whoop_not_configured' });
+      // WHOOP mangles long state params → use a SHORT random hex state, stored server-side (state→member map).
+      const state = crypto.randomBytes(16).toString('hex');
+      await supabase.from('wearable_oauth_states').insert({ state: state, member_id: v.memberId, provider: 'whoop' });
       const url = WHOOP_AUTH + '?response_type=code'
         + '&client_id=' + encodeURIComponent(process.env.WHOOP_CLIENT_ID)
         + '&redirect_uri=' + encodeURIComponent(WHOOP_REDIRECT)
         + '&scope=' + encodeURIComponent(WHOOP_SCOPES)
-        + '&state=' + encodeURIComponent(mintWearableState(v.memberId, 'whoop'));
+        + '&state=' + encodeURIComponent(state);
       return res.json({ url });
     }
     if (provider === 'garmin') return res.status(503).json({ error: 'garmin_not_configured' });
@@ -3017,9 +3024,13 @@ app.post('/api/wearables/connect', async (req, res) => {
 app.get('/api/wearables/whoop/callback', async (req, res) => {
   const fail = (msg) => res.redirect(WEARABLE_MEMBER_APP + '?wearable=whoop_error&reason=' + encodeURIComponent(msg || 'error'));
   try {
-    const st = verifyWearableState(req.query.state || '');
-    if (!st || st.provider !== 'whoop') return fail('state');
     if (req.query.error) return fail(String(req.query.error));
+    const stateParam = String(req.query.state || '');
+    if (!stateParam) return fail('state');
+    const { data: st } = await supabase.from('wearable_oauth_states').select('member_id, provider, created_at').eq('state', stateParam).maybeSingle();
+    await supabase.from('wearable_oauth_states').delete().eq('state', stateParam);   // single-use
+    if (!st || st.provider !== 'whoop') return fail('state');
+    if (Date.now() - new Date(st.created_at).getTime() > 10 * 60 * 1000) return fail('state_expired');
     const code = String(req.query.code || '');
     if (!code) return fail('no_code');
     const tok = await whoopTokenRequest({ grant_type: 'authorization_code', code, redirect_uri: WHOOP_REDIRECT, client_id: process.env.WHOOP_CLIENT_ID, client_secret: process.env.WHOOP_CLIENT_SECRET });
@@ -3028,7 +3039,7 @@ app.get('/api/wearables/whoop/callback', async (req, res) => {
     const whoopUserId = prof && (prof.user_id != null ? String(prof.user_id) : null);
     if (!whoopUserId) return fail('profile');
     await supabase.from('member_wearables').upsert({
-      member_id: st.memberId, provider: 'whoop', external_user_id: whoopUserId,
+      member_id: st.member_id, provider: 'whoop', external_user_id: whoopUserId,
       access_token: tok.access_token, refresh_token: tok.refresh_token || null,
       token_expires_at: new Date(Date.now() + (Number(tok.expires_in) || 3600) * 1000).toISOString(),
       scope: tok.scope || WHOOP_SCOPES, status: 'connected', updated_at: new Date().toISOString()
