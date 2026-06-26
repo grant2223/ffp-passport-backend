@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v107
+// FFP Passport — Express Server (Vercel, CommonJS) — v108
+// v108 (2026-06-27): WHOOP SYNC RELIABILITY — whoopUpsertActivity now THROWS on an activity_logs insert/update
+//      error (no longer swallows it; last_synced only set on real success). /api/wearables/whoop/sync counts only
+//      truly-saved workouts and records the first error in public.wearable_debug + returns {error}. (Diagnosing
+//      why inserts silently failed despite synced>0.)
 // v107 (2026-06-26): WEARABLES — (1) NEW POST /api/wearables/whoop/sync {refresh} PULLS recent workouts with the
 //      stored token → upserts (reconciliation/backfill, not just webhooks). (2) whoopUpsertActivity now stores
 //      per-workout extras in activity_logs.metrics jsonb (max_hr, strain, hr_zones_ms, sport_id). (3) GET
@@ -2978,8 +2982,10 @@ async function whoopUpsertActivity(row, workout) {
   };
   const { data: ex } = await supabase.from('activity_logs').select('id')
     .eq('member_id', row.member_id).eq('source', 'whoop').eq('external_id', String(workout.id)).maybeSingle();
-  if (ex && ex.id) await supabase.from('activity_logs').update(fields).eq('id', ex.id);
-  else await supabase.from('activity_logs').insert(fields);
+  let wres;
+  if (ex && ex.id) wres = await supabase.from('activity_logs').update(fields).eq('id', ex.id);
+  else wres = await supabase.from('activity_logs').insert(fields);
+  if (wres && wres.error) throw new Error('activity_logs ' + (ex ? 'update' : 'insert') + ': ' + wres.error.message);
   await supabase.from('member_wearables').update({ last_synced_at: new Date().toISOString() }).eq('id', row.id);
 }
 async function handleWhoopWebhook(req, res) {
@@ -3097,12 +3103,14 @@ app.post('/api/wearables/whoop/sync', async (req, res) => {
     if (!wr.ok) { console.error('[whoop sync] fetch', wr.status); return res.status(502).json({ error: 'whoop_fetch_failed', status: wr.status }); }
     const j = await wr.json().catch(() => null);
     const records = (j && Array.isArray(j.records)) ? j.records : [];
-    let synced = 0;
+    let synced = 0, firstErr = null;
     for (const w of records) {
       if (w && w.score_state && w.score_state !== 'SCORED') continue;
-      try { await whoopUpsertActivity(row, w); synced++; } catch (e) { console.error('[whoop sync] upsert', e && e.message); }
+      try { await whoopUpsertActivity(row, w); synced++; }
+      catch (e) { if (!firstErr) firstErr = (e && e.message) || String(e); console.error('[whoop sync] upsert', e && e.message); }
     }
-    return res.json({ ok: true, synced: synced, total: records.length });
+    if (firstErr) { try { await supabase.from('wearable_debug').insert({ context: 'whoop_sync', detail: firstErr }); } catch (e) {} }
+    return res.json({ ok: true, synced: synced, total: records.length, error: firstErr });
   } catch (e) { console.error('[whoop sync]', e); return res.status(500).json({ error: e.message }); }
 });
 
