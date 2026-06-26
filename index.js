@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v108
+// FFP Passport — Express Server (Vercel, CommonJS) — v109
+// v109 (2026-06-27): WHOOP DURATION FIX — duration_sec must be the 0-59 SECONDS COMPONENT (check constraint
+//      activity_logs_duration_sec_check), but we were writing the whole workout length in seconds → every insert
+//      rejected. Now duration_min = floor(totalSec/60), duration_sec = totalSec % 60. (Found via wearable_debug.)
 // v108 (2026-06-27): WHOOP SYNC RELIABILITY — whoopUpsertActivity now THROWS on an activity_logs insert/update
 //      error (no longer swallows it; last_synced only set on real success). /api/wearables/whoop/sync counts only
 //      truly-saved workouts and records the first error in public.wearable_debug + returns {error}. (Diagnosing
@@ -2961,12 +2964,12 @@ async function whoopUpsertActivity(row, workout) {
   const end = workout.end ? new Date(workout.end) : null;
   const sc = workout.score || {};
   const durMs = (start && end) ? Math.max(0, end - start) : 0;
-  const durSec = Math.round(durMs / 1000);
+  const totalSec = Math.round(durMs / 1000);
   const fields = {
     member_id: row.member_id,
     activity: titleCaseSport(workout.sport_name),
-    duration_min: Math.round(durMs / 60000) || null,
-    duration_sec: (durSec > 0 && durSec < 32767) ? durSec : null,
+    duration_min: Math.floor(totalSec / 60) || null,
+    duration_sec: totalSec % 60,   // 0-59 seconds component only (activity_logs_duration_sec_check)
     distance_km: (sc.distance_meter != null) ? Math.round(sc.distance_meter / 10) / 100 : null,
     calories: (sc.kilojoule != null) ? Math.round(sc.kilojoule / 4.184) : null,
     avg_heart_rate: (sc.average_heart_rate != null) ? Math.round(sc.average_heart_rate) : null,
