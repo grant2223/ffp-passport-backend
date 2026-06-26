@@ -1,4 +1,14 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v102
+// FFP Passport — Express Server (Vercel, CommonJS) — v104
+// v104 (2026-06-26): CALORIE FOOD PARSE — /api/ai/parse kind:'food' now returns a per-item "meal"
+//      (breakfast|lunch|dinner|snacks) assigned ONLY from what the user says (e.g. "eggs for breakfast and a
+//      salad for lunch" → split across sections); "" when unstated (frontend falls back to time-of-day). No
+//      longer dumps everything into the current-time bucket.
+// v103 (2026-06-26): WEARABLES (WHOOP direct, OAuth 2.0 + webhooks). POST /api/wearables/connect {refresh,provider}
+//      → authorize URL; GET /api/wearables/whoop/callback (token exchange + profile → upsert member_wearables);
+//      POST /api/wearables/whoop/webhook (raw-body HMAC-SHA256 signature check → fetch workout → normalise into
+//      activity_logs source='whoop', dedup by external_id); POST /api/wearables/disconnect + /status. Garmin
+//      scaffolded (503 not_configured until GARMIN_* keys). Env: WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET
+//      (+ optional WHOOP_REDIRECT_URI, MEMBER_APP_URL). DB: member_wearables (RLS-locked) + activity_logs.source/external_id.
 // v102 (2026-06-26): NUTRITION PLAN — POST /api/nutrition/plan {prompt} → {plan:{title,summary,daily_kcal,
 //      protein_g,carbs_g,fat_g,meals:[{meal,kcal,items[]}],tips[]}}. Powers the Calorie Tracker › Meal Planner
 //      ("Ask Coach") tab. Same Anthropic key + WORKOUT_MODEL (Haiku) as /api/workout/generate; JSON-only output.
@@ -457,6 +467,9 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
   }
   res.json({ received: true });
 });
+// ── WHOOP webhook — defined BEFORE express.json() so we can read the RAW body for signature validation ──
+app.post('/api/wearables/whoop/webhook', express.raw({ type: '*/*' }), (req, res) => handleWhoopWebhook(req, res));
+
 app.use(express.json({ limit: '50mb' }));
 
 // ────────────────────────────────────────────────────────────
@@ -2877,6 +2890,174 @@ app.post('/api/nutrition/plan', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// WEARABLES — direct device integrations. WHOOP is live (OAuth 2.0 + webhooks);
+// Garmin is scaffolded (returns not_configured until GARMIN_* keys exist). New
+// workouts flow into activity_logs (source='whoop', external_id=workout uuid) with
+// dedup. Tokens live in member_wearables (RLS-locked: service-role only).
+// ════════════════════════════════════════════════════════════════════════════
+const WHOOP_AUTH  = 'https://api.prod.whoop.com/oauth/oauth2/auth';
+const WHOOP_TOKEN = 'https://api.prod.whoop.com/oauth/oauth2/token';
+const WHOOP_API   = 'https://api.prod.whoop.com/developer';
+const WHOOP_REDIRECT = process.env.WHOOP_REDIRECT_URI || 'https://ffp-passport-backend.vercel.app/api/wearables/whoop/callback';
+const WHOOP_SCOPES = 'offline read:profile read:workout read:sleep read:recovery read:cycle read:body_measurement';
+const WEARABLE_MEMBER_APP = process.env.MEMBER_APP_URL || 'https://ffppassport.com/ffp-member-dashboard.html';
+
+function mintWearableState(memberId, provider) {
+  const payload = `w.${memberId}.${provider}.${Date.now() + 10 * 60 * 1000}`;
+  const sig = crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex');
+  return b64url(payload) + '.' + sig;
+}
+function verifyWearableState(state) {
+  try {
+    const parts = String(state).split('.');
+    if (parts.length !== 2) return null;
+    const payload = Buffer.from(parts[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const expect = crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex');
+    const a = Buffer.from(parts[1]); const b = Buffer.from(expect);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const bits = payload.split('.');   // ['w', memberId, provider, expMs]
+    if (bits[0] !== 'w' || Date.now() > Number(bits[3])) return null;
+    return { memberId: bits[1], provider: bits[2] };
+  } catch (e) { return null; }
+}
+function titleCaseSport(s) { return String(s || 'Activity').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); }
+
+async function whoopTokenRequest(params) {
+  const r = await fetch(WHOOP_TOKEN, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params).toString() });
+  const j = await r.json().catch(() => null);
+  if (!r.ok || !j || !j.access_token) throw new Error('whoop_token_failed');
+  return j;
+}
+async function getValidWhoopAccess(row) {
+  const exp = row.token_expires_at ? new Date(row.token_expires_at).getTime() : 0;
+  if (row.access_token && exp - 60000 > Date.now()) return row.access_token;
+  const j = await whoopTokenRequest({ grant_type: 'refresh_token', refresh_token: row.refresh_token, client_id: process.env.WHOOP_CLIENT_ID, client_secret: process.env.WHOOP_CLIENT_SECRET, scope: 'offline' });
+  await supabase.from('member_wearables').update({
+    access_token: j.access_token, refresh_token: j.refresh_token || row.refresh_token,
+    token_expires_at: new Date(Date.now() + (Number(j.expires_in) || 3600) * 1000).toISOString(), updated_at: new Date().toISOString()
+  }).eq('id', row.id);
+  return j.access_token;
+}
+async function whoopUpsertActivity(row, workout) {
+  if (!workout || !workout.id) return;
+  const start = workout.start ? new Date(workout.start) : null;
+  const end = workout.end ? new Date(workout.end) : null;
+  const sc = workout.score || {};
+  const durMs = (start && end) ? Math.max(0, end - start) : 0;
+  const durSec = Math.round(durMs / 1000);
+  const fields = {
+    member_id: row.member_id,
+    activity: titleCaseSport(workout.sport_name),
+    duration_min: Math.round(durMs / 60000) || null,
+    duration_sec: (durSec > 0 && durSec < 32767) ? durSec : null,
+    distance_km: (sc.distance_meter != null) ? Math.round(sc.distance_meter / 10) / 100 : null,
+    calories: (sc.kilojoule != null) ? Math.round(sc.kilojoule / 4.184) : null,
+    avg_heart_rate: (sc.average_heart_rate != null) ? Math.round(sc.average_heart_rate) : null,
+    logged_at: start ? start.toISOString() : new Date().toISOString(),
+    source: 'whoop', external_id: String(workout.id), verified: false, shared: false
+  };
+  const { data: ex } = await supabase.from('activity_logs').select('id')
+    .eq('member_id', row.member_id).eq('source', 'whoop').eq('external_id', String(workout.id)).maybeSingle();
+  if (ex && ex.id) await supabase.from('activity_logs').update(fields).eq('id', ex.id);
+  else await supabase.from('activity_logs').insert(fields);
+  await supabase.from('member_wearables').update({ last_synced_at: new Date().toISOString() }).eq('id', row.id);
+}
+async function handleWhoopWebhook(req, res) {
+  try {
+    const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body || {}));
+    const sig = req.headers['x-whoop-signature'];
+    const ts = req.headers['x-whoop-signature-timestamp'];
+    const secret = process.env.WHOOP_CLIENT_SECRET || '';
+    if (!sig || !ts || !secret) return res.status(401).send('unauthorized');
+    const expect = crypto.createHmac('sha256', secret).update(String(ts) + raw.toString('utf8')).digest('base64');
+    const a = Buffer.from(String(sig)); const b = Buffer.from(expect);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).send('bad_signature');
+    let evt = null; try { evt = JSON.parse(raw.toString('utf8')); } catch (e) {}
+    if (!evt || !evt.type) return res.status(200).send('ok');
+    if (evt.type !== 'workout.updated' && evt.type !== 'workout.deleted') return res.status(200).send('ignored');
+    const { data: row } = await supabase.from('member_wearables').select('*')
+      .eq('provider', 'whoop').eq('external_user_id', String(evt.user_id)).maybeSingle();
+    if (!row) return res.status(200).send('no_user');
+    if (evt.type === 'workout.deleted') {
+      await supabase.from('activity_logs').delete().eq('member_id', row.member_id).eq('source', 'whoop').eq('external_id', String(evt.id));
+      return res.status(200).send('deleted');
+    }
+    const access = await getValidWhoopAccess(row);
+    const wr = await fetch(WHOOP_API + '/v2/activity/workout/' + encodeURIComponent(evt.id), { headers: { Authorization: 'Bearer ' + access } });
+    if (!wr.ok) return res.status(200).send('fetch_failed');
+    const workout = await wr.json();
+    if (workout && workout.score_state && workout.score_state !== 'SCORED') return res.status(200).send('pending');
+    await whoopUpsertActivity(row, workout);
+    return res.status(200).send('ok');
+  } catch (e) { console.error('[whoop webhook]', e); return res.status(200).send('error'); }
+}
+
+// Start a connection — member app posts {refresh, provider}. Returns the provider's authorize URL.
+app.post('/api/wearables/connect', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    const provider = String((req.body && req.body.provider) || '').toLowerCase();
+    if (provider === 'whoop') {
+      if (!process.env.WHOOP_CLIENT_ID) return res.status(503).json({ error: 'whoop_not_configured' });
+      const url = WHOOP_AUTH + '?response_type=code'
+        + '&client_id=' + encodeURIComponent(process.env.WHOOP_CLIENT_ID)
+        + '&redirect_uri=' + encodeURIComponent(WHOOP_REDIRECT)
+        + '&scope=' + encodeURIComponent(WHOOP_SCOPES)
+        + '&state=' + encodeURIComponent(mintWearableState(v.memberId, 'whoop'));
+      return res.json({ url });
+    }
+    if (provider === 'garmin') return res.status(503).json({ error: 'garmin_not_configured' });
+    return res.status(400).json({ error: 'unknown_provider' });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// OAuth callback (WHOOP) → exchange code, fetch the WHOOP user, store tokens, bounce back to the app.
+app.get('/api/wearables/whoop/callback', async (req, res) => {
+  const fail = (msg) => res.redirect(WEARABLE_MEMBER_APP + '?wearable=whoop_error&reason=' + encodeURIComponent(msg || 'error'));
+  try {
+    const st = verifyWearableState(req.query.state || '');
+    if (!st || st.provider !== 'whoop') return fail('state');
+    if (req.query.error) return fail(String(req.query.error));
+    const code = String(req.query.code || '');
+    if (!code) return fail('no_code');
+    const tok = await whoopTokenRequest({ grant_type: 'authorization_code', code, redirect_uri: WHOOP_REDIRECT, client_id: process.env.WHOOP_CLIENT_ID, client_secret: process.env.WHOOP_CLIENT_SECRET });
+    const pr = await fetch(WHOOP_API + '/v2/user/profile/basic', { headers: { Authorization: 'Bearer ' + tok.access_token } });
+    const prof = await pr.json().catch(() => null);
+    const whoopUserId = prof && (prof.user_id != null ? String(prof.user_id) : null);
+    if (!whoopUserId) return fail('profile');
+    await supabase.from('member_wearables').upsert({
+      member_id: st.memberId, provider: 'whoop', external_user_id: whoopUserId,
+      access_token: tok.access_token, refresh_token: tok.refresh_token || null,
+      token_expires_at: new Date(Date.now() + (Number(tok.expires_in) || 3600) * 1000).toISOString(),
+      scope: tok.scope || WHOOP_SCOPES, status: 'connected', updated_at: new Date().toISOString()
+    }, { onConflict: 'member_id,provider' });
+    return res.redirect(WEARABLE_MEMBER_APP + '?wearable=whoop_connected');
+  } catch (e) { console.error('[whoop callback]', e); return fail('exchange'); }
+});
+
+// Disconnect — member app posts {refresh, provider}.
+app.post('/api/wearables/disconnect', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    const provider = String((req.body && req.body.provider) || '').toLowerCase();
+    await supabase.from('member_wearables').delete().eq('member_id', v.memberId).eq('provider', provider);
+    return res.json({ ok: true });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// Status — member app posts {refresh}. Returns connected providers (no tokens).
+app.post('/api/wearables/status', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    const { data } = await supabase.from('member_wearables').select('provider, status, last_synced_at').eq('member_id', v.memberId);
+    return res.json({ providers: data || [] });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
 // AI PARSE — natural language → structured food items or an activity (Calorie Tracker + Log Activity voice/text).
 app.post('/api/ai/parse', async (req, res) => {
   try {
@@ -2887,9 +3068,12 @@ app.post('/api/ai/parse', async (req, res) => {
     let sys;
     if (kind === 'food') {
       sys = 'You convert a typed/spoken description of food eaten into structured nutrition data. ' +
-        'Return ONLY valid minified JSON: {"items":[{"name":string,"qty":string,"kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number}]}. ' +
+        'Return ONLY valid minified JSON: {"items":[{"name":string,"qty":string,"meal":string,"kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number}]}. ' +
         'Split a meal into its component foods (e.g. "two eggs and toast" -> 2 items). Estimate realistic macros for the stated portion. ' +
-        'qty is a short human label like "2 eggs" or "1 cup". Output JSON only.';
+        'qty is a short human label like "2 eggs" or "1 cup". ' +
+        'meal is which meal each item belongs to, based ONLY on what the user says — one of "breakfast","lunch","dinner","snacks". ' +
+        'If the user names a meal for some foods (e.g. "eggs for breakfast and a salad for lunch"), assign each item to the meal they named; items in different meals get different values. ' +
+        'If the user does NOT say which meal, set meal to "". Do NOT guess from the time of day. Output JSON only.';
     } else if (kind === 'activity') {
       sys = 'You convert a typed/spoken description of a workout or activity into structured data. ' +
         'Return ONLY valid minified JSON: {"activity":string,"duration_min":number,"distance_km":number,"calories":number,"avg_heart_rate":number,"date":string,"time":string,"location":string,"notes":string}. ' +
@@ -2929,8 +3113,11 @@ app.post('/api/ai/parse', async (req, res) => {
     var parsed = parseWorkoutJSON(out);
     if (!parsed) return res.status(502).json({ error: 'ai_bad_output' });
     if (kind === 'food') {
+      var MEAL_OK = { breakfast: 1, lunch: 1, dinner: 1, snacks: 1 };
       var items = (Array.isArray(parsed.items) ? parsed.items : []).map(function (it) {
+        var meal = String(it.meal || '').trim().toLowerCase();
         return { name: String(it.name || '').trim(), qty: String(it.qty || '').trim(),
+          meal: MEAL_OK[meal] ? meal : '',
           kcal: Math.max(0, Math.round(Number(it.kcal) || 0)),
           protein_g: +(Number(it.protein_g) || 0).toFixed(1), carbs_g: +(Number(it.carbs_g) || 0).toFixed(1), fat_g: +(Number(it.fat_g) || 0).toFixed(1) };
       }).filter(function (it) { return it.name && it.kcal; });
