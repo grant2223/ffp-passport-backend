@@ -3336,6 +3336,57 @@ app.get('/api/geo/resolve', async (req, res) => {
   }
 });
 
+// PUBLIC passport page (the member's QR → /my-passport.html?p=FFP-YYYY-NNNN). Resolves the passport_no to the
+// member's public card fields + their journey/streak stats + their UPCOMING HOSTED meet-ups, so a scanner gets
+// "just enough to want to join". No auth — public, read-only, public fields only.
+app.get('/api/passport/:passportNo', async (req, res) => {
+  try {
+    const pno = String(req.params.passportNo || '').trim();
+    if (!pno) return res.status(400).json({ error: 'Missing passport number' });
+    const { data: m, error } = await supabase.from('members')
+      .select('id, passport_no, full_name, given_names, surname, photo_url, nationality, gender, date_of_birth, country, city, tier, status, verified, referral_code, passport_expires_at')
+      .eq('passport_no', pno).maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!m) return res.status(404).json({ error: 'no_passport' });
+
+    var member = {
+      passport_no: m.passport_no, full_name: m.full_name, given_names: m.given_names, surname: m.surname,
+      photo_url: m.photo_url, nationality: m.nationality, gender: m.gender, date_of_birth: m.date_of_birth,
+      country: m.country, city: m.city, tier: m.tier, status: m.status, verified: m.verified,
+      referral_code: m.referral_code, expires: m.passport_expires_at, member_since: null
+    };
+
+    // Journey stats from activity_logs (streak, totals, cities, places)
+    var stats = { activities: 0, streak: 0, cities: 0, venues: 0 };
+    try {
+      const { data: logs } = await supabase.from('activity_logs').select('logged_at, city, venue').eq('member_id', m.id);
+      if (logs && logs.length) {
+        stats.activities = logs.length;
+        var cities = {}, venues = {}, days = {}, today = new Date(); today.setHours(0, 0, 0, 0);
+        logs.forEach(function (l) {
+          if (l.city) cities[String(l.city).toLowerCase()] = 1;
+          if (l.venue) venues[String(l.venue).toLowerCase()] = 1;
+          if (l.logged_at) { var d = new Date(l.logged_at); d.setHours(0, 0, 0, 0); var da = Math.round((today - d) / 86400000); if (da >= 0) days[da] = 1; }
+        });
+        stats.cities = Object.keys(cities).length; stats.venues = Object.keys(venues).length;
+        var s = 0, di = days[0] ? 0 : (days[1] ? 1 : -1); if (di >= 0) { while (days[di]) { s++; di++; } } stats.streak = s;
+      }
+    } catch (e) {}
+
+    // Upcoming meet-ups this member is HOSTING
+    var meetups = [];
+    try {
+      const { data: mk } = await supabase.from('meetups')
+        .select('id, title, sport, city, venue, meets_at, max_people')
+        .eq('host_member_id', m.id).in('status', ['open', 'full'])
+        .gte('meets_at', new Date().toISOString()).order('meets_at', { ascending: true }).limit(5);
+      meetups = mk || [];
+    } catch (e) {}
+
+    return res.json({ success: true, member: member, stats: stats, meetups: meetups });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/members/:id', async (req, res) => {
   try {
     const { id } = req.params;
