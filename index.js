@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v101
+// FFP Passport — Express Server (Vercel, CommonJS) — v102
+// v102 (2026-06-26): NUTRITION PLAN — POST /api/nutrition/plan {prompt} → {plan:{title,summary,daily_kcal,
+//      protein_g,carbs_g,fat_g,meals:[{meal,kcal,items[]}],tips[]}}. Powers the Calorie Tracker › Meal Planner
+//      ("Ask Coach") tab. Same Anthropic key + WORKOUT_MODEL (Haiku) as /api/workout/generate; JSON-only output.
 // v101 (2026-06-22): ACTIVITY MULTI-PHOTO — GET /api/members/:id/activity-logs now also returns the
 //      photos text[] column (up to 8 images per activity). photo_url stays the cover (photos[0]).
 // v100 (2026-06-20): MEET-UP LEAVE NOTIFY — /api/meetups/notify supports {kind:'leave', meetup_id, member_id, pending}
@@ -2819,6 +2822,57 @@ app.post('/api/workout/generate', async (req, res) => {
     try { text = (j.content || []).map(function (b) { return b.text || ''; }).join('').trim(); } catch (e) {}
     var plan = normalizeWorkout(parseWorkoutJSON(text));
     if (!plan || !plan.exercises.length) return res.status(502).json({ error: 'ai_bad_output' });
+    return res.json({ plan });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// NUTRITION PLAN — free-text goal → a structured one-day meal plan (Calorie Tracker › Meal Planner / "Ask Coach").
+function normalizeNutrition(plan) {
+  if (!plan || typeof plan !== 'object') return null;
+  var arr = function (x) { return Array.isArray(x) ? x : []; };
+  var num = function (x, d) { var n = Number(x); return isFinite(n) ? n : d; };
+  var str = function (x) { return (x == null) ? '' : String(x).trim(); };
+  var meals = arr(plan.meals).map(function (m) {
+    return { meal: str(m.meal) || 'Meal', kcal: num(m.kcal, 0), items: arr(m.items).map(str).filter(Boolean) };
+  }).filter(function (m) { return m.items.length; });
+  return {
+    title: str(plan.title) || 'Your nutrition plan',
+    summary: str(plan.summary),
+    daily_kcal: num(plan.daily_kcal, 0),
+    protein_g: num(plan.protein_g, 0),
+    carbs_g: num(plan.carbs_g, 0),
+    fat_g: num(plan.fat_g, 0),
+    meals: meals,
+    tips: arr(plan.tips).map(str).filter(Boolean).slice(0, 6)
+  };
+}
+
+app.post('/api/nutrition/plan', async (req, res) => {
+  try {
+    if (!ANTHROPIC_KEY) return res.status(503).json({ error: 'ai_not_configured' });
+    const prompt = String((req.body && req.body.prompt) || '').trim();
+    if (prompt.length < 3) return res.status(400).json({ error: 'prompt required' });
+    const sys =
+      'You are an expert sports-nutrition coach creating ONE day of meals for a fitness app. ' +
+      'Return ONLY valid minified JSON (no markdown, no prose) with this exact shape: ' +
+      '{"title":string,"summary":string,"daily_kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number,' +
+      '"meals":[{"meal":string,"kcal":number,"items":[string]}],"tips":[string]}. ' +
+      'Rules: 3-5 meals (e.g. Breakfast, Lunch, Dinner, Snacks) whose kcal sum is close to daily_kcal; ' +
+      'each item is a short food + portion like "150g grilled chicken" or "1 cup oats with berries"; ' +
+      'macros must be realistic and roughly consistent with the calories; respect any stated goal, calorie ' +
+      'target, diet, allergy, dislike or training pattern; summary is one or two sentences; 2-4 short practical ' +
+      'tips of 12 words or fewer. Output JSON only.';
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1600, system: sys, messages: [{ role: 'user', content: prompt }] })
+    });
+    const j = await r.json();
+    if (!r.ok) { console.error('[nutrition] anthropic:', j && j.error); return res.status(502).json({ error: 'ai_error', detail: (j && j.error && j.error.message) || '' }); }
+    var text = '';
+    try { text = (j.content || []).map(function (b) { return b.text || ''; }).join('').trim(); } catch (e) {}
+    var plan = normalizeNutrition(parseWorkoutJSON(text));
+    if (!plan || !plan.meals.length) return res.status(502).json({ error: 'ai_bad_output' });
     return res.json({ plan });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
