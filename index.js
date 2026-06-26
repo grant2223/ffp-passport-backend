@@ -1,4 +1,6 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v105
+// FFP Passport — Express Server (Vercel, CommonJS) — v106
+// v106 (2026-06-26): WHOOP SCOPES FIX — invalid_scope was caused by the bad name `read:cycle` (valid is
+//      `read:cycles`). Trimmed the request to only what we use now: `offline read:profile read:workout`.
 // v105 (2026-06-26): WHOOP CONNECT FIX — the OAuth `state` is now a SHORT random hex token stored server-side
 //      (new table wearable_oauth_states: state→member_id, single-use, 10-min TTL) instead of a long signed token.
 //      WHOOP was mangling the long state on the round-trip → callback failed with reason=state. connect inserts
@@ -2904,7 +2906,9 @@ const WHOOP_AUTH  = 'https://api.prod.whoop.com/oauth/oauth2/auth';
 const WHOOP_TOKEN = 'https://api.prod.whoop.com/oauth/oauth2/token';
 const WHOOP_API   = 'https://api.prod.whoop.com/developer';
 const WHOOP_REDIRECT = process.env.WHOOP_REDIRECT_URI || 'https://ffp-passport-backend.vercel.app/api/wearables/whoop/callback';
-const WHOOP_SCOPES = 'offline read:profile read:workout read:sleep read:recovery read:cycle read:body_measurement';
+// Only what we currently use (workouts → activity log). Add read:sleep/read:recovery/read:cycles/read:body_measurement
+// here AND tick them on the WHOOP app when we surface those. NOTE the valid name is read:cycles (plural).
+const WHOOP_SCOPES = 'offline read:profile read:workout';
 const WEARABLE_MEMBER_APP = process.env.MEMBER_APP_URL || 'https://ffppassport.com/ffp-member-dashboard.html';
 
 function mintWearableState(memberId, provider) {
