@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v118
+// FFP Passport — Express Server (Vercel, CommonJS) — v119
+// v119 (2026-06-27): ADMIN BROADCAST TARGETING. POST /api/admin/broadcast now accepts a `segment`
+//      { type:'membership'|'country'|'gender', value } resolved server-side to member_ids (status='active');
+//      'all'/no segment still broadcasts to everyone. In-app rows + phone push both honour the segment.
 // v118 (2026-06-27): ADMIN PROVIDER APPROVAL FIXED. Built the missing POST /api/admin/provision-provider (the
 //      Applications-queue "Approve" button POSTed here but the route never existed → Approve silently failed).
 //      Verifies the admin via their Supabase access JWT (new verifyAdminAccessJwt) + admin_users, then creates/
@@ -2589,9 +2592,26 @@ app.post('/api/admin/broadcast', async (req, res) => {
     if (!adm) return res.status(403).json({ error: 'not admin' });
     if (!b.title) return res.status(400).json({ error: 'title required' });
     const icon = b.icon || 'campaign';
+
+    // v119: AUDIENCE TARGETING. Resolve a segment → member_ids (membership tier / country / gender).
+    // Explicit member_ids[] still win; 'all' (or no segment) stays a single broadcast row to everyone.
+    let memberIds = Array.isArray(b.member_ids) ? b.member_ids.slice() : null;
+    if ((!memberIds || !memberIds.length) && b.segment && b.segment.type && b.segment.type !== 'all') {
+      const seg = b.segment;
+      let q = supabase.from('members').select('id').eq('status', 'active');
+      if (seg.type === 'membership' && seg.value) q = q.eq('membership', seg.value);
+      else if (seg.type === 'country' && seg.value) q = q.eq('country', seg.value);
+      else if (seg.type === 'gender' && seg.value) q = q.eq('gender', seg.value);
+      else return res.status(400).json({ error: 'Unknown audience segment.' });
+      const { data: segRows, error: segErr } = await q;
+      if (segErr) { console.error('[broadcast segment]', segErr.message); return res.status(500).json({ error: segErr.message }); }
+      memberIds = (segRows || []).map(function (r) { return r.id; });
+      if (!memberIds.length) return res.status(400).json({ error: 'No members match that audience.' });
+    }
+
     let rows;
-    if (Array.isArray(b.member_ids) && b.member_ids.length) {
-      rows = b.member_ids.map(function (mid) { return { audience: 'member', member_id: mid, title: b.title, body: b.body || null, icon: icon, link: b.link || null }; });
+    if (Array.isArray(memberIds) && memberIds.length) {
+      rows = memberIds.map(function (mid) { return { audience: 'member', member_id: mid, title: b.title, body: b.body || null, icon: icon, link: b.link || null }; });
     } else {
       rows = [{ audience: 'all', member_id: null, title: b.title, body: b.body || null, icon: icon, link: b.link || null }];
     }
@@ -2600,7 +2620,7 @@ app.post('/api/admin/broadcast', async (req, res) => {
     // v83: also deliver as a PHONE push to opted-in members (rides along with the in-app bell notification).
     try {
       const pl = { title: b.title, body: b.body || '', url: b.link || '/ffp-member-dashboard.html', icon: '/assets/icons/ffp-icon-192.png' };
-      if (Array.isArray(b.member_ids) && b.member_ids.length) { for (const mid of b.member_ids) { await sendPushToMember(mid, pl); } }
+      if (Array.isArray(memberIds) && memberIds.length) { for (const mid of memberIds) { await sendPushToMember(mid, pl); } }
       else { await sendPushToAll(pl); }
     } catch (e) { console.warn('[broadcast push]', e.message); }
     return res.json({ success: true, sent: rows.length });
