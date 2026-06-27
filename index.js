@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v111
+// FFP Passport — Express Server (Vercel, CommonJS) — v112
+// v112 (2026-06-27): COACH NUDGES (Phase 2). evalCoachNudge() — pure rules over member_coach_profile.facts + TODAY's
+//      recovery + whether they logged today → 1 proactive message: recovery_low (ease off), recovery_high (push),
+//      nudge_back (at-risk), momentum (slipping). GET /api/cron/coach-nudges (secret-gated daily @ 03:00 UTC; ?only=
+//      <member|email>, ?dry=1 to preview). Delivered via notifyMember = bell + push, NO email. 1/day enforced by new
+//      member_coach_profile.last_nudge_at/last_nudge_key cols. Honours preferences.no_coach_nudges. AI writes nothing here.
 // v111 (2026-06-27): COACH MEMORY (Phase 1). NEW table member_coach_profile (summary + facts jsonb). computeCoachProfile()
 //      distils each member's recent activities + wearable recovery/sleep/strain + connections into deterministic FACTS
 //      (cadence, momentum, top activity, last-active, latest recovery/sleep, at_risk) + one cheap Haiku "memory" summary.
@@ -4366,6 +4371,63 @@ app.get('/api/cron/coach-profiles', async (req, res) => {
     let done = 0;
     for (let i = 0; i < (members || []).length; i++) { try { await computeCoachProfile(members[i].id); done++; } catch (e) {} }
     return res.json({ success: true, profiled: done, total: (members || []).length });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// COACH NUDGES (Phase 2) — one proactive, "based-on-now" message/member/day via notifyMember (bell + push, NO email).
+// Pure rules over member_coach_profile.facts + TODAY's wearable + whether they've logged today. AI writes nothing here.
+// Honours preferences.no_coach_nudges. 1/day enforced via member_coach_profile.last_nudge_at; same key won't repeat back-to-back.
+// ════════════════════════════════════════════════════════════════════════════
+async function evalCoachNudge(memberId, facts) {
+  const today = new Date().toISOString().slice(0, 10);
+  let rec = null;
+  try { const w = await supabase.from('member_wearable_daily').select('recovery_pct, sleep_hours').eq('member_id', memberId).eq('day', today).maybeSingle(); if (w && w.data) rec = w.data.recovery_pct; } catch (e) {}
+  let actToday = 0;
+  try { const a = await supabase.from('activity_logs').select('id', { count: 'exact', head: true }).eq('member_id', memberId).gte('logged_at', today + 'T00:00:00Z'); if (a && typeof a.count === 'number') actToday = a.count; } catch (e) {}
+  const top = (facts && facts.top_activity) ? facts.top_activity : 'a session';
+  if (rec != null && rec < 34) return { key: 'recovery_low', title: 'Ease off today', body: 'Your recovery is low (' + Math.round(rec) + '%). Keep it light — a walk or some mobility, not a hard session.', icon: 'self_improvement' };
+  if (rec != null && rec >= 67 && actToday === 0) return { key: 'recovery_high', title: "You're primed today", body: "Recovery's high (" + Math.round(rec) + '%). Great day to push — up for ' + top + '?', icon: 'bolt' };
+  if (actToday === 0 && facts && facts.at_risk) return { key: 'nudge_back', title: 'Quick one today?', body: "It's been " + facts.last_active_days + ' days. You usually love ' + top + ' — even 20 minutes counts.', icon: 'directions_run' };
+  if (actToday === 0 && facts && facts.momentum === 'slipping' && facts.last_active_days != null && facts.last_active_days >= 2) return { key: 'momentum', title: 'Keep it rolling', body: 'A short ' + top + ' today keeps your week on track.', icon: 'trending_up' };
+  return null;
+}
+
+// Daily nudge cron (Vercel cron, secret-gated). ?only=<member|email> for a safe single test; ?dry=1 to preview without sending.
+app.get('/api/cron/coach-nudges', async (req, res) => {
+  const secret = process.env.CRON_SECRET || '';
+  const auth = req.headers['authorization'] || '';
+  if (!(secret && (auth === ('Bearer ' + secret) || req.query.secret === secret))) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const only = (req.query.only || '').trim();
+    const dry = req.query.dry === '1' || req.query.dry === 'true';
+    const today = new Date().toISOString().slice(0, 10);
+    // Members with a profile (only they have facts to nudge from).
+    let pq = supabase.from('member_coach_profile').select('member_id, facts, last_nudge_at, last_nudge_key');
+    if (only && only.indexOf('@') === -1) pq = pq.eq('member_id', only);
+    const { data: profiles } = await pq;
+    // Member opt-in / status / email lookup.
+    const ids = (profiles || []).map(function (p) { return p.member_id; });
+    const memMap = {};
+    if (ids.length) { try { const { data: mems } = await supabase.from('members').select('id, email, preferences, role, status').in('id', ids); (mems || []).forEach(function (m) { memMap[m.id] = m; }); } catch (e) {} }
+    let sent = 0, skipped = 0; const preview = [];
+    for (let i = 0; i < (profiles || []).length; i++) {
+      const p = profiles[i]; const m = memMap[p.member_id];
+      if (!m || m.role !== 'member' || m.status !== 'active') { skipped++; continue; }
+      if (only && only.indexOf('@') > -1 && m.email !== only) { skipped++; continue; }
+      const prefs = m.preferences || {};
+      if (prefs.no_coach_nudges === true) { skipped++; continue; }
+      if (p.last_nudge_at && String(p.last_nudge_at).slice(0, 10) === today) { skipped++; continue; }  // already nudged today
+      const n = await evalCoachNudge(p.member_id, p.facts || {});
+      if (!n) { skipped++; continue; }
+      preview.push({ member_id: p.member_id, key: n.key, title: n.title, body: n.body });
+      if (!dry) {
+        try { await notifyMember(p.member_id, { title: n.title, body: n.body, icon: n.icon, link: '/ffp-member-dashboard.html' }); } catch (e) {}
+        try { await supabase.from('member_coach_profile').update({ last_nudge_at: new Date().toISOString(), last_nudge_key: n.key }).eq('member_id', p.member_id); } catch (e) {}
+        sent++;
+      }
+    }
+    return res.json({ success: true, dry: dry, sent: sent, skipped: skipped, candidates: preview });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
