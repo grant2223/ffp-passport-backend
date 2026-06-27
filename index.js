@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v116
+// FFP Passport — Express Server (Vercel, CommonJS) — v117
+// v117 (2026-06-27): NOTIFICATION SEPARATION — notifications.scope ('professional'|'member', set by a BEFORE-INSERT
+//      trigger from the link: *professional-dashboard* → professional, else member). GET /api/notifications/:id now
+//      filters by ?scope= (defaults to 'member', so the Passport bell never shows pro-business alerts; the pro
+//      dashboard passes ?scope=professional). Member app needs no change. Backfilled existing rows.
 // v116 (2026-06-27): COACH support_ops streak/quiet now carry the friend's latest SHARED activity_id so the
 //      "Support your crew" card opens their activity card (to high-five) instead of just their profile page.
 //      pro_workout_log_session shares coach workouts to connections (shared=true). (No new endpoints.)
@@ -2528,12 +2532,14 @@ app.get('/api/notifications/:member_id', async (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');   // v66: feed must never be cached (stale unread/badge)
     const memberId = req.params.member_id || req.query.member_id;       // v67: bell calls /api/notifications/<id> (path param)
     if (!memberId) return res.json({ success: true, notifications: [], unread: 0 });
+    const scope = (req.query.scope === 'professional') ? 'professional' : 'member';   // member app omits the param → member feed only
     const { data: mem } = await supabase.from('members').select('notifs_seen_at').eq('id', memberId).maybeSingle();
     const seenAt = (mem && mem.notifs_seen_at) ? new Date(mem.notifs_seen_at).getTime() : 0;
     const { data: rows, error } = await supabase
       .from('notifications')
-      .select('id, icon, title, body, link, created_at, member_id')
+      .select('id, icon, title, body, link, created_at, member_id, scope')
       .or('member_id.eq.' + memberId + ',member_id.is.null')
+      .eq('scope', scope)
       .order('created_at', { ascending: false })
       .limit(40);
     if (error) { console.error('[notifications] list:', error.message); return res.json({ success: true, notifications: [], unread: 0 }); }
