@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v117
+// FFP Passport — Express Server (Vercel, CommonJS) — v118
+// v118 (2026-06-27): ADMIN PROVIDER APPROVAL FIXED. Built the missing POST /api/admin/provision-provider (the
+//      Applications-queue "Approve" button POSTed here but the route never existed → Approve silently failed).
+//      Verifies the admin via their Supabase access JWT (new verifyAdminAccessJwt) + admin_users, then creates/
+//      upgrades the member + provider with the chosen tier/expiry/fee, marks the application approved, emails the invite.
 // v117 (2026-06-27): NOTIFICATION SEPARATION — notifications.scope ('professional'|'member', set by a BEFORE-INSERT
 //      trigger from the link: *professional-dashboard* → professional, else member). GET /api/notifications/:id now
 //      filters by ?scope= (defaults to 'member', so the Passport bell never shows pro-business alerts; the pro
@@ -1661,6 +1665,24 @@ function verifyProviderToken(token) {
     const [memberId, expStr] = payload.split('.');
     if (!memberId || Number(expStr) < Date.now()) return null;
     return memberId;
+  } catch (_) { return null; }
+}
+
+// v118: Verify an admin's Supabase access JWT (Authorization: Bearer <ffp_jwt>) → members.id.
+// Same HS256/SUPABASE_JWT_SECRET scheme as mintSupabaseJwt. Returns { memberId } or null.
+// Caller must still confirm the member is in admin_users.
+function verifyAdminAccessJwt(authHeaderOrToken) {
+  try {
+    if (!SUPABASE_JWT_SECRET) return null;
+    const parts = String(authHeaderOrToken || '').replace(/^Bearer\s+/i, '').split('.');
+    if (parts.length !== 3) return null;
+    const expect = crypto.createHmac('sha256', SUPABASE_JWT_SECRET).update(parts[0] + '.' + parts[1]).digest('base64url');
+    const a = Buffer.from(parts[2]); const b = Buffer.from(expect);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    if (!payload || !payload.sub) return null;
+    if (payload.exp && Math.floor(Date.now() / 1000) > payload.exp) return null;
+    return { memberId: String(payload.sub) };
   } catch (_) { return null; }
 }
 
@@ -3744,6 +3766,82 @@ app.post('/api/provider/signup', async (req, res) => {
     });
   } catch (error) {
     console.error('[provider/signup] error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// v118: ADMIN — provision a provider from an approved application (the Applications-queue "Approve" action).
+// The admin UI (ffp-admin-applications-loader.js) has always POSTed here, but the route was never built, so
+// Approve silently 404'd. Body: { application_id, subscription_tier, paid_until(ISO), monthly_fee_aed }.
+// Auth: Authorization: Bearer <admin ffp_jwt>. Creates (or upgrades) the member + the provider, stamps the tier/
+// expiry/fee, marks the application approved (reviewed_by/at), and emails the welcome/invite. Mirrors /api/provider/signup.
+app.post('/api/admin/provision-provider', async (req, res) => {
+  try {
+    const auth = verifyAdminAccessJwt(req.headers.authorization || (req.body && req.body.jwt));
+    if (!auth) return res.status(401).json({ error: 'Not authenticated. Please sign in again.' });
+    const { data: adm } = await supabase.from('admin_users').select('id').eq('id', auth.memberId).maybeSingle();
+    if (!adm) return res.status(403).json({ error: 'Admin access required.' });
+
+    const b = req.body || {};
+    const appId = b.application_id;
+    const tier = ['standard', 'premium', 'partner'].includes(b.subscription_tier) ? b.subscription_tier : 'standard';
+    const paidUntil = b.paid_until ? new Date(b.paid_until) : null;
+    const fee = Number(b.monthly_fee_aed);
+    if (!appId) return res.status(400).json({ error: 'Missing application_id.' });
+    if (!paidUntil || isNaN(paidUntil.getTime())) return res.status(400).json({ error: 'Pick a valid subscription end date.' });
+
+    const { data: appRow, error: aErr } = await supabase
+      .from('provider_applications').select('*').eq('id', appId).maybeSingle();
+    if (aErr || !appRow) return res.status(404).json({ error: 'Application not found.' });
+    if (appRow.status === 'approved') return res.status(409).json({ error: 'This application is already approved.' });
+
+    const cleanEmail = String(appRow.email || '').trim().toLowerCase();
+    if (!cleanEmail) return res.status(400).json({ error: 'This application has no email on file.' });
+
+    // Find-or-create the member by email (upgrade an existing account to provider rather than erroring).
+    let { data: member } = await supabase.from('members').select('id, role').eq('email', cleanEmail).maybeSingle();
+    if (!member) {
+      const { hash } = generateCode(); // placeholder access code; replaced when they request a login code
+      const passport_no = `FFP-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9999 + 1)).padStart(4, '0')}`;
+      const ins = await supabase.from('members').insert({
+        email: cleanEmail, full_name: appRow.contact_name || cleanEmail, access_code: hash,
+        role: 'provider', status: 'active', verified: true, passport_no
+      }).select('id, role').single();
+      if (ins.error) { console.error('[provision-provider] member insert:', ins.error); return res.status(500).json({ error: 'Could not create the provider account.' }); }
+      member = ins.data;
+    }
+
+    // Don't double-create a provider for the same owner.
+    const { data: existingProv } = await supabase
+      .from('providers').select('owner_user_id').eq('owner_user_id', member.id).maybeSingle();
+    if (existingProv) {
+      await supabase.from('provider_applications')
+        .update({ status: 'approved', reviewed_by: auth.memberId, reviewed_at: new Date().toISOString() }).eq('id', appId);
+      return res.status(409).json({ error: 'A provider already exists for this email — marked the application approved.' });
+    }
+
+    const { error: pErr } = await supabase.from('providers').insert({
+      owner_user_id: member.id, business_name: appRow.business_name || 'Provider',
+      category: appRow.category || null, provider_type: appRow.provider_type || null,
+      country: appRow.country || null, city: appRow.city || null,
+      contact_email: cleanEmail, contact_phone: appRow.phone || null,
+      website: appRow.website || null, about: appRow.about || null,
+      status: 'approved', approved_at: new Date().toISOString(), approved_by: auth.memberId,
+      subscription_tier: tier, paid_until: paidUntil.toISOString(),
+      monthly_fee_aed: isNaN(fee) ? null : fee, payments_status: 'not_connected'
+    });
+    if (pErr) { console.error('[provision-provider] provider insert:', pErr); return res.status(500).json({ error: 'Could not create the provider profile.' }); }
+
+    await supabase.from('provider_applications')
+      .update({ status: 'approved', reviewed_by: auth.memberId, reviewed_at: new Date().toISOString() }).eq('id', appId);
+
+    let email_sent = false;
+    try { await sendProviderWelcomeEmail(cleanEmail, appRow.business_name || 'your business', appRow.contact_name || '', `${SITE_URL}/login`); email_sent = true; }
+    catch (e) { console.error('[provision-provider] welcome email failed (non-blocking):', e); }
+
+    res.json({ success: true, email_sent, provider_owner: member.id });
+  } catch (error) {
+    console.error('[provision-provider] error:', error);
     res.status(500).json({ error: error.message });
   }
 });
