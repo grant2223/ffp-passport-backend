@@ -1,4 +1,10 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v110
+// FFP Passport — Express Server (Vercel, CommonJS) — v111
+// v111 (2026-06-27): COACH MEMORY (Phase 1). NEW table member_coach_profile (summary + facts jsonb). computeCoachProfile()
+//      distils each member's recent activities + wearable recovery/sleep/strain + connections into deterministic FACTS
+//      (cadence, momentum, top activity, last-active, latest recovery/sleep, at_risk) + one cheap Haiku "memory" summary.
+//      POST /api/coach/profile {refresh} (on-demand, cached 24h). GET /api/cron/coach-profiles (secret-gated nightly batch
+//      — add to vercel.json). Sunday-summary coach_note now reads the profile so the note is personal. Phases 2 (nudges)
+//      + 3 (social accountability) will read the same profile. Spec: FFP-COACH-MEMORY-SPEC.md.
 // v110 (2026-06-27): WHOOP SLEEP + RECOVERY + STRAIN (builds #2/#3). Scopes += read:sleep read:recovery read:cycles
 //      (must be ticked on the WHOOP app; existing users must RE-CONNECT). Sync now also pulls sleep/recovery/cycle
 //      → public.member_wearable_daily (sleep_hours/efficiency/performance, recovery_pct, resting_hr, hrv_ms, strain),
@@ -4271,6 +4277,98 @@ app.post('/api/visits/log', async (req, res) => {
   }
 });
 // ============================================================
+// ════════════════════════════════════════════════════════════════════════════
+// COACH MEMORY (Phase 1) — distil each member's recent data into a living profile the Coach reads.
+// Deterministic facts + one cheap Haiku "summary" (the Coach's private memory). Feeds the Sunday
+// summary now; nudges + social accountability (Phases 2/3) will read the same profile.
+// ════════════════════════════════════════════════════════════════════════════
+async function computeCoachProfile(memberId) {
+  const DAY = 86400000, now = Date.now();
+  // Activities — last 45 days
+  let acts = [];
+  try {
+    const ar = await supabase.from('activity_logs').select('activity, logged_at')
+      .eq('member_id', memberId).gte('logged_at', new Date(now - 45 * DAY).toISOString()).order('logged_at', { ascending: false });
+    acts = (ar && ar.data) ? ar.data : [];
+  } catch (e) {}
+  let thisW = 0, lastW = 0, c30 = 0, lastActiveDays = null; const actCount = {};
+  acts.forEach(function (a) {
+    const t = a.logged_at ? new Date(a.logged_at).getTime() : 0; if (!t) return;
+    const d = (now - t) / DAY;
+    if (d <= 7) thisW++; else if (d <= 14) lastW++;
+    if (d <= 30) c30++;
+    if (lastActiveDays == null) lastActiveDays = Math.floor(d);
+    if (a.activity) actCount[a.activity] = (actCount[a.activity] || 0) + 1;
+  });
+  let topActivity = '', topN = 0;
+  Object.keys(actCount).forEach(function (k) { if (actCount[k] > topN) { topN = actCount[k]; topActivity = k; } });
+  // Wearable — last 14 days
+  let wd = [];
+  try {
+    const wr = await supabase.from('member_wearable_daily').select('day, recovery_pct, sleep_hours, strain')
+      .eq('member_id', memberId).gte('day', new Date(now - 14 * DAY).toISOString().slice(0, 10)).order('day', { ascending: false });
+    wd = (wr && wr.data) ? wr.data : [];
+  } catch (e) {}
+  let latestRec = null, latestStrain = null;
+  for (let i = 0; i < wd.length; i++) { if (latestRec == null && wd[i].recovery_pct != null) latestRec = wd[i].recovery_pct; if (latestStrain == null && wd[i].strain != null) latestStrain = wd[i].strain; }
+  const sl = wd.filter(function (x) { return x.sleep_hours != null; }).slice(0, 7);
+  const avgSleep = sl.length ? Math.round(sl.reduce(function (a, x) { return a + Number(x.sleep_hours); }, 0) / sl.length * 10) / 10 : null;
+  // Connections (best-effort; never breaks the profile)
+  let connections = null;
+  try {
+    const cr = await supabase.from('member_connections').select('id', { count: 'exact', head: true })
+      .or('requester_id.eq.' + memberId + ',addressee_id.eq.' + memberId).eq('status', 'accepted');
+    if (cr && typeof cr.count === 'number') connections = cr.count;
+  } catch (e) {}
+  const facts = {
+    activities_30d: c30,
+    weekly_cadence: Math.round(c30 / 30 * 7 * 10) / 10,
+    top_activity: topActivity || null,
+    last_active_days: lastActiveDays,
+    momentum: thisW > lastW ? 'rising' : (thisW < lastW ? 'slipping' : 'steady'),
+    latest_recovery: latestRec, latest_strain: latestStrain, avg_sleep_7d: avgSleep,
+    connections: connections, at_risk: (lastActiveDays != null && lastActiveDays > 10)
+  };
+  let summary = '';
+  try {
+    if (ANTHROPIC_KEY) {
+      const sys = 'You are Grant, FFP\'s fitness coach. From these JSON facts about ONE member, write 2-3 short sentences (max ~45 words, no emojis) capturing what you know about their training — favourite activity, how often they train, momentum, and recovery/sleep if present. Specific and factual; this is your private memory to personalise future coaching. Speak about them in third person ("they").';
+      const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 150, system: sys, messages: [{ role: 'user', content: JSON.stringify(facts) }] }) });
+      const j = await r.json(); if (r.ok) summary = ((j.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
+    }
+  } catch (e) {}
+  try { await supabase.from('member_coach_profile').upsert({ member_id: memberId, summary: summary || null, facts: facts, updated_at: new Date().toISOString() }, { onConflict: 'member_id' }); } catch (e) {}
+  return { summary: summary, facts: facts };
+}
+
+// On-demand profile (member app posts {refresh}). Returns cached if <24h old, else recomputes.
+app.post('/api/coach/profile', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    const { data: ex } = await supabase.from('member_coach_profile').select('summary, facts, updated_at').eq('member_id', v.memberId).maybeSingle();
+    if (ex && ex.updated_at && (Date.now() - new Date(ex.updated_at).getTime() < 24 * 60 * 60 * 1000)) return res.json({ summary: ex.summary, facts: ex.facts });
+    const p = await computeCoachProfile(v.memberId);
+    return res.json(p);
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// Nightly batch derivation (Vercel cron, secret-gated). ?only=<member|email> for a safe single test.
+app.get('/api/cron/coach-profiles', async (req, res) => {
+  const secret = process.env.CRON_SECRET || '';
+  const auth = req.headers['authorization'] || '';
+  if (!(secret && (auth === ('Bearer ' + secret) || req.query.secret === secret))) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const only = (req.query.only || '').trim();
+    let qy = supabase.from('members').select('id').eq('role', 'member').eq('status', 'active');
+    if (only) qy = (only.indexOf('@') > -1) ? supabase.from('members').select('id').eq('email', only) : supabase.from('members').select('id').eq('id', only);
+    const { data: members } = await qy;
+    let done = 0;
+    for (let i = 0; i < (members || []).length; i++) { try { await computeCoachProfile(members[i].id); done++; } catch (e) {} }
+    return res.json({ success: true, profiled: done, total: (members || []).length });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
 // v54: SUNDAY SUMMARY — weekly digest email (cron-triggered).
 // One email per active member, all 8 areas + City/Gender/Age-group benchmarks,
 // rendered per FFP-EMAIL-STANDARD (no emojis). Data from member_weekly_digest RPC.
@@ -4447,8 +4545,11 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
       try {
         if (ANTHROPIC_KEY) {
           var firstNm = String(m.given_names || m.full_name || 'there').split(' ')[0];
-          var csys = 'You are Grant from FFP, a warm, encouraging fitness coach. Write ONE short coaching note (max 2 sentences, ~35 words, NO emojis) about this member\'s past week. Reference their real numbers, celebrate a win, and give ONE concrete suggestion to be more active next week. Speak directly to them as "you".';
-          var cusr = 'Member first name: ' + firstNm + '. This week — meetups hosted ' + ((d.meetups && d.meetups.hosted) || 0) + ', joined ' + ((d.meetups && d.meetups.joined) || 0) + '; new connections ' + ((d.connections && d.connections.new_this_week) || 0) + '; new venues ' + ((d.places && d.places.venues_new) || 0) + ', new cities ' + ((d.places && d.places.cities_new) || 0) + '; tier ' + (d.tier || 'member') + '. Fitness rankings (JSON): ' + JSON.stringify(d.rankings || []).slice(0, 600);
+          // Coach memory — refresh + read this member's living profile so the note is personal (recovery, cadence, what they love).
+          var _cp = null; try { _cp = await computeCoachProfile(m.id); } catch (e) {}
+          var _cpCtx = _cp ? (' Your memory of them: ' + (_cp.summary || '') + ' Facts(JSON): ' + JSON.stringify(_cp.facts || {}).slice(0, 400)) : '';
+          var csys = 'You are Grant from FFP, a warm, encouraging fitness coach. Write ONE short coaching note (max 2 sentences, ~35 words, NO emojis) about this member\'s past week. Use what you remember about them, reference a real number, celebrate a win, and give ONE concrete suggestion for next week. Speak directly to them as "you".';
+          var cusr = 'Member first name: ' + firstNm + '. This week — meetups hosted ' + ((d.meetups && d.meetups.hosted) || 0) + ', joined ' + ((d.meetups && d.meetups.joined) || 0) + '; new connections ' + ((d.connections && d.connections.new_this_week) || 0) + '; new venues ' + ((d.places && d.places.venues_new) || 0) + ', new cities ' + ((d.places && d.places.cities_new) || 0) + '; tier ' + (d.tier || 'member') + '. Fitness rankings (JSON): ' + JSON.stringify(d.rankings || []).slice(0, 600) + '.' + _cpCtx;
           var cr = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 120, system: csys, messages: [{ role: 'user', content: cusr }] }) });
           var cj = await cr.json();
           if (cr.ok) { d.coach_note = ((cj.content || []).map(function (b) { return b.text || ''; }).join('')).trim(); }
