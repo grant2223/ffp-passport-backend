@@ -1,4 +1,17 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v112
+// FFP Passport — Express Server (Vercel, CommonJS) — v114
+// v114 (2026-06-27): WHOOP SYNC HARDENING — fixes "Sync failed - try again". Root cause: a stale/rejected access token
+//      (401 from WHOOP) had no retry, and any non-OK pull could 500 the whole sync with no visible reason. Now: the
+//      sync's pull() helper force-refreshes the token once on a 401 and retries; non-OK responses record the HTTP
+//      status into wearable_debug + the response `error` (visible, not silent); a dead refresh token returns
+//      {ok:false, reconnect:true, error:'whoop_auth_expired'} (frontend tells the user to reconnect) instead of a
+//      generic 500. getValidWhoopAccess(row, force) added + keeps the in-memory row token current after refresh.
+// v113 (2026-06-27): COACH SOCIAL ACCOUNTABILITY (Phase 3). computeCoachProfile now also derives support_ops from
+//      member_connections (accepted): a connection QUIET (last active 10-60d) → "check on them"; on a STREAK (≥3
+//      consecutive days) → "high-five"; plus the member's own upcoming hosted meetups with open spots → "invite your
+//      crew". Stored in member_coach_profile.support_ops + returned by /api/coach/profile. coach-nudges cron uses
+//      socialNudge() as the fallback when no personal nudge fires. PRIVACY: only activity STATUS (active/quiet/streak)
+//      crosses between members — NEVER another member's health metrics. (Phase 3 = backend + nudge; optional Passport
+//      "Support your crew" card is a separate frontend step.)
 // v112 (2026-06-27): COACH NUDGES (Phase 2). evalCoachNudge() — pure rules over member_coach_profile.facts + TODAY's
 //      recovery + whether they logged today → 1 proactive message: recovery_low (ease off), recovery_high (push),
 //      nudge_back (at-risk), momentum (slipping). GET /api/cron/coach-nudges (secret-gated daily @ 03:00 UTC; ?only=
@@ -2964,14 +2977,17 @@ async function whoopTokenRequest(params) {
   if (!r.ok || !j || !j.access_token) throw new Error('whoop_token_failed');
   return j;
 }
-async function getValidWhoopAccess(row) {
+async function getValidWhoopAccess(row, force) {
   const exp = row.token_expires_at ? new Date(row.token_expires_at).getTime() : 0;
-  if (row.access_token && exp - 60000 > Date.now()) return row.access_token;
+  if (!force && row.access_token && exp - 60000 > Date.now()) return row.access_token;
   const j = await whoopTokenRequest({ grant_type: 'refresh_token', refresh_token: row.refresh_token, client_id: process.env.WHOOP_CLIENT_ID, client_secret: process.env.WHOOP_CLIENT_SECRET, scope: 'offline' });
+  const newExp = new Date(Date.now() + (Number(j.expires_in) || 3600) * 1000).toISOString();
   await supabase.from('member_wearables').update({
     access_token: j.access_token, refresh_token: j.refresh_token || row.refresh_token,
-    token_expires_at: new Date(Date.now() + (Number(j.expires_in) || 3600) * 1000).toISOString(), updated_at: new Date().toISOString()
+    token_expires_at: newExp, updated_at: new Date().toISOString()
   }).eq('id', row.id);
+  // keep the in-memory row current so a forced re-fetch in the same request uses the fresh token
+  row.access_token = j.access_token; row.refresh_token = j.refresh_token || row.refresh_token; row.token_expires_at = newExp;
   return j.access_token;
 }
 async function whoopUpsertActivity(row, workout) {
@@ -3164,25 +3180,38 @@ app.post('/api/wearables/whoop/sync', async (req, res) => {
     if (!v) return res.status(401).json({ error: 'auth' });
     const { data: row } = await supabase.from('member_wearables').select('*').eq('member_id', v.memberId).eq('provider', 'whoop').maybeSingle();
     if (!row) return res.status(400).json({ error: 'not_connected' });
-    const access = await getValidWhoopAccess(row);
     let synced = 0, daily = 0, firstErr = null;
     const note = (e) => { if (!firstErr) firstErr = (e && e.message) || String(e); };
+    // Get a token; if the refresh itself is dead, the connection needs re-linking (not a generic failure).
+    let access;
+    try { access = await getValidWhoopAccess(row, false); }
+    catch (e) { try { await supabase.from('wearable_debug').insert({ context: 'whoop_sync', detail: 'token: ' + ((e && e.message) || e) }); } catch (_) {}
+      return res.json({ ok: false, reconnect: true, error: 'whoop_auth_expired' }); }
+    // Pull helper — on a 401 force-refresh the token once and retry; record the HTTP status on any non-OK so failures are visible.
+    const pull = async (path) => {
+      try {
+        let r = await fetch(WHOOP_API + path, { headers: { Authorization: 'Bearer ' + access } });
+        if (r.status === 401) { try { access = await getValidWhoopAccess(row, true); } catch (e) { note('reauth: ' + ((e && e.message) || e)); return null; } r = await fetch(WHOOP_API + path, { headers: { Authorization: 'Bearer ' + access } }); }
+        if (!r.ok) { note('GET ' + path + ' → ' + r.status); return null; }
+        return await r.json().catch(() => null);
+      } catch (e) { note('GET ' + path + ': ' + ((e && e.message) || e)); return null; }
+    };
     // Workouts → activity_logs
-    const jw = await whoopGetJson('/v2/activity/workout?limit=25', access);
+    const jw = await pull('/v2/activity/workout?limit=25');
     for (const w of (jw && Array.isArray(jw.records) ? jw.records : [])) {
       if (w && w.score_state && w.score_state !== 'SCORED') continue;
       try { await whoopUpsertActivity(row, w); synced++; } catch (e) { note(e); }
     }
     // Sleep / Recovery / Strain → member_wearable_daily
-    const js = await whoopGetJson('/v2/activity/sleep?limit=25', access);
+    const js = await pull('/v2/activity/sleep?limit=25');
     for (const s of (js && Array.isArray(js.records) ? js.records : [])) {
       if (s && s.score_state === 'SCORED' && !s.nap) { try { await whoopUpsertSleep(row, s); daily++; } catch (e) { note(e); } }
     }
-    const jr = await whoopGetJson('/v2/recovery?limit=25', access);
+    const jr = await pull('/v2/recovery?limit=25');
     for (const rec of (jr && Array.isArray(jr.records) ? jr.records : [])) {
       if (rec && rec.score_state === 'SCORED') { try { await whoopUpsertRecovery(row, rec); daily++; } catch (e) { note(e); } }
     }
-    const jc = await whoopGetJson('/v2/cycle?limit=25', access);
+    const jc = await pull('/v2/cycle?limit=25');
     for (const c of (jc && Array.isArray(jc.records) ? jc.records : [])) {
       if (c && c.score_state === 'SCORED') { try { await whoopUpsertCycle(row, c); } catch (e) { note(e); } }
     }
@@ -4318,13 +4347,46 @@ async function computeCoachProfile(memberId) {
   for (let i = 0; i < wd.length; i++) { if (latestRec == null && wd[i].recovery_pct != null) latestRec = wd[i].recovery_pct; if (latestStrain == null && wd[i].strain != null) latestStrain = wd[i].strain; }
   const sl = wd.filter(function (x) { return x.sleep_hours != null; }).slice(0, 7);
   const avgSleep = sl.length ? Math.round(sl.reduce(function (a, x) { return a + Number(x.sleep_hours); }, 0) / sl.length * 10) / 10 : null;
-  // Connections (best-effort; never breaks the profile)
-  let connections = null;
+  // Connections + SOCIAL SUPPORT OPS (Phase 3). Activity STATUS only (active/quiet/streak) — NEVER another member's health.
+  let connections = null; let support_ops = [];
+  const isoDay = function (d) { return d.toISOString().slice(0, 10); };
   try {
-    const cr = await supabase.from('member_connections').select('id', { count: 'exact', head: true })
+    const cr = await supabase.from('member_connections').select('requester_id, addressee_id')
       .or('requester_id.eq.' + memberId + ',addressee_id.eq.' + memberId).eq('status', 'accepted');
-    if (cr && typeof cr.count === 'number') connections = cr.count;
+    const rows = (cr && cr.data) ? cr.data : [];
+    connections = rows.length;
+    const otherIds = rows.map(function (r) { return r.requester_id === memberId ? r.addressee_id : r.requester_id; }).filter(Boolean);
+    if (otherIds.length) {
+      const nm = {};
+      try { const mr = await supabase.from('members').select('id, given_names, full_name').in('id', otherIds); (mr.data || []).forEach(function (x) { nm[x.id] = String(x.given_names || x.full_name || 'A friend').split(' ')[0]; }); } catch (e) {}
+      const dayMap = {};
+      try {
+        const ar2 = await supabase.from('activity_logs').select('member_id, logged_at').in('member_id', otherIds).gte('logged_at', new Date(now - 45 * DAY).toISOString());
+        (ar2.data || []).forEach(function (a) { if (!a.member_id || !a.logged_at) return; const k = new Date(a.logged_at).toISOString().slice(0, 10); (dayMap[a.member_id] = dayMap[a.member_id] || {})[k] = 1; });
+      } catch (e) {}
+      otherIds.forEach(function (id) {
+        const set = dayMap[id]; if (!set) return;                       // never active in window → don't nag about them
+        const keys = Object.keys(set); if (!keys.length) return;
+        let maxT = 0; keys.forEach(function (k) { const t = new Date(k + 'T00:00:00Z').getTime(); if (t > maxT) maxT = t; });
+        const lad = Math.floor((now - maxT) / DAY);
+        let s = 0, d = new Date(); if (!set[isoDay(d)]) d.setUTCDate(d.getUTCDate() - 1); while (set[isoDay(d)]) { s++; d.setUTCDate(d.getUTCDate() - 1); }
+        if (lad >= 10 && lad <= 60) support_ops.push({ kind: 'quiet', member_id: id, name: nm[id] || 'A friend', days: lad });
+        else if (s >= 3) support_ops.push({ kind: 'streak', member_id: id, name: nm[id] || 'A friend', streak: s });
+      });
+    }
   } catch (e) {}
+  // Upcoming meetups THIS member hosts with open spots → invite-your-crew op.
+  try {
+    const mu = await supabase.from('meetups').select('id, title, meets_at, max_people, status').eq('host_member_id', memberId)
+      .gte('meets_at', new Date(now).toISOString()).lte('meets_at', new Date(now + 7 * DAY).toISOString());
+    const muRows = (mu && mu.data) ? mu.data : [];
+    for (let k = 0; k < muRows.length; k++) {
+      const M = muRows[k]; if (M.status === 'cancelled' || !M.max_people) continue;
+      let cnt = 0; try { const ac = await supabase.from('meetup_attendees').select('id', { count: 'exact', head: true }).eq('meetup_id', M.id).neq('status', 'cancelled'); if (ac && typeof ac.count === 'number') cnt = ac.count; } catch (e) {}
+      const spots = M.max_people - cnt; if (spots > 0) support_ops.push({ kind: 'meetup_fill', meetup_id: M.id, title: M.title, spots: spots });
+    }
+  } catch (e) {}
+  support_ops = support_ops.slice(0, 6);
   const facts = {
     activities_30d: c30,
     weekly_cadence: Math.round(c30 / 30 * 7 * 10) / 10,
@@ -4342,8 +4404,8 @@ async function computeCoachProfile(memberId) {
       const j = await r.json(); if (r.ok) summary = ((j.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
     }
   } catch (e) {}
-  try { await supabase.from('member_coach_profile').upsert({ member_id: memberId, summary: summary || null, facts: facts, updated_at: new Date().toISOString() }, { onConflict: 'member_id' }); } catch (e) {}
-  return { summary: summary, facts: facts };
+  try { await supabase.from('member_coach_profile').upsert({ member_id: memberId, summary: summary || null, facts: facts, support_ops: support_ops, updated_at: new Date().toISOString() }, { onConflict: 'member_id' }); } catch (e) {}
+  return { summary: summary, facts: facts, support_ops: support_ops };
 }
 
 // On-demand profile (member app posts {refresh}). Returns cached if <24h old, else recomputes.
@@ -4351,8 +4413,8 @@ app.post('/api/coach/profile', async (req, res) => {
   try {
     const v = verifyRefreshToken((req.body && req.body.refresh) || '');
     if (!v) return res.status(401).json({ error: 'auth' });
-    const { data: ex } = await supabase.from('member_coach_profile').select('summary, facts, updated_at').eq('member_id', v.memberId).maybeSingle();
-    if (ex && ex.updated_at && (Date.now() - new Date(ex.updated_at).getTime() < 24 * 60 * 60 * 1000)) return res.json({ summary: ex.summary, facts: ex.facts });
+    const { data: ex } = await supabase.from('member_coach_profile').select('summary, facts, support_ops, updated_at').eq('member_id', v.memberId).maybeSingle();
+    if (ex && ex.updated_at && (Date.now() - new Date(ex.updated_at).getTime() < 24 * 60 * 60 * 1000)) return res.json({ summary: ex.summary, facts: ex.facts, support_ops: ex.support_ops || [] });
     const p = await computeCoachProfile(v.memberId);
     return res.json(p);
   } catch (e) { return res.status(500).json({ error: e.message }); }
@@ -4393,6 +4455,15 @@ async function evalCoachNudge(memberId, facts) {
   return null;
 }
 
+// Social fallback — if no personal nudge fired, turn the top support op into a "support your crew" message.
+function socialNudge(ops) {
+  const o = (ops && ops.length) ? ops[0] : null; if (!o) return null;
+  if (o.kind === 'quiet') return { key: 'social_quiet', title: 'Check on ' + o.name, body: o.name + " has gone quiet (" + o.days + " days). A quick message might be just what they need.", icon: 'waving_hand', link: '/ffp-member-dashboard.html' };
+  if (o.kind === 'streak') return { key: 'social_streak', title: 'High-five ' + o.name, body: o.name + ' is on a ' + o.streak + '-day streak — send some encouragement.', icon: 'celebration', link: '/ffp-member-dashboard.html' };
+  if (o.kind === 'meetup_fill') return { key: 'social_meetup', title: 'Fill your meet-up', body: '"' + o.title + '" has ' + o.spots + ' spot' + (o.spots > 1 ? 's' : '') + ' left — invite a couple of connections.', icon: 'group_add', link: '/ffp-member-dashboard.html' };
+  return null;
+}
+
 // Daily nudge cron (Vercel cron, secret-gated). ?only=<member|email> for a safe single test; ?dry=1 to preview without sending.
 app.get('/api/cron/coach-nudges', async (req, res) => {
   const secret = process.env.CRON_SECRET || '';
@@ -4403,7 +4474,7 @@ app.get('/api/cron/coach-nudges', async (req, res) => {
     const dry = req.query.dry === '1' || req.query.dry === 'true';
     const today = new Date().toISOString().slice(0, 10);
     // Members with a profile (only they have facts to nudge from).
-    let pq = supabase.from('member_coach_profile').select('member_id, facts, last_nudge_at, last_nudge_key');
+    let pq = supabase.from('member_coach_profile').select('member_id, facts, support_ops, last_nudge_at, last_nudge_key');
     if (only && only.indexOf('@') === -1) pq = pq.eq('member_id', only);
     const { data: profiles } = await pq;
     // Member opt-in / status / email lookup.
@@ -4418,7 +4489,8 @@ app.get('/api/cron/coach-nudges', async (req, res) => {
       const prefs = m.preferences || {};
       if (prefs.no_coach_nudges === true) { skipped++; continue; }
       if (p.last_nudge_at && String(p.last_nudge_at).slice(0, 10) === today) { skipped++; continue; }  // already nudged today
-      const n = await evalCoachNudge(p.member_id, p.facts || {});
+      let n = await evalCoachNudge(p.member_id, p.facts || {});
+      if (!n) n = socialNudge(p.support_ops || []);
       if (!n) { skipped++; continue; }
       preview.push({ member_id: p.member_id, key: n.key, title: n.title, body: n.body });
       if (!dry) {
