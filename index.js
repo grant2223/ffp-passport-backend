@@ -1,4 +1,10 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v114
+// FFP Passport — Express Server (Vercel, CommonJS) — v115
+// v115 (2026-06-27): PRO WORKOUTS (foundation). DB pro_workouts (kind template/assigned/session, exercises jsonb) +
+//      RPCs pro_workout_save / _list / _log_session / _delete. pro_workout_log_session resolves the client's email →
+//      members.id and pushes a finished session to their Passport activity_logs (source='coach', metrics.exercises +
+//      coach name) + notifies them; respects assert_pro_owner. NEW POST /api/pro/workout/draft — AI Coach drafts an
+//      editable workout {title,notes,exercises:[{name,sets:[{reps,weight,effort}],note}]} for the coach to edit, log
+//      live, or assign per day. Pro-dashboard UI is the next layer.
 // v114 (2026-06-27): WHOOP SYNC HARDENING — fixes "Sync failed - try again". Root cause: a stale/rejected access token
 //      (401 from WHOOP) had no retry, and any non-OK pull could 500 the whole sync with no visible reason. Now: the
 //      sync's pull() helper force-refreshes the token once on a 401 and retries; non-OK responses record the HTTP
@@ -2933,6 +2939,41 @@ app.post('/api/nutrition/plan', async (req, res) => {
     var plan = normalizeNutrition(parseWorkoutJSON(text));
     if (!plan || !plan.meals.length) return res.status(502).json({ error: 'ai_bad_output' });
     return res.json({ plan });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// PRO WORKOUT DRAFT — coach asks the AI Coach for a workout; returns an editable structure (exercises + target sets).
+// The coach edits it, then logs it live or assigns it (saved via the pro_workout_* RPCs).
+app.post('/api/pro/workout/draft', async (req, res) => {
+  try {
+    if (!ANTHROPIC_KEY) return res.status(503).json({ error: 'ai_not_configured' });
+    const prompt = String((req.body && req.body.prompt) || '').trim();
+    if (prompt.length < 3) return res.status(400).json({ error: 'prompt required' });
+    const sys =
+      'You are an expert strength & conditioning coach building ONE workout for a client in a coaching app. ' +
+      'Return ONLY valid minified JSON (no markdown, no prose) with this exact shape: ' +
+      '{"title":string,"notes":string,"exercises":[{"name":string,"sets":[{"reps":number,"weight":number,"effort":string}],"note":string}]}. ' +
+      'Rules: 4-8 exercises; each exercise has 2-5 sets; reps are target reps per set; weight is a suggested working weight in kg ' +
+      '(use 0 for bodyweight or when not applicable); effort is one of "easy","moderate","hard","max"; note is a short cue (<= 10 words, may be empty); ' +
+      'title is short (e.g. "Upper Body Strength"); notes is one short coaching line. Respect any stated goal, level, equipment, injury, body part or session length. Output JSON only.';
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1800, system: sys, messages: [{ role: 'user', content: prompt }] })
+    });
+    const j = await r.json();
+    if (!r.ok) { console.error('[pro draft] anthropic:', j && j.error); return res.status(502).json({ error: 'ai_error', detail: (j && j.error && j.error.message) || '' }); }
+    var text = ''; try { text = (j.content || []).map(function (b) { return b.text || ''; }).join('').trim(); } catch (e) {}
+    var draft = parseWorkoutJSON(text);
+    if (!draft || !Array.isArray(draft.exercises) || !draft.exercises.length) return res.status(502).json({ error: 'ai_bad_output' });
+    // Normalise: ensure each exercise has a sets array of {reps,weight,effort}.
+    draft.exercises = draft.exercises.slice(0, 12).map(function (ex) {
+      var sets = Array.isArray(ex.sets) ? ex.sets : [];
+      if (!sets.length) { var n = Math.max(1, Math.min(6, Number(ex.sets) || 3)); for (var i = 0; i < n; i++) sets.push({ reps: Number(ex.reps) || 10, weight: Number(ex.weight) || 0, effort: ex.effort || 'moderate' }); }
+      sets = sets.slice(0, 8).map(function (s) { return { reps: Number(s.reps) || 0, weight: Number(s.weight) || 0, effort: String(s.effort || 'moderate') }; });
+      return { name: String(ex.name || 'Exercise').slice(0, 80), sets: sets, note: String(ex.note || '').slice(0, 120) };
+    });
+    return res.json({ ok: true, title: String(draft.title || 'Workout').slice(0, 80), notes: String(draft.notes || '').slice(0, 200), exercises: draft.exercises });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
