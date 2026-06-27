@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v115
+// FFP Passport — Express Server (Vercel, CommonJS) — v116
+// v116 (2026-06-27): COACH support_ops streak/quiet now carry the friend's latest SHARED activity_id so the
+//      "Support your crew" card opens their activity card (to high-five) instead of just their profile page.
+//      pro_workout_log_session shares coach workouts to connections (shared=true). (No new endpoints.)
 // v115 (2026-06-27): PRO WORKOUTS (foundation). DB pro_workouts (kind template/assigned/session, exercises jsonb) +
 //      RPCs pro_workout_save / _list / _log_session / _delete. pro_workout_log_session resolves the client's email →
 //      members.id and pushes a finished session to their Passport activity_logs (source='coach', metrics.exercises +
@@ -4400,10 +4403,14 @@ async function computeCoachProfile(memberId) {
     if (otherIds.length) {
       const nm = {};
       try { const mr = await supabase.from('members').select('id, given_names, full_name').in('id', otherIds); (mr.data || []).forEach(function (x) { nm[x.id] = String(x.given_names || x.full_name || 'A friend').split(' ')[0]; }); } catch (e) {}
-      const dayMap = {};
+      const dayMap = {}; const latestShared = {};   // latestShared[member] = their most recent SHARED activity id (to high-five)
       try {
-        const ar2 = await supabase.from('activity_logs').select('member_id, logged_at').in('member_id', otherIds).gte('logged_at', new Date(now - 45 * DAY).toISOString());
-        (ar2.data || []).forEach(function (a) { if (!a.member_id || !a.logged_at) return; const k = new Date(a.logged_at).toISOString().slice(0, 10); (dayMap[a.member_id] = dayMap[a.member_id] || {})[k] = 1; });
+        const ar2 = await supabase.from('activity_logs').select('id, member_id, logged_at, shared').in('member_id', otherIds).gte('logged_at', new Date(now - 45 * DAY).toISOString()).order('logged_at', { ascending: false });
+        (ar2.data || []).forEach(function (a) {
+          if (!a.member_id || !a.logged_at) return;
+          const k = new Date(a.logged_at).toISOString().slice(0, 10); (dayMap[a.member_id] = dayMap[a.member_id] || {})[k] = 1;
+          if (a.shared && !latestShared[a.member_id]) latestShared[a.member_id] = a.id;   // first (most recent) shared
+        });
       } catch (e) {}
       otherIds.forEach(function (id) {
         const set = dayMap[id]; if (!set) return;                       // never active in window → don't nag about them
@@ -4411,8 +4418,8 @@ async function computeCoachProfile(memberId) {
         let maxT = 0; keys.forEach(function (k) { const t = new Date(k + 'T00:00:00Z').getTime(); if (t > maxT) maxT = t; });
         const lad = Math.floor((now - maxT) / DAY);
         let s = 0, d = new Date(); if (!set[isoDay(d)]) d.setUTCDate(d.getUTCDate() - 1); while (set[isoDay(d)]) { s++; d.setUTCDate(d.getUTCDate() - 1); }
-        if (lad >= 10 && lad <= 60) support_ops.push({ kind: 'quiet', member_id: id, name: nm[id] || 'A friend', days: lad });
-        else if (s >= 3) support_ops.push({ kind: 'streak', member_id: id, name: nm[id] || 'A friend', streak: s });
+        if (lad >= 10 && lad <= 60) support_ops.push({ kind: 'quiet', member_id: id, name: nm[id] || 'A friend', days: lad, activity_id: latestShared[id] || null });
+        else if (s >= 3) support_ops.push({ kind: 'streak', member_id: id, name: nm[id] || 'A friend', streak: s, activity_id: latestShared[id] || null });
       });
     }
   } catch (e) {}
