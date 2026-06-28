@@ -1,4 +1,6 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v122
+// FFP Passport — Express Server (Vercel, CommonJS) — v123
+// v123 (2026-06-28): calendar add-event now honours an `event.tz` (sets start/end timeZone) so appointments land
+//      at the right local time. Pro scheduling "Add to my Google Calendar" per occurrence uses it.
 // v122 (2026-06-28): GOOGLE CALENDAR connector (shared by Professionals dashboard + Booking app). Tables
 //      google_calendar + calendar_oauth_states. OAuth2: POST /api/calendar/google/connect {refresh,return_to?}
 //      → consent URL; GET /api/calendar/google/callback stores tokens; /status, /disconnect; POST /api/calendar/add-event
@@ -3343,8 +3345,8 @@ async function gcalAddEvent(memberId, ev) {
       summary: ev.summary || 'FFP booking',
       description: ev.description || '',
       location: ev.location || '',
-      start: { dateTime: ev.start },
-      end: { dateTime: ev.end || ev.start }
+      start: ev.tz ? { dateTime: ev.start, timeZone: ev.tz } : { dateTime: ev.start },
+      end:   ev.tz ? { dateTime: ev.end || ev.start, timeZone: ev.tz } : { dateTime: ev.end || ev.start }
     };
     const r = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + cal + '/events', {
       method: 'POST', headers: { 'Authorization': 'Bearer ' + access, 'Content-Type': 'application/json' },
