@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v126
+// FFP Passport — Express Server (Vercel, CommonJS) — v127
+// v127 (2026-06-28): AI PARSE kind:'activity' now also extracts steps, max_heart_rate and hr_zones_min
+//      (z1..z5 minutes) so the Log Activity AI agent fills those fields too (was only activity/duration/
+//      distance/calories/avg_hr/date/time/location/notes). Frontend maps them to log-steps/log-maxhr/log-z1..5.
 // v126 (2026-06-28): SUNDAY SUMMARY redesign (approved mockup) — flat, graph-led, NO boxes/pills. Ranking PILLS →
 //      horizontal bars; coach note + tier status de-boxed (flat left-accent / inline bar); added a 7-day "week in
 //      motion" bar graph, a Nutrition strip, a WHOOP recovery line, a top milestone banner, and a Connect/Engage/Track
@@ -3640,9 +3643,10 @@ app.post('/api/ai/parse', async (req, res) => {
         'If the user does NOT say which meal, set meal to "". Do NOT guess from the time of day. Output JSON only.';
     } else if (kind === 'activity') {
       sys = 'You convert a typed/spoken description of a workout or activity into structured data. ' +
-        'Return ONLY valid minified JSON: {"activity":string,"duration_min":number,"distance_km":number,"calories":number,"avg_heart_rate":number,"date":string,"time":string,"location":string,"notes":string}. ' +
+        'Return ONLY valid minified JSON: {"activity":string,"duration_min":number,"distance_km":number,"calories":number,"avg_heart_rate":number,"steps":number,"max_heart_rate":number,"hr_zones_min":{"z1":number,"z2":number,"z3":number,"z4":number,"z5":number},"date":string,"time":string,"location":string,"notes":string}. ' +
         'activity is a short title like "Running" or "Yoga". Estimate duration_min and realistic calories burned; distance_km 0 if none. ' +
-        'avg_heart_rate is bpm if mentioned (e.g. "avg HR 121") else 0. ' +
+        'avg_heart_rate is bpm if mentioned (e.g. "avg HR 121") else 0. steps is the step count if mentioned (e.g. "8000 steps") else 0. max_heart_rate is peak bpm if mentioned (e.g. "max HR 178" or "peaked at 182") else 0. ' +
+        'hr_zones_min = minutes spent in each heart-rate zone if mentioned (e.g. "10 min in zone 3", "z4 for 5 minutes"): z1..z5 each a whole number of minutes, 0 for any zone not mentioned. Do NOT invent zone splits — only fill zones the user actually states. ' +
         'Resolve relative dates/times (e.g. "this morning", "yesterday at 6am") against the current local datetime given in the user message: ' +
         'date as "YYYY-MM-DD" and time as 24-hour "HH:MM"; use "" if not stated. ' +
         'location is the place/venue name if mentioned (e.g. "Kite Beach") else "". notes is a short remark. Output JSON only.';
@@ -3690,6 +3694,12 @@ app.post('/api/ai/parse', async (req, res) => {
     } else if (kind === 'activity') {
       var dk = Number(parsed.distance_km);
       var hr = Number(parsed.avg_heart_rate);
+      var stp = Number(parsed.steps);
+      var mhr = Number(parsed.max_heart_rate);
+      var zsrc = (parsed.hr_zones_min && typeof parsed.hr_zones_min === 'object') ? parsed.hr_zones_min : {};
+      var zMin = function (v) { var n = Number(v); return (isNaN(n) || n <= 0) ? 0 : Math.round(n); };
+      var zones = { z1: zMin(zsrc.z1), z2: zMin(zsrc.z2), z3: zMin(zsrc.z3), z4: zMin(zsrc.z4), z5: zMin(zsrc.z5) };
+      var anyZone = zones.z1 || zones.z2 || zones.z3 || zones.z4 || zones.z5;
       var d = String(parsed.date || '').trim(); if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) d = '';
       var tm = String(parsed.time || '').trim(); if (!/^\d{2}:\d{2}$/.test(tm)) tm = '';
       return res.json({ activity: {
@@ -3698,6 +3708,9 @@ app.post('/api/ai/parse', async (req, res) => {
         distance_km: (isNaN(dk) || dk <= 0) ? null : +dk.toFixed(2),
         calories: Math.max(0, Math.round(Number(parsed.calories) || 0)),
         avg_heart_rate: (isNaN(hr) || hr <= 0) ? null : Math.round(hr),
+        steps: (isNaN(stp) || stp <= 0) ? null : Math.round(stp),
+        max_heart_rate: (isNaN(mhr) || mhr <= 0) ? null : Math.round(mhr),
+        hr_zones_min: anyZone ? zones : null,
         date: d, time: tm, location: String(parsed.location || '').trim(),
         notes: String(parsed.notes || '').trim()
       } });
