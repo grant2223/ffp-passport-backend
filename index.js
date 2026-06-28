@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v125
+// FFP Passport — Express Server (Vercel, CommonJS) — v126
+// v126 (2026-06-28): SUNDAY SUMMARY redesign (approved mockup) — flat, graph-led, NO boxes/pills. Ranking PILLS →
+//      horizontal bars; coach note + tier status de-boxed (flat left-accent / inline bar); added a 7-day "week in
+//      motion" bar graph, a Nutrition strip, a WHOOP recovery line, a top milestone banner, and a Connect/Engage/Track
+//      nudge block (drives platform behaviour). Cron enriches the digest with week_days/active_days, nutrition
+//      (food_logs), wearable (member_wearable_daily), milestone (member_milestones) — all defensive (sections hide if absent).
 // v125 (2026-06-28): NATIVE PUSH (Phase 1). New table device_push_tokens + POST /api/push/register-device |
 //      /api/push/unregister-device. sendPushToMember/sendPushToAll now ALSO send via FCM HTTP v1 (service-account
 //      JWT→token, prune UNREGISTERED) alongside web push — so milestones/bookings/coach/broadcasts reach native
@@ -5016,7 +5021,9 @@ function renderSundaySummary(name, d){
   // v58: DARK FFP-brand layout (matches homepage + approved FFP-SUNDAY-SUMMARY mockup).
   // Email-safe: tables + inline styles, no icon fonts, no emojis (geometric arrows only).
   var C = { accent:'#2ba8e0', yellow:'#FFCC00', white:'#ffffff', soft:'#b8d4e0', mut:'#9dbdd0', dim:'#6a90a8', green:'#22c55e', cell:'#0f1e2e', line:'rgba(43,168,224,.20)' };
-  function ssEye(t){ return '<span style="display:inline-block;background:rgba(43,168,224,.12);border:1px solid rgba(43,168,224,.35);border-radius:100px;padding:6px 15px;font-size:10px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;color:'+C.accent+';">'+t+'</span>'; }
+  function ssEye(t){ return '<div style="font-size:11px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;color:'+C.accent+';">'+t+'</div>'; }
+  function ssGraphRow(label, value, caption, pct){ pct=Math.max(0,Math.min(100,Math.round(pct||0))); return '<div style="padding:14px 0;border-bottom:1px solid rgba(43,168,224,.12);"><table role="presentation" width="100%"><tr><td style="font-size:14px;font-weight:800;color:'+C.white+';">'+label+'</td><td align="right" style="font-size:13px;color:'+C.soft+';">'+value+(caption?(' &middot; <span style="color:'+C.yellow+';font-weight:800;">'+caption+'</span>'):'')+'</td></tr></table><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px;"><tr><td width="'+pct+'%" style="background:'+C.accent+';height:6px;font-size:0;line-height:6px;border-radius:4px 0 0 4px;">&nbsp;</td><td width="'+(100-pct)+'%" style="background:rgba(255,255,255,.08);height:6px;font-size:0;line-height:6px;border-radius:0 4px 4px 0;">&nbsp;</td></tr></table></div>'; }
+  function ssNudge(icon, title, body){ return '<table role="presentation" width="100%" style="border-bottom:1px solid rgba(43,168,224,.12);"><tr><td width="34" valign="top" style="padding:12px 0;"><div style="width:24px;height:24px;border-radius:50%;background:rgba(43,168,224,.16);color:'+C.accent+';text-align:center;line-height:24px;font-weight:900;font-size:13px;">'+icon+'</div></td><td valign="top" style="padding:12px 0 12px 10px;"><div style="font-size:13.5px;font-weight:800;color:'+C.white+';">'+title+'</div><div style="font-size:12.5px;color:'+C.soft+';line-height:1.5;margin-top:2px;">'+body+'</div></td></tr></table>'; }
   function ssRule(){ return '<div style="height:2px;background:rgba(43,168,224,.45);border-radius:2px;margin:12px 0 0;"></div>'; }
   function ssMetric(label, value, delta, dCol, last){
     return '<table role="presentation" width="100%"'+(last?'':' style="border-bottom:1px solid rgba(43,168,224,.16);"')+'><tr><td style="padding:16px 0;">'
@@ -5039,13 +5046,13 @@ function renderSundaySummary(name, d){
   // ---- MY FITNESS STATS — real per-stat rank (City/Gender/Age cohorts pending a ranking-data build) ----
   var fitHtml;
   if (rankings.length >= 1) {
-    var fr = rankings.map(function(r, i){
-      var last = i===rankings.length-1;
+    var fr = rankings.map(function(r){
       if (r.missing) {   // not logged yet → prompt them to add it (drives usage)
-        return ssRankRow(r.label, '&#8212;', '<a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:'+C.accent+';text-decoration:none;font-weight:800;">+ Add your number &#8250;</a>', last);
+        return ssGraphRow(r.label, '<a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:'+C.accent+';text-decoration:none;font-weight:800;">+ Add yours &#8250;</a>', '', 0);
       }
-      var rk = (r.total>=3) ? ('#'+r.rank+' of '+r.total+(grp.city?(' in '+grp.city):'')) : 'Your personal best';
-      return ssRankRow(r.label, r.display, rk, last);
+      var pct = (r.total>0) ? Math.round((r.total - r.rank + 1)/r.total*100) : 60;
+      var cap = (r.total>=3) ? ('top '+Math.max(1,Math.round(r.rank/r.total*100))+'%'+(grp.city?(' in '+grp.city):'')) : 'personal best';
+      return ssGraphRow(r.label, r.display, cap, pct);
     }).join('');
     fitHtml = '<tr><td style="padding:28px 30px 0;">'+ssEye('My fitness stats')+'<div style="font-size:12px;color:'+C.dim+';margin:11px 0 0;font-weight:700;">how you rank'+(grp.city?(' in '+grp.city):' in the community')+'</div>'+ssRule()+'</td></tr>'
       +'<tr><td style="padding:0 30px;">'+fr+'</td></tr>';
@@ -5085,6 +5092,56 @@ function renderSundaySummary(name, d){
       + '<table role="presentation" width="100%" style="background:'+C.cell+';border:1px solid '+C.line+';border-radius:14px;margin-top:14px;"><tr><td style="padding:16px 18px;font-size:13px;color:'+C.soft+';line-height:1.6;"><strong style="color:'+C.white+';">Ambassador</strong> — the top tier. Keep your sections active over the next 30 days to hold your status and your 20% referral rewards.</td></tr></table></td></tr>';
   }
 
+  // ---- NEW redesigned, graph-led sections (flat — no boxes, no pills) ----
+  var wdArr = d.week_days || [0,0,0,0,0,0,0];
+  var wdMax = Math.max.apply(null, wdArr.concat([1]));
+  var dayLbls = ['M','T','W','T','F','S','S'];
+  var bars = wdArr.map(function(n){ var h = n>0 ? Math.round(14 + (n/wdMax)*52) : 8; var col = n>0 ? C.yellow : 'rgba(255,255,255,.10)'; return '<td style="text-align:center;vertical-align:bottom;"><div style="margin:0 auto;width:58%;height:'+h+'px;background:'+col+';border-radius:4px 4px 0 0;font-size:0;line-height:'+h+'px;">&nbsp;</div></td>'; }).join('');
+  var dlbls = dayLbls.map(function(x){ return '<td style="text-align:center;padding-top:6px;font-size:10px;color:'+C.dim+';font-weight:700;">'+x+'</td>'; }).join('');
+  var graphHtml = '<tr><td style="padding:28px 30px 0;">'+ssEye('Your week in motion')+ssRule()
+    +'<table role="presentation" width="100%" style="margin-top:16px;"><tr style="vertical-align:bottom;">'+bars+'</tr>'
+    +'<tr><td colspan="7" style="height:1px;background:rgba(43,168,224,.16);"></td></tr><tr>'+dlbls+'</tr></table>'
+    +'<div style="font-size:12.5px;color:'+C.soft+';margin-top:12px;">'+(d.active_days||0)+' active day'+((d.active_days===1)?'':'s')+' this week.</div></td></tr>';
+
+  var nutriHtml = '';
+  if (d.nutrition && d.nutrition.days_logged) {
+    nutriHtml = '<tr><td style="padding:26px 30px 0;">'+ssEye('Nutrition')+ssRule()
+      + ssMetric('Avg daily calories', (d.nutrition.avg_kcal||0), '', C.dim)
+      + ssMetric('Days logged', (d.nutrition.days_logged||0)+' / 7', '', C.dim, true)+'</td></tr>';
+  }
+  var wearHtml = '';
+  if (d.wearable && (d.wearable.avg_recovery!=null || d.wearable.avg_strain!=null)) {
+    wearHtml = '<tr><td style="padding:26px 30px 0;">'+ssEye('Recovery (WHOOP)')+ssRule()
+      + (d.wearable.avg_recovery!=null ? ssMetric('Avg recovery', d.wearable.avg_recovery+'%', '', C.dim, (d.wearable.avg_strain==null)) : '')
+      + (d.wearable.avg_strain!=null ? ssMetric('Avg strain', d.wearable.avg_strain, '', C.dim, true) : '')+'</td></tr>';
+  }
+  var mileBanner = '';
+  if (d.milestone && d.milestone.title) {
+    mileBanner = '<tr><td style="padding:20px 30px 0;text-align:center;"><div style="font-size:13px;color:'+C.yellow+';font-weight:800;">&#127941; '+d.milestone.title+'</div>'+(d.milestone.body?('<div style="font-size:12px;color:'+C.soft+';margin-top:3px;">'+d.milestone.body+'</div>'):'')+'</td></tr>';
+  }
+  var cTotal = cn.total||0, cNew = cn.new_this_week||0;
+  var connectBody = (cTotal? ('You’ve made '+cTotal+' connection'+(cTotal===1?'':'s')+(cNew?(' (+'+cNew+' this week)'):'')+'. ') : 'People who train where you do are on FFP. ')+'<a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:'+C.accent+';text-decoration:none;font-weight:700;">Find your crew &#8250;</a>';
+  var engageBody = (meetTotal? ('You joined '+meetTotal+' meet-up'+(meetTotal===1?'':'s')+' — keep it going. ') : 'Train with people near you this week. ')+'<a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:'+C.accent+';text-decoration:none;font-weight:700;">Find a meet-up &#8250;</a>';
+  var ad = d.active_days||0;
+  var trackBody = 'You logged '+ad+' of 7 days'+(ad>=5?' — strong week! ':' — log today to build your streak. ')+'<a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:'+C.accent+';text-decoration:none;font-weight:700;">Log an activity &#8250;</a>';
+  var nudgesHtml = '<tr><td style="padding:28px 30px 0;">'+ssEye('Keep building')+ssRule()+'<div style="margin-top:6px;">'+ssNudge('&#8599;','Connect',connectBody)+ssNudge('&#9678;','Engage',engageBody)+ssNudge('&#10003;','Track',trackBody)+'</div></td></tr>';
+
+  var nextTier2 = curTier==='member' ? 'Supporter' : (curTier==='supporter' ? 'Ambassador' : null);
+  var statusFlat;
+  if (nextTier2) {
+    var goal2 = nextTier2==='Ambassador' ? 'a' : 's';
+    var met2=0, closest2=[];
+    Object.keys(SS_TARGETS).forEach(function(k){ var tgt=SS_TARGETS[k][goal2], have=tp[k]||0; if(have>=tgt) met2++; else { var rem=tgt-have; closest2.push({rem:rem, txt:rem+' more '+SS_TARGETS[k].u+(rem>1?'s':'')}); } });
+    closest2.sort(function(a,b){ return a.rem-b.rem; });
+    statusFlat = '<tr><td style="padding:28px 30px 0;">'+ssEye('Passport status')+ssRule()
+      + '<table role="presentation" width="100%" style="margin-top:14px;"><tr><td style="font-size:14px;color:'+C.white+';font-weight:800;">'+tierName+'</td><td align="right" style="font-size:12px;color:'+C.mut+';">'+met2+' of 4 toward '+nextTier2+'</td></tr></table>'
+      + ssBarDark(Math.min(100, Math.round(met2/4*100)))
+      + (closest2.length ? '<div style="font-size:12px;color:'+C.soft+';margin-top:10px;line-height:1.5;">Closest: <strong style="color:'+C.white+';">'+closest2.slice(0,2).map(function(c){return c.txt;}).join(' &middot; ')+'</strong></div>' : '<div style="font-size:12px;color:'+C.green+';font-weight:700;margin-top:10px;">You’re at '+nextTier2+' level — you are there.</div>')+'</td></tr>';
+  } else {
+    statusFlat = '<tr><td style="padding:28px 30px 0;">'+ssEye('Passport status')+ssRule()
+      + '<div style="font-size:13px;color:'+C.soft+';line-height:1.6;margin-top:12px;"><strong style="color:'+C.white+';">Ambassador</strong> — the top tier. Keep your sections active to hold your status and your 20% referral rewards.</div></td></tr>';
+  }
+
   var didStuff = rankings.length || (places.venues_new||0) || (places.cities_new||0) || (cn.new_this_week||0) || meetTotal || (tp.activities_logged||0);
   var greet = (didStuff ? ('Well done, '+name) : ('Hey, '+name)) + '.';
   var sub = didStuff
@@ -5095,14 +5152,18 @@ function renderSundaySummary(name, d){
   +'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#050d16;"><tr><td align="center" style="padding:24px 14px;">'
   +'<table role="presentation" width="500" cellpadding="0" cellspacing="0" style="max-width:500px;width:100%;background:#081420;border:1px solid rgba(43,168,224,.25);border-radius:18px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
   +'<tr><td style="padding:32px 30px 0;text-align:center;"><img src="https://ffppassport.com/assets/ffp-emblem.png" alt="FFP" width="60" style="display:inline-block;border:0;"><div style="font-size:11px;color:'+C.accent+';letter-spacing:2.5px;text-transform:uppercase;font-weight:800;margin-top:14px;">Sunday Summary &nbsp;&middot;&nbsp; '+ss_date(d.week_start)+' &ndash; '+ss_date(d.week_end)+'</div></td></tr>'
-  +'<tr><td style="padding:24px 30px 0;text-align:center;"><div style="font-size:11px;color:'+C.mut+';letter-spacing:2px;text-transform:uppercase;font-weight:700;">Your current status</div><div style="font-size:42px;font-weight:900;color:'+C.yellow+';letter-spacing:-1px;line-height:1;margin-top:8px;">'+tierName+'</div><div style="height:3px;width:46px;background:rgba(43,168,224,.5);border-radius:2px;margin:16px auto 0;"></div></td></tr>'
-  +'<tr><td style="padding:24px 30px 0;"><div style="display:inline-block;font-size:25px;font-weight:900;color:'+C.white+';letter-spacing:-.5px;border-bottom:3px solid '+C.yellow+';padding-bottom:6px;">'+greet+'</div><div style="font-size:14px;color:'+C.soft+';line-height:1.6;margin-top:12px;">'+sub+'</div></td></tr>'
-  + (d.coach_note ? '<tr><td style="padding:18px 30px 0;"><table role="presentation" width="100%" style="background:rgba(255,204,0,.10);border:1px solid rgba(255,204,0,.32);border-radius:14px;"><tr><td style="padding:16px 18px;"><div style="font-size:11px;color:'+C.yellow+';letter-spacing:1.5px;text-transform:uppercase;font-weight:800;margin-bottom:6px;">Grant&#39;s note</div><div style="font-size:13.5px;color:'+C.white+';line-height:1.6;">'+d.coach_note+'</div></td></tr></table></td></tr>' : '')
-  + fitHtml
+  + mileBanner
+  +'<tr><td style="padding:22px 30px 0;"><div style="font-size:25px;font-weight:900;color:'+C.white+';letter-spacing:-.5px;">'+greet+'</div><div style="font-size:14px;color:'+C.soft+';line-height:1.6;margin-top:8px;">'+sub+'</div></td></tr>'
+  + (d.coach_note ? '<tr><td style="padding:22px 30px 0;"><div style="border-left:3px solid '+C.yellow+';padding-left:14px;"><div style="font-size:10.5px;color:'+C.yellow+';letter-spacing:1.5px;text-transform:uppercase;font-weight:800;">Grant&#39;s note</div><div style="font-size:14px;color:'+C.white+';line-height:1.65;margin-top:7px;font-style:italic;">'+d.coach_note+'</div></div></td></tr>' : '')
   + worldHtml
-  + statusHtml
-  +'<tr><td style="padding:30px 30px 6px;text-align:center;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;background:'+C.accent+';color:#fff;text-decoration:none;font-size:16px;font-weight:800;padding:16px 44px;border-radius:12px;letter-spacing:.3px;">Open your passport</a></td></tr>'
-  +'<tr><td style="padding:24px 30px 30px;text-align:center;"><div style="border-top:1px solid rgba(43,168,224,.12);padding-top:18px;font-size:12px;color:'+C.mut+';font-weight:600;">FFP Passport &middot; UAE 2026 &middot; ffppassport.com</div></td></tr>'
+  + graphHtml
+  + nutriHtml
+  + wearHtml
+  + fitHtml
+  + nudgesHtml
+  + statusFlat
+  +'<tr><td style="padding:32px 30px 6px;text-align:center;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;background:'+C.accent+';color:#04121d;text-decoration:none;font-size:15px;font-weight:900;padding:15px 40px;border-radius:11px;letter-spacing:.3px;">Open your Passport</a></td></tr>'
+  +'<tr><td style="padding:22px 30px 30px;text-align:center;"><div style="border-top:1px solid rgba(43,168,224,.12);padding-top:18px;font-size:11px;color:'+C.mut+';font-weight:600;line-height:1.6;">Find Fit People &middot; Dubai 2026 &middot; ffppassport.com</div></td></tr>'
   +'</table></td></tr></table>';
 }
 // Cron endpoint (Vercel Cron sends Authorization: Bearer ${CRON_SECRET}). Also accepts ?secret= for manual test runs.
@@ -5143,6 +5204,35 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
       var tprog = await supabase.rpc('member_tier_progress', { p_me: m.id });
       d.tier_progress = (tprog && !tprog.error && tprog.data) ? tprog.data : {};
       d.tier = m.tier || 'member';
+      // --- v126 enrich for the redesigned email (all defensive; each section hides if its data is absent) ---
+      var _ws = d.week_start ? new Date(d.week_start) : new Date(Date.now() - 6 * 864e5);
+      var _we = d.week_end ? new Date(new Date(d.week_end).getTime() + 864e5) : new Date(Date.now() + 864e5);
+      d.week_days = [0, 0, 0, 0, 0, 0, 0];
+      try {
+        var _al = await supabase.from('activity_logs').select('logged_at').eq('member_id', m.id).gte('logged_at', _ws.toISOString()).lt('logged_at', _we.toISOString());
+        (_al.data || []).forEach(function (r) { var dt = new Date(r.logged_at); d.week_days[(dt.getUTCDay() + 6) % 7]++; });
+      } catch (e) {}
+      d.active_days = d.week_days.filter(function (n) { return n > 0; }).length;
+      d.nutrition = null;
+      try {
+        var _fl = await supabase.from('food_logs').select('logged_at, calories').eq('member_id', m.id).gte('logged_at', _ws.toISOString()).lt('logged_at', _we.toISOString());
+        var _fr = _fl.data || [];
+        if (_fr.length) { var _dd = {}, _tot = 0; _fr.forEach(function (r) { _tot += Number(r.calories || 0); _dd[String(r.logged_at).slice(0, 10)] = 1; }); var _nd = Object.keys(_dd).length; d.nutrition = { days_logged: _nd, avg_kcal: _nd ? Math.round(_tot / _nd) : 0 }; }
+      } catch (e) {}
+      d.wearable = null;
+      try {
+        var _wd = await supabase.from('member_wearable_daily').select('recovery_pct, strain').eq('member_id', m.id).gte('day', _ws.toISOString().slice(0, 10)).lte('day', _we.toISOString().slice(0, 10));
+        var _rs = (_wd.data || []).filter(function (r) { return r.recovery_pct != null; }), _st = (_wd.data || []).filter(function (r) { return r.strain != null; });
+        if (_rs.length || _st.length) d.wearable = {
+          avg_recovery: _rs.length ? Math.round(_rs.reduce(function (a, r) { return a + Number(r.recovery_pct); }, 0) / _rs.length) : null,
+          avg_strain: _st.length ? (Math.round(_st.reduce(function (a, r) { return a + Number(r.strain); }, 0) / _st.length * 10) / 10) : null
+        };
+      } catch (e) {}
+      d.milestone = null;
+      try {
+        var _msq = await supabase.from('member_milestones').select('title, body, achieved_at').eq('member_id', m.id).gte('achieved_at', _ws.toISOString()).order('achieved_at', { ascending: false }).limit(1);
+        if (_msq.data && _msq.data.length) d.milestone = _msq.data[0];
+      } catch (e) {}
       // Grant's coaching note — one short, specific, encouraging line built from THIS member's week (Haiku, cheap).
       d.coach_note = '';
       try {
