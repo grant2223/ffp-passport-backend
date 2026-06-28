@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v121
+// FFP Passport — Express Server (Vercel, CommonJS) — v122
+// v122 (2026-06-28): GOOGLE CALENDAR connector (shared by Professionals dashboard + Booking app). Tables
+//      google_calendar + calendar_oauth_states. OAuth2: POST /api/calendar/google/connect {refresh,return_to?}
+//      → consent URL; GET /api/calendar/google/callback stores tokens; /status, /disconnect; POST /api/calendar/add-event
+//      {refresh,event} writes to the caller's calendar (getValidGoogleAccess refresh + 15s timeouts; never throws).
+//      Needs Vercel env GOOGLE_CLIENT_ID/SECRET + the redirect URI & calendar.events scope on the Google Cloud OAuth client.
 // v121 (2026-06-28): MILESTONES/PBs. New table member_milestones + detect_member_milestones (PB distance/duration
 //      per activity, 7/14/30/50/100/365-day streaks, new-country) + member_mark_milestones_seen. POST /api/milestones/check
 //      detects, phone-pushes NEW ones once (pushed_at dedup, capped >3 → one combined push), returns unseen for the
@@ -3295,6 +3300,137 @@ app.post('/api/wearables/status', async (req, res) => {
     if (!v) return res.status(401).json({ error: 'auth' });
     const { data } = await supabase.from('member_wearables').select('provider, status, last_synced_at').eq('member_id', v.memberId);
     return res.json({ providers: data || [] });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GOOGLE CALENDAR connector (shared: Professionals dashboard + Booking app). v122.
+// OAuth2; tokens in google_calendar (member_id key — every pro/member is a member account, auth via ffp_refresh).
+// Env: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (+ optional GOOGLE_REDIRECT_URI). In Google Cloud, add the redirect
+// URI https://ffp-passport-backend.vercel.app/api/calendar/google/callback + the calendar.events scope.
+// ─────────────────────────────────────────────────────────────────────────────
+const GOOGLE_REDIRECT = process.env.GOOGLE_REDIRECT_URI || 'https://ffp-passport-backend.vercel.app/api/calendar/google/callback';
+const GOOGLE_SCOPES = 'openid email https://www.googleapis.com/auth/calendar.events';
+const GOOGLE_DEFAULT_RETURN = process.env.MEMBER_APP_URL || 'https://ffppassport.com/ffp-member-dashboard.html';
+
+async function googleTokenRequest(params) {
+  const r = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params).toString(), signal: AbortSignal.timeout(15000)
+  });
+  const j = await r.json().catch(() => null);
+  if (!r.ok || !j || (!j.access_token && !j.id_token)) throw new Error('google_token_failed');
+  return j;
+}
+async function getValidGoogleAccess(row, force) {
+  const exp = row.token_expires_at ? new Date(row.token_expires_at).getTime() : 0;
+  if (!force && row.access_token && exp - 60000 > Date.now()) return row.access_token;
+  if (!row.refresh_token) throw new Error('google_no_refresh');
+  const j = await googleTokenRequest({ grant_type: 'refresh_token', refresh_token: row.refresh_token, client_id: process.env.GOOGLE_CLIENT_ID, client_secret: process.env.GOOGLE_CLIENT_SECRET });
+  const newExp = new Date(Date.now() + (Number(j.expires_in) || 3600) * 1000).toISOString();
+  await supabase.from('google_calendar').update({ access_token: j.access_token, token_expires_at: newExp, updated_at: new Date().toISOString() }).eq('member_id', row.member_id);
+  row.access_token = j.access_token; row.token_expires_at = newExp;
+  return j.access_token;
+}
+// Create an event on a member's connected calendar. Returns {ok,event_id} or {ok:false,error}. Never throws.
+async function gcalAddEvent(memberId, ev) {
+  try {
+    const { data: row } = await supabase.from('google_calendar').select('*').eq('member_id', memberId).maybeSingle();
+    if (!row || row.status !== 'connected') return { ok: false, error: 'not_connected' };
+    const access = await getValidGoogleAccess(row);
+    const cal = encodeURIComponent(row.calendar_id || 'primary');
+    const body = {
+      summary: ev.summary || 'FFP booking',
+      description: ev.description || '',
+      location: ev.location || '',
+      start: { dateTime: ev.start },
+      end: { dateTime: ev.end || ev.start }
+    };
+    const r = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + cal + '/events', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + access, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(15000)
+    });
+    const j = await r.json().catch(() => null);
+    if (!r.ok) { console.error('[gcal add]', j && j.error); return { ok: false, error: 'api_error' }; }
+    return { ok: true, event_id: j && j.id, html_link: j && j.htmlLink };
+  } catch (e) { console.error('[gcal add]', e && e.message); return { ok: false, error: e.message }; }
+}
+
+// Start OAuth — {refresh, return_to?}. Works for any member account (incl. professionals).
+app.post('/api/calendar/google/connect', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    if (!process.env.GOOGLE_CLIENT_ID) return res.status(503).json({ error: 'google_not_configured' });
+    const state = crypto.randomBytes(16).toString('hex');
+    const returnTo = (req.body && req.body.return_to) || GOOGLE_DEFAULT_RETURN;
+    await supabase.from('calendar_oauth_states').insert({ state: state, member_id: v.memberId, return_to: returnTo });
+    const url = 'https://accounts.google.com/o/oauth2/v2/auth?response_type=code'
+      + '&access_type=offline&prompt=consent&include_granted_scopes=true'
+      + '&client_id=' + encodeURIComponent(process.env.GOOGLE_CLIENT_ID)
+      + '&redirect_uri=' + encodeURIComponent(GOOGLE_REDIRECT)
+      + '&scope=' + encodeURIComponent(GOOGLE_SCOPES)
+      + '&state=' + encodeURIComponent(state);
+    return res.json({ url });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// OAuth callback → exchange code, store tokens, bounce back to the originating app.
+app.get('/api/calendar/google/callback', async (req, res) => {
+  let back = GOOGLE_DEFAULT_RETURN;
+  const fail = (msg) => res.redirect(back + (back.indexOf('?') < 0 ? '?' : '&') + 'gcal=error&reason=' + encodeURIComponent(msg || 'error'));
+  try {
+    if (req.query.error) return fail(String(req.query.error));
+    const stateParam = String(req.query.state || '');
+    if (!stateParam) return fail('state');
+    const { data: st } = await supabase.from('calendar_oauth_states').select('member_id, return_to, created_at').eq('state', stateParam).maybeSingle();
+    await supabase.from('calendar_oauth_states').delete().eq('state', stateParam);   // single-use
+    if (!st) return fail('state');
+    if (st.return_to) back = st.return_to;
+    if (Date.now() - new Date(st.created_at).getTime() > 10 * 60 * 1000) return fail('state_expired');
+    const code = String(req.query.code || '');
+    if (!code) return fail('no_code');
+    const tok = await googleTokenRequest({ grant_type: 'authorization_code', code, redirect_uri: GOOGLE_REDIRECT, client_id: process.env.GOOGLE_CLIENT_ID, client_secret: process.env.GOOGLE_CLIENT_SECRET });
+    let email = null;
+    try { if (tok.id_token) { const p = JSON.parse(Buffer.from(tok.id_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')); email = p.email || null; } } catch (e) {}
+    await supabase.from('google_calendar').upsert({
+      member_id: st.member_id, access_token: tok.access_token, refresh_token: tok.refresh_token || null,
+      token_expires_at: new Date(Date.now() + (Number(tok.expires_in) || 3600) * 1000).toISOString(),
+      google_email: email, scope: tok.scope || GOOGLE_SCOPES, status: 'connected', updated_at: new Date().toISOString()
+    }, { onConflict: 'member_id' });
+    return res.redirect(back + (back.indexOf('?') < 0 ? '?' : '&') + 'gcal=connected');
+  } catch (e) { console.error('[gcal callback]', e); return fail('exchange'); }
+});
+
+app.post('/api/calendar/google/status', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    const { data } = await supabase.from('google_calendar').select('google_email, status, connected_at').eq('member_id', v.memberId).maybeSingle();
+    return res.json({ connected: !!(data && data.status === 'connected'), email: data ? data.google_email : null });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/calendar/google/disconnect', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    try { const { data: row } = await supabase.from('google_calendar').select('access_token').eq('member_id', v.memberId).maybeSingle(); if (row && row.access_token) { await fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(row.access_token), { method: 'POST', signal: AbortSignal.timeout(8000) }).catch(function () {}); } } catch (e) {}
+    await supabase.from('google_calendar').delete().eq('member_id', v.memberId);
+    return res.json({ ok: true });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// Push an event to the caller's calendar — {refresh, event:{summary,description,location,start,end}} (ISO/RFC3339).
+app.post('/api/calendar/add-event', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    const ev = (req.body && req.body.event) || {};
+    if (!ev.start) return res.status(400).json({ error: 'start required' });
+    const out = await gcalAddEvent(v.memberId, ev);
+    if (!out.ok) return res.status(out.error === 'not_connected' ? 409 : 502).json(out);
+    return res.json(out);
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
