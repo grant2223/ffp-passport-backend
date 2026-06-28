@@ -1,4 +1,12 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v119
+// FFP Passport — Express Server (Vercel, CommonJS) — v121
+// v121 (2026-06-28): MILESTONES/PBs. New table member_milestones + detect_member_milestones (PB distance/duration
+//      per activity, 7/14/30/50/100/365-day streaks, new-country) + member_mark_milestones_seen. POST /api/milestones/check
+//      detects, phone-pushes NEW ones once (pushed_at dedup, capped >3 → one combined push), returns unseen for the
+//      Passport celebration popup. Member app calls it on load + after Log Activity; shows popup; marks seen.
+// v120 (2026-06-27): AI HARDENING — every Anthropic call now has a 25s AbortSignal.timeout so a hung model
+//      can't hang the request (returns gracefully via each endpoint's try/catch; agent helper returns
+//      {error:'ai_timeout'|'ai_unreachable'}). Endpoints already guard missing key (503) + API errors (502);
+//      front-ends already show friendly fallbacks (503 / unparseable / network) and re-enable their buttons.
 // v119 (2026-06-27): ADMIN BROADCAST TARGETING. POST /api/admin/broadcast now accepts a `segment`
 //      { type:'membership'|'country'|'gender', value } resolved server-side to member_ids (status='active');
 //      'all'/no segment still broadcasts to everyone. In-app rows + phone push both honour the segment.
@@ -2583,6 +2591,32 @@ app.post('/api/notifications/seen', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
+// v121: MILESTONES — run the idempotent detector, phone-push any NEW milestones once (pushed_at dedup,
+// capped so an existing member's first run doesn't flood), and return all UNSEEN for the in-app celebration popup.
+app.post('/api/milestones/check', async (req, res) => {
+  try {
+    const memberId = req.body && req.body.member_id;
+    if (!memberId) return res.status(400).json({ error: 'member_id required' });
+    await supabase.rpc('detect_member_milestones', { p_member: memberId });
+    const { data: toPush } = await supabase.from('member_milestones')
+      .select('id, title, body').eq('member_id', memberId).is('seen_at', null).is('pushed_at', null);
+    if (toPush && toPush.length) {
+      try {
+        if (toPush.length > 3) {
+          await sendPushToMember(memberId, { title: toPush.length + ' new milestones!', body: 'Open your Passport to see what you’ve unlocked.', url: '/ffp-member-dashboard.html', icon: '/assets/icons/ffp-icon-192.png' });
+        } else {
+          for (const m of toPush) { await sendPushToMember(memberId, { title: m.title || 'New milestone!', body: m.body || '', url: '/ffp-member-dashboard.html', icon: '/assets/icons/ffp-icon-192.png' }); }
+        }
+      } catch (e) { console.warn('[milestones push]', e.message); }
+      await supabase.from('member_milestones').update({ pushed_at: new Date().toISOString() }).in('id', toPush.map(function (m) { return m.id; }));
+    }
+    const { data: unseen } = await supabase.from('member_milestones')
+      .select('id, kind, title, body, icon, value, achieved_at').eq('member_id', memberId).is('seen_at', null)
+      .order('achieved_at', { ascending: false });
+    return res.json({ success: true, milestones: unseen || [] });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
 // Admin broadcast — audience 'all' → one row with member_id NULL (everyone). member_ids[] → one row each.
 app.post('/api/admin/broadcast', async (req, res) => {
   try {
@@ -2929,7 +2963,7 @@ app.post('/api/workout/generate', async (req, res) => {
       'note is a short coaching cue of 8 words or fewer. Output JSON only.';
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000),
       body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1600, system: sys, messages: [{ role: 'user', content: prompt }] })
     });
     const j = await r.json();
@@ -2980,7 +3014,7 @@ app.post('/api/nutrition/plan', async (req, res) => {
       'tips of 12 words or fewer. Output JSON only.';
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000),
       body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1600, system: sys, messages: [{ role: 'user', content: prompt }] })
     });
     const j = await r.json();
@@ -3009,7 +3043,7 @@ app.post('/api/pro/workout/draft', async (req, res) => {
       'title is short (e.g. "Upper Body Strength"); notes is one short coaching line. Respect any stated goal, level, equipment, injury, body part or session length. Output JSON only.';
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000),
       body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1800, system: sys, messages: [{ role: 'user', content: prompt }] })
     });
     const j = await r.json();
@@ -3370,7 +3404,7 @@ app.post('/api/ai/parse', async (req, res) => {
     const userContent = text + (now ? ('\n\nCurrent local datetime: ' + now) : '');
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000),
       body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1000, system: sys, messages: [{ role: 'user', content: userContent }] })
     });
     const j = await r.json();
@@ -3488,13 +3522,18 @@ function agentSystem(role, ctx) {
 async function anthropicMessages(system, messages, tools, maxTokens) {
   var body = { model: AGENT_MODEL, max_tokens: maxTokens || 1024, system: system, messages: messages };
   if (tools && tools.length) body.tools = tools;
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify(body)
-  });
-  const j = await r.json();
-  if (!r.ok) { console.error('[agent] anthropic:', j && j.error); return { error: (j && j.error && j.error.message) || 'ai_error' }; }
-  return { content: j.content || [], stop_reason: j.stop_reason };
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000),
+      body: JSON.stringify(body)
+    });
+    const j = await r.json();
+    if (!r.ok) { console.error('[agent] anthropic:', j && j.error); return { error: (j && j.error && j.error.message) || 'ai_error' }; }
+    return { content: j.content || [], stop_reason: j.stop_reason };
+  } catch (e) {
+    console.error('[agent] anthropic fetch:', e && e.message);
+    return { error: (e && e.name === 'TimeoutError') ? 'ai_timeout' : 'ai_unreachable' };
+  }
 }
 
 app.post('/api/agent/chat', async (req, res) => {
@@ -3688,7 +3727,7 @@ app.post('/api/workout/summary', async (req, res) => {
       'Acknowledge one thing they did well and give one specific, actionable tip to improve next time (e.g. progression, rep targets, rest, form focus). Friendly, plain language, no markdown, no lists, no headings. Output plain text only.';
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000),
       body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 300, system: sys, messages: [{ role: 'user', content: payload }] })
     });
     const j = await r.json();
@@ -4572,7 +4611,7 @@ async function computeCoachProfile(memberId) {
   try {
     if (ANTHROPIC_KEY) {
       const sys = 'You are Grant, FFP\'s fitness coach. From these JSON facts about ONE member, write 2-3 short sentences (max ~45 words, no emojis) capturing what you know about their training — favourite activity, how often they train, momentum, and recovery/sleep if present. Specific and factual; this is your private memory to personalise future coaching. Speak about them in third person ("they").';
-      const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 150, system: sys, messages: [{ role: 'user', content: JSON.stringify(facts) }] }) });
+      const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 150, system: sys, messages: [{ role: 'user', content: JSON.stringify(facts) }] }) });
       const j = await r.json(); if (r.ok) summary = ((j.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
     }
   } catch (e) {}
@@ -4856,7 +4895,7 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
           var _cpCtx = _cp ? (' Your memory of them: ' + (_cp.summary || '') + ' Facts(JSON): ' + JSON.stringify(_cp.facts || {}).slice(0, 400)) : '';
           var csys = 'You are Grant from FFP, a warm, encouraging fitness coach. Write ONE short coaching note (max 2 sentences, ~35 words, NO emojis) about this member\'s past week. Use what you remember about them, reference a real number, celebrate a win, and give ONE concrete suggestion for next week. Speak directly to them as "you".';
           var cusr = 'Member first name: ' + firstNm + '. This week — meetups hosted ' + ((d.meetups && d.meetups.hosted) || 0) + ', joined ' + ((d.meetups && d.meetups.joined) || 0) + '; new connections ' + ((d.connections && d.connections.new_this_week) || 0) + '; new venues ' + ((d.places && d.places.venues_new) || 0) + ', new cities ' + ((d.places && d.places.cities_new) || 0) + '; tier ' + (d.tier || 'member') + '. Fitness rankings (JSON): ' + JSON.stringify(d.rankings || []).slice(0, 600) + '.' + _cpCtx;
-          var cr = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 120, system: csys, messages: [{ role: 'user', content: cusr }] }) });
+          var cr = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 120, system: csys, messages: [{ role: 'user', content: cusr }] }) });
           var cj = await cr.json();
           if (cr.ok) { d.coach_note = ((cj.content || []).map(function (b) { return b.text || ''; }).join('')).trim(); }
         }
