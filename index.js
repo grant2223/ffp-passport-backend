@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v124
+// FFP Passport — Express Server (Vercel, CommonJS) — v125
+// v125 (2026-06-28): NATIVE PUSH (Phase 1). New table device_push_tokens + POST /api/push/register-device |
+//      /api/push/unregister-device. sendPushToMember/sendPushToAll now ALSO send via FCM HTTP v1 (service-account
+//      JWT→token, prune UNREGISTERED) alongside web push — so milestones/bookings/coach/broadcasts reach native
+//      iOS/Android automatically. No-op until env FCM_SERVICE_ACCOUNT_JSON is set + a device registers (safe to ship now).
 // v124 (2026-06-28): CALENDAR ↔ BOOKING contract. /api/calendar/add-event now accepts the booking-team shape
 //      ({title,start_utc,end_utc,timezone,location,description,url,booking_id}) + the original; `booking_id` is an
 //      IDEMPOTENCY key (events tagged via extendedProperties.private.ffp_booking_id → no duplicates on retry; end
@@ -2717,15 +2721,92 @@ async function _sendPushTo(subRows, payloadObj) {
   return sent;
 }
 async function sendPushToMember(memberId, payloadObj) {
-  if (!PUSH_READY || !memberId) return 0;
-  const { data } = await supabase.from('push_subscriptions').select('endpoint, p256dh, auth').eq('member_id', memberId);
-  return _sendPushTo(data || [], payloadObj);
+  if (!memberId) return 0;
+  let n = 0;
+  if (PUSH_READY) {
+    const { data } = await supabase.from('push_subscriptions').select('endpoint, p256dh, auth').eq('member_id', memberId);
+    n += await _sendPushTo(data || [], payloadObj);
+  }
+  try { n += await sendFcmToMember(memberId, payloadObj); } catch (e) {}   // native (iOS/Android) — independent of VAPID
+  return n;
 }
 async function sendPushToAll(payloadObj) {
-  if (!PUSH_READY) return 0;
-  const { data } = await supabase.from('push_subscriptions').select('endpoint, p256dh, auth');
-  return _sendPushTo(data || [], payloadObj);
+  let n = 0;
+  if (PUSH_READY) {
+    const { data } = await supabase.from('push_subscriptions').select('endpoint, p256dh, auth');
+    n += await _sendPushTo(data || [], payloadObj);
+  }
+  try { n += await sendFcmToAll(payloadObj); } catch (e) {}
+  return n;
 }
+
+// ── NATIVE PUSH (FCM HTTP v1) — Phase 1. Service account in env FCM_SERVICE_ACCOUNT_JSON; no-op until set + a device registers. ──
+let FCM_SA = null, FCM_PROJECT = '';
+try { if (process.env.FCM_SERVICE_ACCOUNT_JSON) { FCM_SA = JSON.parse(process.env.FCM_SERVICE_ACCOUNT_JSON); FCM_PROJECT = FCM_SA.project_id || ''; } } catch (e) { console.warn('[fcm] bad FCM_SERVICE_ACCOUNT_JSON'); }
+const FCM_READY = !!(FCM_SA && FCM_SA.client_email && FCM_SA.private_key && FCM_PROJECT);
+let _fcmTok = { token: null, exp: 0 };
+async function getFcmAccessToken() {
+  if (!FCM_READY) return null;
+  if (_fcmTok.token && _fcmTok.exp - 60000 > Date.now()) return _fcmTok.token;
+  const now = Math.floor(Date.now() / 1000);
+  const enc = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const unsigned = enc({ alg: 'RS256', typ: 'JWT' }) + '.' + enc({ iss: FCM_SA.client_email, scope: 'https://www.googleapis.com/auth/firebase.messaging', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 });
+  let sig;
+  try { sig = crypto.createSign('RSA-SHA256').update(unsigned).sign(FCM_SA.private_key, 'base64url'); } catch (e) { console.warn('[fcm] sign', e.message); return null; }
+  const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: unsigned + '.' + sig }).toString(), signal: AbortSignal.timeout(12000) });
+  const j = await r.json().catch(() => null);
+  if (!r.ok || !j || !j.access_token) { console.warn('[fcm] token', j && j.error); return null; }
+  _fcmTok = { token: j.access_token, exp: Date.now() + (Number(j.expires_in) || 3600) * 1000 };
+  return _fcmTok.token;
+}
+async function _fcmSendTokens(tokens, payloadObj) {
+  if (!FCM_READY || !tokens || !tokens.length) return 0;
+  const access = await getFcmAccessToken(); if (!access) return 0;
+  let sent = 0;
+  for (const t of tokens) {
+    try {
+      const msg = { message: { token: t, notification: { title: payloadObj.title || 'FFP', body: payloadObj.body || '' }, data: { url: String(payloadObj.url || payloadObj.link || '/ffp-member-dashboard.html') } } };
+      const r = await fetch('https://fcm.googleapis.com/v1/projects/' + FCM_PROJECT + '/messages:send', { method: 'POST', headers: { 'Authorization': 'Bearer ' + access, 'Content-Type': 'application/json' }, body: JSON.stringify(msg), signal: AbortSignal.timeout(12000) });
+      if (r.ok) { sent++; }
+      else {
+        const e = await r.json().catch(() => null);
+        const status = e && e.error && (e.error.status || '');
+        if (r.status === 404 || status === 'NOT_FOUND' || status === 'UNREGISTERED') { try { await supabase.from('device_push_tokens').delete().eq('token', t); } catch (e2) {} }
+        else console.warn('[fcm] send', r.status, status || (e && e.error && e.error.message));
+      }
+    } catch (e) {}
+  }
+  return sent;
+}
+async function sendFcmToMember(memberId, payloadObj) {
+  if (!FCM_READY || !memberId) return 0;
+  const { data } = await supabase.from('device_push_tokens').select('token').eq('member_id', memberId);
+  return _fcmSendTokens((data || []).map(function (d) { return d.token; }), payloadObj);
+}
+async function sendFcmToAll(payloadObj) {
+  if (!FCM_READY) return 0;
+  const { data } = await supabase.from('device_push_tokens').select('token');
+  return _fcmSendTokens((data || []).map(function (d) { return d.token; }), payloadObj);
+}
+
+// Native app registers its device push token here (and clears it on logout).
+app.post('/api/push/register-device', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || ''); if (!v) return res.status(401).json({ error: 'auth' });
+    const token = req.body && req.body.token; const platform = (req.body && req.body.platform) || null;
+    if (!token) return res.status(400).json({ error: 'token required' });
+    await supabase.from('device_push_tokens').upsert({ token: token, member_id: v.memberId, platform: platform, updated_at: new Date().toISOString() }, { onConflict: 'token' });
+    return res.json({ ok: true });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+app.post('/api/push/unregister-device', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || ''); if (!v) return res.status(401).json({ error: 'auth' });
+    const token = req.body && req.body.token;
+    if (token) await supabase.from('device_push_tokens').delete().eq('token', token);
+    return res.json({ ok: true });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
 
 // One call → BOTH the in-app bell row (notifications table) AND a phone push. n = { title, body, icon
 // (material-symbol name for the bell), link }. Use this for event-driven member alerts so they show in the
