@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v123
+// FFP Passport — Express Server (Vercel, CommonJS) — v124
+// v124 (2026-06-28): CALENDAR ↔ BOOKING contract. /api/calendar/add-event now accepts the booking-team shape
+//      ({title,start_utc,end_utc,timezone,location,description,url,booking_id}) + the original; `booking_id` is an
+//      IDEMPOTENCY key (events tagged via extendedProperties.private.ffp_booking_id → no duplicates on retry; end
+//      defaults to +60min). PAID bookings now add to the member's Google Calendar inside finalisePaidCheckout (Passport
+//      owns paid); free/credit/held are added by the booking site calling add-event. Both fire-and-forget.
 // v123 (2026-06-28): calendar add-event now honours an `event.tz` (sets start/end timeZone) so appointments land
 //      at the right local time. Pro scheduling "Add to my Google Calendar" per occurrence uses it.
 // v122 (2026-06-28): GOOGLE CALENDAR connector (shared by Professionals dashboard + Booking app). Tables
@@ -2133,7 +2138,7 @@ async function finalisePaidCheckout(kind, p, sess, intent) {
     const bid = p.ref || p.booking_id;
     // Idempotent: confirm + webhook both call this. Only finalise + notify on the first transition to paid.
     const { data: bk } = await supabase.from('bookings')
-      .select('id, member_id, payment_status, currency, total_aed').eq('id', bid).maybeSingle();
+      .select('id, member_id, payment_status, currency, total_aed, scheduled_at, provider_id').eq('id', bid).maybeSingle();
     if (!bk || bk.payment_status === 'paid') return;
     await supabase.rpc('mark_booking_paid', { p_booking: bid, p_payment_intent: intent, p_charge: null });
     // v96: Passport owns the "payment confirmed" message (it owns the confirmation event) — fires once here.
@@ -2143,6 +2148,18 @@ async function finalisePaidCheckout(kind, p, sess, intent) {
         body: 'Your booking is confirmed and paid — ' + (bk.currency || 'AED') + ' ' + Number(bk.total_aed || 0).toLocaleString() + '.',
         icon: 'check_circle', link: '/ffp-member-dashboard.html'
       });
+    } catch (e) {}
+    // v124: PAID bookings finalise here, so Passport adds them to the member's Google Calendar (best-effort,
+    // idempotent by booking_id). Free/credit/held bookings are added by the booking site via /api/calendar/add-event.
+    try {
+      if (bk.scheduled_at) {
+        let title = 'FFP booking', tz = 'Asia/Dubai';
+        if (bk.provider_id) {
+          const { data: pr } = await supabase.from('providers').select('business_name, timezone').eq('id', bk.provider_id).maybeSingle();
+          if (pr) { title = (pr.business_name || 'FFP') + ' — session'; tz = pr.timezone || tz; }
+        }
+        await gcalAddEvent(bk.member_id, { summary: title, start: new Date(bk.scheduled_at).toISOString(), tz: tz, description: 'Booked via Find Fit People' }, 'booking:' + bid);
+      }
     } catch (e) {}
   } else if (kind === 'plan') {
     const { data: ex } = await supabase.from('provider_member_plans').select('id').eq('stripe_session_id', sess.id).maybeSingle();
@@ -3335,19 +3352,32 @@ async function getValidGoogleAccess(row, force) {
   return j.access_token;
 }
 // Create an event on a member's connected calendar. Returns {ok,event_id} or {ok:false,error}. Never throws.
-async function gcalAddEvent(memberId, ev) {
+async function gcalAddEvent(memberId, ev, dedupKey) {
   try {
     const { data: row } = await supabase.from('google_calendar').select('*').eq('member_id', memberId).maybeSingle();
     if (!row || row.status !== 'connected') return { ok: false, error: 'not_connected' };
     const access = await getValidGoogleAccess(row);
     const cal = encodeURIComponent(row.calendar_id || 'primary');
+    // Idempotency: if an event already exists tagged with this booking key, don't create a second one.
+    if (dedupKey) {
+      try {
+        const qr = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + cal + '/events?maxResults=1&showDeleted=false&privateExtendedProperty=' + encodeURIComponent('ffp_booking_id=' + dedupKey), {
+          headers: { 'Authorization': 'Bearer ' + access }, signal: AbortSignal.timeout(12000)
+        });
+        const qj = await qr.json().catch(() => null);
+        if (qr.ok && qj && Array.isArray(qj.items) && qj.items.length) return { ok: true, event_id: qj.items[0].id, deduped: true };
+      } catch (e) {}
+    }
+    var endVal = ev.end;
+    if (!endVal && ev.start) { try { var t = new Date(ev.start).getTime(); if (!isNaN(t)) endVal = new Date(t + 60 * 60000).toISOString(); } catch (e) {} }
     const body = {
       summary: ev.summary || 'FFP booking',
       description: ev.description || '',
       location: ev.location || '',
       start: ev.tz ? { dateTime: ev.start, timeZone: ev.tz } : { dateTime: ev.start },
-      end:   ev.tz ? { dateTime: ev.end || ev.start, timeZone: ev.tz } : { dateTime: ev.end || ev.start }
+      end:   ev.tz ? { dateTime: endVal || ev.start, timeZone: ev.tz } : { dateTime: endVal || ev.start }
     };
+    if (dedupKey) body.extendedProperties = { private: { ffp_booking_id: String(dedupKey) } };
     const r = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + cal + '/events', {
       method: 'POST', headers: { 'Authorization': 'Bearer ' + access, 'Content-Type': 'application/json' },
       body: JSON.stringify(body), signal: AbortSignal.timeout(15000)
@@ -3428,9 +3458,18 @@ app.post('/api/calendar/add-event', async (req, res) => {
   try {
     const v = verifyRefreshToken((req.body && req.body.refresh) || '');
     if (!v) return res.status(401).json({ error: 'auth' });
-    const ev = (req.body && req.body.event) || {};
+    const raw = (req.body && req.body.event) || {};
+    // Accept the booking-team contract shape (title/start_utc/end_utc/timezone/url/booking_id) AND the original shape.
+    const ev = {
+      summary: raw.title || raw.summary,
+      description: (raw.description || '') + (raw.url ? ((raw.description ? '\n' : '') + raw.url) : ''),
+      location: raw.location || '',
+      start: raw.start_utc || raw.start,
+      end: raw.end_utc || raw.end || null,
+      tz: raw.timezone || raw.tz || null
+    };
     if (!ev.start) return res.status(400).json({ error: 'start required' });
-    const out = await gcalAddEvent(v.memberId, ev);
+    const out = await gcalAddEvent(v.memberId, ev, raw.booking_id || null);
     if (!out.ok) return res.status(out.error === 'not_connected' ? 409 : 502).json(out);
     return res.json(out);
   } catch (e) { return res.status(500).json({ error: e.message }); }
