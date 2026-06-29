@@ -4609,6 +4609,7 @@ app.put('/api/members/:id', async (req, res) => {
     const { id } = req.params;
     const {
       full_name, surname, given_names, email, phone, phone_country_code, city, country, nationality,
+      region, area, country_code, lat, lng, place_id, location_label,
       photo_url, bio, interests, fitness_level, date_of_birth, gender, skills, preferences, height_cm
     } = req.body;
     const { data: member, error } = await supabase
@@ -4622,6 +4623,13 @@ app.put('/api/members/:id', async (req, res) => {
         phone_country_code: phone_country_code || undefined,
         city: city || undefined,
         country: country || undefined,
+        region: (region !== undefined ? (region || null) : undefined),
+        area: (area !== undefined ? (area || null) : undefined),
+        country_code: (country_code !== undefined ? (country_code || null) : undefined),
+        lat: (lat !== undefined && lat !== null && lat !== '') ? Number(lat) : undefined,
+        lng: (lng !== undefined && lng !== null && lng !== '') ? Number(lng) : undefined,
+        place_id: (place_id !== undefined ? (place_id || null) : undefined),
+        location_label: (location_label !== undefined ? (location_label || null) : undefined),
         nationality: nationality || undefined,
         photo_url: photo_url || undefined,
         bio: bio || undefined,
