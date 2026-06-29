@@ -668,7 +668,8 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
   try {
     const {
       session_id, surname, given_names, date_of_birth,
-      nationality, country, city, skills, gender, photo_url, ref, account_email
+      nationality, country, city, region, area, country_code, lat, lng, place_id, location_label,
+      skills, gender, photo_url, ref, account_email
     } = req.body;
     if (!session_id) {
       return res.status(400).json({ error: 'session_id required' });
@@ -741,6 +742,13 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           nationality: nationality || null,
           country: country || null,
           city: city || null,
+          region: region || null,
+          area: area || null,
+          country_code: country_code || null,
+          lat: (lat != null && lat !== '') ? Number(lat) : null,
+          lng: (lng != null && lng !== '') ? Number(lng) : null,
+          place_id: place_id || null,
+          location_label: location_label || null,
           gender: gender || null,
           skills: (Array.isArray(skills) && skills.length) ? skills : null,
           photo_url: photo_url || null,
@@ -774,6 +782,13 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           nationality: nationality || null,
           country: country || null,
           city: city || null,
+          region: region || null,
+          area: area || null,
+          country_code: country_code || null,
+          lat: (lat != null && lat !== '') ? Number(lat) : null,
+          lng: (lng != null && lng !== '') ? Number(lng) : null,
+          place_id: place_id || null,
+          location_label: location_label || null,
           gender: gender || null,
           skills: (Array.isArray(skills) && skills.length) ? skills : null,
           photo_url: photo_url || null,
