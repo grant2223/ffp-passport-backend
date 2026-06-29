@@ -1,4 +1,10 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v128
+// FFP Passport — Express Server (Vercel, CommonJS) — v130
+// v130 (2026-06-28): WORLD-CLASS LOCATION — /api/places/details now returns STRUCTURED address components
+//      (country, country_code, region, city, area) parsed from Google addressComponents + caches them in
+//      places_cache. Foundation for member geocoded location (members.region/area/lat/lng/place_id/location_label).
+// v129 (2026-06-28): EMAIL SENDER standardised — all outbound mail now uses one `MAIL_FROM` constant,
+//      default '"Find Fit People" <noreply@ffppassport.com>'. Domain → @findfitpeople.com is a one-env-var
+//      flip (set MAIL_FROM in Vercel) AFTER findfitpeople.com is SPF/DKIM-authorised in the SMTP provider.
 // v128 (2026-06-28): NOTIFICATIONS "Clear all" is now SERVER-SIDE (was localStorage-only → failed to persist,
 //      so all notifs reappeared). New column members.notifs_cleared_at; GET /api/notifications filters out rows
 //      created<=cleared_at; new POST /api/notifications/clear sets it; member_pending_reviews RPC also respects it
@@ -962,6 +968,11 @@ const mailer = nodemailer.createTransport({
     pass: process.env.SMTP_PASS,
   }
 });
+// v129: ALL outbound email comes from "Find Fit People" (single source). The display name is standardised now.
+// To move the ADDRESS to noreply@findfitpeople.com, first authorise that domain in the SMTP provider
+// (add its SPF + DKIM DNS records for findfitpeople.com), THEN set Vercel env MAIL_FROM to
+// '"Find Fit People" <noreply@findfitpeople.com>' — no code change, no risk of breaking delivery before DNS is live.
+const MAIL_FROM = process.env.MAIL_FROM || MAIL_FROM;
 function generateCode() {
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const hash = crypto.createHash('sha256').update(code).digest('hex');
@@ -994,7 +1005,7 @@ async function sendCodeEmail(email, name, code, type) {
     </div>
   `;
   await mailer.sendMail({
-    from: '"FFP Passport" <noreply@ffppassport.com>',
+    from: MAIL_FROM,
     to: email,
     subject,
     html
@@ -1064,7 +1075,7 @@ async function sendWelcomeEmail(email, firstName, city) {
     </div>
   `;
   await mailer.sendMail({
-    from: '"FFP Passport" <noreply@ffppassport.com>',
+    from: MAIL_FROM,
     to: email,
     subject,
     html
@@ -1099,7 +1110,7 @@ async function sendAdminNewSignupEmail(m) {
    +'<span style="color:#8196a6;">City</span> &nbsp; '+escapeHtml(m.city||'—')+'<br>'
    +'<span style="color:#8196a6;">Referred by</span> &nbsp; '+escapeHtml(m.referrer_name||'Direct signup')
    +'</td></tr></table>';
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: ADMIN_EMAIL, subject: 'New FFP signup: ' + (m.full_name || m.email || ''), html: brandEmail('New signup', body) });
+  await mailer.sendMail({ from: MAIL_FROM, to: ADMIN_EMAIL, subject: 'New FFP signup: ' + (m.full_name || m.email || ''), html: brandEmail('New signup', body) });
 }
 async function sendReferralEmail(toEmail, referrerName, newMemberName, rewardUsd, balanceUsd) {
   var hasReward = (typeof rewardUsd === 'number' && rewardUsd > 0);
@@ -1115,7 +1126,7 @@ async function sendReferralEmail(toEmail, referrerName, newMemberName, rewardUsd
    + statBlock
    +'<p style="font-size:13px;color:#5b7186;line-height:1.6;margin:0 0 14px;">You can request a payout once your balance reaches <strong style="color:#0f2c47;">$250 USD</strong>.</p>'
    +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html#referrals" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">View your earnings</a></td></tr></table>';
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'You have a new referral on FFP Passport', html: brandEmail('Referral', body) });
+  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: 'You have a new referral on FFP Passport', html: brandEmail('Referral', body) });
 }
 // New-booking alert to the host (professional or partner). Payload comes from the
 // booking_host_notify_payload RPC (host email/name, member, session label, when, paid_with).
@@ -1132,7 +1143,7 @@ async function sendBookingHostEmail(p) {
    + '<span style="color:#8196a6;">Payment</span> &nbsp; '+escapeHtml(paid)
    + '</td></tr></table>'
    + '<p style="font-size:13px;color:#5b7186;line-height:1.6;margin:16px 0 0;">It is now in your dashboard schedule.</p>';
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: p.host_email,
+  await mailer.sendMail({ from: MAIL_FROM, to: p.host_email,
     subject: 'New booking — '+(p.member_name||'a member')+' · '+(p.label||'session'),
     html: brandEmail('New booking', body) });
 }
@@ -1143,7 +1154,7 @@ async function sendMemberNotifyEmail(p) {
   var body = '<div style="font-size:23px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">'+escapeHtml(p.title||'Update')+'</div>'
    + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 18px;">Hi '+escapeHtml(p.name||'there')+', '+escapeHtml(p.body||'')+'</p>'
    + '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">Open your bookings</a></td></tr></table>';
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: p.to_email,
+  await mailer.sendMail({ from: MAIL_FROM, to: p.to_email,
     subject: 'FFP Passport — '+(p.title||'Booking update'),
     html: brandEmail(p.title||'Booking update', body) });
 }
@@ -1153,7 +1164,7 @@ async function sendPaymentFailedEmail(toEmail, name) {
    +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 16px;">Hi'+(name?(' '+escapeHtml(name)):'')+', your latest FFP Passport payment didn’t go through — usually just an expired or declined card. We’ll automatically try again over the next few days.</p>'
    +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 18px;">To keep your Passport active without interruption, update your card when you get a moment.</p>'
    +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">Update my card</a></td></tr></table>';
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'Your FFP Passport payment didn’t go through', html: brandEmail('Payment', body) });
+  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: 'Your FFP Passport payment didn’t go through', html: brandEmail('Payment', body) });
 }
 async function sendTrialEndingEmail(toEmail, name, planLabel, amountLabel, endLabel) {
   if (!toEmail) return;
@@ -1164,7 +1175,7 @@ async function sendTrialEndingEmail(toEmail, name, planLabel, amountLabel, endLa
    +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 16px;">Hi'+(name?(' '+escapeHtml(name)):'')+', hope you’ve been making the most of your FFP Passport.'+(endLabel?(' Your 7-day free trial ends on <strong style="color:#0f2c47;">'+escapeHtml(endLabel)+'</strong>.'):'')+'</p>'
    +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 18px;">'+detail+' Want to make a change? You can manage or cancel anytime before then.</p>'
    +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">Open my Passport</a></td></tr></table>';
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'Your FFP Passport free trial ends in 3 days', html: brandEmail('Your trial', body) });
+  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: 'Your FFP Passport free trial ends in 3 days', html: brandEmail('Your trial', body) });
 }
 
 app.get('/', (req, res) => {
@@ -2297,7 +2308,7 @@ async function sendProviderWelcomeEmail(email, businessName, contactName, loginU
     </div>
   `;
   await mailer.sendMail({
-    from: '"Find Fit People" <noreply@ffppassport.com>',
+    from: MAIL_FROM,
     to: email,
     subject: 'Welcome to Find Fit People — your partner account is ready',
     html
@@ -2327,7 +2338,7 @@ async function sendProviderVerifyEmail(email, businessName, contactName, verifyU
     </div>
   `;
   await mailer.sendMail({
-    from: '"FFP Passport" <noreply@ffppassport.com>',
+    from: MAIL_FROM,
     to: email,
     subject: 'Confirm your FFP Passport provider account',
     html
@@ -2358,14 +2369,14 @@ async function sendMeetupConfirmEmail(toEmail, name, m, hostName) {
   var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">You’re going</div>'
    + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + 'You’re confirmed for this meet-up' + (hostName ? (' hosted by <strong style="color:#0f2c47;">' + escapeHtml(hostName) + '</strong>') : '') + '. See you there.</p>'
    + mtgDetailBlock(m) + mtgCta('View meet-up');
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'You’re going: ' + (m.title || m.sport || 'FFP meet-up'), html: brandEmail('Meet & Move', body) });
+  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: 'You’re going: ' + (m.title || m.sport || 'FFP meet-up'), html: brandEmail('Meet & Move', body) });
 }
 async function sendMeetupReminderEmail(toEmail, name, m, hostName) {
   var hi = name ? ('Hi ' + escapeHtml(name) + '. ') : '';
   var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">Coming up soon</div>'
    + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + 'A meet-up you joined is happening soon' + (hostName ? (' — hosted by <strong style="color:#0f2c47;">' + escapeHtml(hostName) + '</strong>') : '') + '. Here are the details.</p>'
    + mtgDetailBlock(m) + mtgCta('View meet-up');
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'Reminder: ' + (m.title || m.sport || 'your FFP meet-up') + ' is coming up', html: brandEmail('Meet & Move', body) });
+  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: 'Reminder: ' + (m.title || m.sport || 'your FFP meet-up') + ' is coming up', html: brandEmail('Meet & Move', body) });
 }
 async function sendMeetupCancelEmail(toEmail, name, m) {
   var hi = name ? ('Hi ' + escapeHtml(name) + '. ') : '';
@@ -2374,7 +2385,7 @@ async function sendMeetupCancelEmail(toEmail, name, m) {
    + mtgDetailBlock(m)
    + '<p style="font-size:13px;color:#5b7186;line-height:1.6;margin:0 0 6px;">Plenty more happening on FFP — find another or host your own.</p>'
    + mtgCta('Find a meet-up');
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'Cancelled: ' + (m.title || m.sport || 'FFP meet-up'), html: brandEmail('Meet & Move', body) });
+  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: 'Cancelled: ' + (m.title || m.sport || 'FFP meet-up'), html: brandEmail('Meet & Move', body) });
 }
 // v72: emailed to the HOST when a member REQUESTS to join (they must approve before the member is confirmed).
 async function sendMeetupRequestEmail(toEmail, hostName, requesterName, m) {
@@ -2383,7 +2394,7 @@ async function sendMeetupRequestEmail(toEmail, hostName, requesterName, m) {
   var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">New request to join</div>'
    + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + '<strong style="color:#0f2c47;">' + who + '</strong> has requested to join your meet-up. Open the app to approve them — they won’t be confirmed until you do.</p>'
    + mtgDetailBlock(m) + mtgCta('Review request');
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: who + ' wants to join your meet-up', html: brandEmail('Meet & Move', body) });
+  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: who + ' wants to join your meet-up', html: brandEmail('Meet & Move', body) });
 }
 // v100: emailed to the HOST when an attendee cancels their spot / withdraws a request (in-app notice via leave_meetup RPC).
 async function sendMeetupLeaveEmail(toEmail, hostName, leaverName, m, wasPending) {
@@ -2394,7 +2405,7 @@ async function sendMeetupLeaveEmail(toEmail, hostName, leaverName, m, wasPending
   var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">' + head + '</div>'
    + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + '<strong style="color:#0f2c47;">' + who + '</strong> has ' + verb + ' your meet-up. A spot has opened back up.</p>'
    + mtgDetailBlock(m) + mtgCta('View meet-up');
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: who + (wasPending ? ' withdrew from your meet-up' : ' left your meet-up'), html: brandEmail('Meet & Move', body) });
+  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: who + (wasPending ? ' withdrew from your meet-up' : ' left your meet-up'), html: brandEmail('Meet & Move', body) });
 }
 
 // Event-driven notify: request→host (v72), confirmation on APPROVE, cancellation on host-cancel (client calls after the RPC).
@@ -2487,7 +2498,7 @@ async function sendEventRsvpMemberEmail(toEmail, name, ev) {
   var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">You’re confirmed to attend</div>'
    + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + 'You’re confirmed for this event' + (ev.pname ? (' at <strong style="color:#0f2c47;">' + escapeHtml(ev.pname) + '</strong>') : '') + '. On the day, check in with your FFP Passport at the venue to mark your attendance.</p>'
    + mtgDetailBlock(evtAsBlock(ev)) + evtCta('View event');
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: 'You’re confirmed: ' + (ev.title || 'FFP event'), html: brandEmail('Events', body) });
+  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: 'You’re confirmed: ' + (ev.title || 'FFP event'), html: brandEmail('Events', body) });
 }
 async function sendEventRsvpProviderEmail(toEmail, providerName, attendeeName, ev) {
   var hi = providerName ? ('Hi ' + escapeHtml(providerName) + '. ') : '';
@@ -2495,7 +2506,7 @@ async function sendEventRsvpProviderEmail(toEmail, providerName, attendeeName, e
   var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">New RSVP to your event</div>'
    + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 12px;">' + hi + '<strong style="color:#0f2c47;">' + who + '</strong> has RSVP’d to your event. Their FFP Passport is on your guest list — they’ll check in with it when they arrive.</p>'
    + mtgDetailBlock(evtAsBlock(ev)) + evtCta('View event');
-  await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: toEmail, subject: who + ' RSVP’d to your event', html: brandEmail('Events', body) });
+  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: who + ' RSVP’d to your event', html: brandEmail('Events', body) });
 }
 // Event-driven notify: member confirmation + provider alert on RSVP (loader calls after rsvp_event RPC).
 app.post('/api/events/notify', async (req, res) => {
@@ -2545,7 +2556,7 @@ app.post('/api/notify/member', async (req, res) => {
     if (!mem || !mem.email) return res.status(404).json({ error: 'member or email not found' });
     var firstName = String((mem.full_name || '').split(' ')[0] || 'there').replace(/[<>]/g, '');
     var html = brandEmail(heading || subject, '<p style="margin:0 0 14px;">Hi ' + firstName + ',</p>' + bodyHtml);
-    await mailer.sendMail({ from: '"FFP Passport" <noreply@ffppassport.com>', to: mem.email, subject: subject, html: html });
+    await mailer.sendMail({ from: MAIL_FROM, to: mem.email, subject: subject, html: html });
     try { var _pb = bodyHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140); await notifyMember(toMemberId, { title: subject, body: _pb, icon: 'notifications', link: '/ffp-member-dashboard.html' }); } catch (e) {}
     return res.json({ success: true });
   } catch (e) { return res.status(500).json({ error: e.message }); }
@@ -2940,8 +2951,9 @@ app.get('/api/places/details', async (req, res) => {
     if (!placeId) return res.status(400).json({ error: 'place_id required' });
     try {
       const { data: hit } = await supabase.from('places_cache').select('*').eq('place_id', placeId).maybeSingle();
-      if (hit && hit.lat != null && hit.lng != null) {
-        return res.json({ place_id: hit.place_id, name: hit.name, address: hit.address, lat: Number(hit.lat), lng: Number(hit.lng), maps_url: hit.maps_url, cached: true });
+      if (hit && hit.lat != null && hit.lng != null && hit.country_code != null) {
+        return res.json({ place_id: hit.place_id, name: hit.name, address: hit.address, lat: Number(hit.lat), lng: Number(hit.lng), maps_url: hit.maps_url,
+          components: { country: hit.country || '', country_code: hit.country_code || '', region: hit.region || '', city: hit.city || '', area: hit.area || '' }, cached: true });
       }
     } catch (e) {}
     let url = 'https://places.googleapis.com/v1/places/' + encodeURIComponent(placeId);
@@ -2949,24 +2961,37 @@ app.get('/api/places/details', async (req, res) => {
     const r = await fetch(url, {
       headers: {
         'X-Goog-Api-Key': GPLACES_KEY,
-        'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,googleMapsUri,types'
+        'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,googleMapsUri,types,addressComponents'
       }
     });
     const j = await r.json();
     if (!r.ok) return res.status(502).json({ error: (j.error && j.error.message) || 'places_error' });
     const loc = j.location || {};
+    // v130: parse the STRUCTURED address components — geocode is the source of truth for location.
+    const comps = Array.isArray(j.addressComponents) ? j.addressComponents : [];
+    const pick = function (type, useShort) { for (var i = 0; i < comps.length; i++) { var c = comps[i]; if ((c.types || []).indexOf(type) >= 0) return (useShort ? c.shortText : c.longText) || ''; } return ''; };
+    const components = {
+      country:      pick('country', false),
+      country_code: pick('country', true),
+      region:       pick('administrative_area_level_1', false),
+      city:         pick('locality', false) || pick('postal_town', false) || pick('administrative_area_level_2', false),
+      area:         pick('sublocality_level_1', false) || pick('sublocality', false) || pick('neighborhood', false)
+    };
     const out = {
       place_id: j.id || placeId,
       name: (j.displayName && j.displayName.text) || '',
       address: j.formattedAddress || '',
       lat: (loc.latitude != null) ? loc.latitude : null,
       lng: (loc.longitude != null) ? loc.longitude : null,
-      maps_url: j.googleMapsUri || ''
+      maps_url: j.googleMapsUri || '',
+      components: components
     };
     try {
       await supabase.from('places_cache').upsert({
         place_id: out.place_id, name: out.name, address: out.address, lat: out.lat, lng: out.lng,
-        maps_url: out.maps_url, types: j.types || null, updated_at: new Date().toISOString()
+        maps_url: out.maps_url, types: j.types || null,
+        country: components.country, country_code: components.country_code, region: components.region, city: components.city, area: components.area,
+        updated_at: new Date().toISOString()
       }, { onConflict: 'place_id' });
     } catch (e) {}
     return res.json(out);
@@ -5284,7 +5309,7 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
       var first = String(m.given_names || m.full_name || 'there').split(' ')[0];
       try {
         await mailer.sendMail({
-          from: '"FFP Passport" <noreply@ffppassport.com>',
+          from: MAIL_FROM,
           to: m.email,
           subject: 'Your FFP Sunday Summary — week to ' + new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
           html: renderSundaySummary(first, d)
