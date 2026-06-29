@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v127
+// FFP Passport — Express Server (Vercel, CommonJS) — v128
+// v128 (2026-06-28): NOTIFICATIONS "Clear all" is now SERVER-SIDE (was localStorage-only → failed to persist,
+//      so all notifs reappeared). New column members.notifs_cleared_at; GET /api/notifications filters out rows
+//      created<=cleared_at; new POST /api/notifications/clear sets it; member_pending_reviews RPC also respects it
+//      (review prompts for sessions logged before the clear no longer return). Frontend calls the clear endpoint.
 // v127 (2026-06-28): AI PARSE kind:'activity' now also extracts steps, max_heart_rate and hr_zones_min
 //      (z1..z5 minutes) so the Log Activity AI agent fills those fields too (was only activity/duration/
 //      distance/calories/avg_hr/date/time/location/notes). Frontend maps them to log-steps/log-maxhr/log-z1..5.
@@ -2602,8 +2606,9 @@ app.get('/api/notifications/:member_id', async (req, res) => {
     const memberId = req.params.member_id || req.query.member_id;       // v67: bell calls /api/notifications/<id> (path param)
     if (!memberId) return res.json({ success: true, notifications: [], unread: 0 });
     const scope = (req.query.scope === 'professional') ? 'professional' : 'member';   // member app omits the param → member feed only
-    const { data: mem } = await supabase.from('members').select('notifs_seen_at').eq('id', memberId).maybeSingle();
+    const { data: mem } = await supabase.from('members').select('notifs_seen_at, notifs_cleared_at').eq('id', memberId).maybeSingle();
     const seenAt = (mem && mem.notifs_seen_at) ? new Date(mem.notifs_seen_at).getTime() : 0;
+    const clearedAt = (mem && mem.notifs_cleared_at) ? new Date(mem.notifs_cleared_at).getTime() : 0;
     const { data: rows, error } = await supabase
       .from('notifications')
       .select('id, icon, title, body, link, created_at, member_id, scope')
@@ -2612,8 +2617,9 @@ app.get('/api/notifications/:member_id', async (req, res) => {
       .order('created_at', { ascending: false })
       .limit(40);
     if (error) { console.error('[notifications] list:', error.message); return res.json({ success: true, notifications: [], unread: 0 }); }
-    const list = rows || [];
-    const unread = list.filter(function (n) { return new Date(n.created_at).getTime() > seenAt; }).length;
+    // v128: server-side "Clear all" — hide anything created at/before the member's cleared-at marker.
+    const list = (rows || []).filter(function (n) { return !clearedAt || new Date(n.created_at).getTime() > clearedAt; });
+    const unread = list.filter(function (n) { return new Date(n.created_at).getTime() > Math.max(seenAt, clearedAt); }).length;
     return res.json({ success: true, notifications: list, unread: unread });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
@@ -2623,6 +2629,19 @@ app.post('/api/notifications/seen', async (req, res) => {
     const memberId = req.body && req.body.member_id;
     if (!memberId) return res.status(400).json({ error: 'member_id required' });
     await supabase.from('members').update({ notifs_seen_at: new Date().toISOString() }).eq('id', memberId);
+    return res.json({ success: true });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// v128: server-side "Clear all" — sets notifs_cleared_at so the bell hides everything created at/before
+// now (and member_pending_reviews stops surfacing review prompts for sessions logged before this). This
+// is authoritative — it does NOT depend on the browser's localStorage (which was failing to persist).
+app.post('/api/notifications/clear', async (req, res) => {
+  try {
+    const memberId = req.body && req.body.member_id;
+    if (!memberId) return res.status(400).json({ error: 'member_id required' });
+    const nowIso = new Date().toISOString();
+    await supabase.from('members').update({ notifs_cleared_at: nowIso, notifs_seen_at: nowIso }).eq('id', memberId);
     return res.json({ success: true });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
