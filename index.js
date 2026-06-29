@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v130
+// FFP Passport — Express Server (Vercel, CommonJS) — v131
+// v131 (2026-06-29): CRITICAL HOTFIX — line 990 was `const MAIL_FROM = process.env.MAIL_FROM || MAIL_FROM;`
+//      (self-reference left by the v129 email-standardisation replace-all). With MAIL_FROM env unset this
+//      throws "Cannot access 'MAIL_FROM' before initialization" at MODULE LOAD → FUNCTION_INVOCATION_FAILED
+//      on EVERY route (incl. /api/auth/exchange → no CORS header → login dead). Restored the literal default.
 // v130 (2026-06-28): WORLD-CLASS LOCATION — /api/places/details now returns STRUCTURED address components
 //      (country, country_code, region, city, area) parsed from Google addressComponents + caches them in
 //      places_cache. Foundation for member geocoded location (members.region/area/lat/lng/place_id/location_label).
@@ -987,7 +991,7 @@ const mailer = nodemailer.createTransport({
 // To move the ADDRESS to noreply@findfitpeople.com, first authorise that domain in the SMTP provider
 // (add its SPF + DKIM DNS records for findfitpeople.com), THEN set Vercel env MAIL_FROM to
 // '"Find Fit People" <noreply@findfitpeople.com>' — no code change, no risk of breaking delivery before DNS is live.
-const MAIL_FROM = process.env.MAIL_FROM || MAIL_FROM;
+const MAIL_FROM = process.env.MAIL_FROM || '"Find Fit People" <noreply@ffppassport.com>';
 function generateCode() {
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const hash = crypto.createHash('sha256').update(code).digest('hex');
