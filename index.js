@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v131
+// FFP Passport — Express Server (Vercel, CommonJS) — v132
+// v132 (2026-06-29): FITNESS LEVEL VOCABULARY restored to the correct set everywhere — AI parse prompts
+//      (meetup_search + meetup_compose) and the MS_LV/MC_LV validation arrays now read
+//      Just started/Recreational/Skilled/Highly skilled/Professional (was the dead Not Tried/Social/
+//      Competitive/Representative set). Matches the DB taxonomy + frontend (ffp-taxonomy.js) + passport card.
 // v131 (2026-06-29): CRITICAL HOTFIX — line 990 was `const MAIL_FROM = process.env.MAIL_FROM || MAIL_FROM;`
 //      (self-reference left by the v129 email-standardisation replace-all). With MAIL_FROM env unset this
 //      throws "Cannot access 'MAIL_FROM' before initialization" at MODULE LOAD → FUNCTION_INVOCATION_FAILED
@@ -3717,7 +3721,7 @@ app.post('/api/ai/parse', async (req, res) => {
       sys = 'You convert a member\'s natural-language request for a fitness MEETUP into a structured search intent. ' +
         'Return ONLY valid minified JSON: {"sport":string,"category":string,"fitness_level":string,"city":string,"country":string,"date_from":string,"date_to":string,"gender":string,"keywords":[string],"sort":string}. ' +
         'category MUST be one of: racquet,running,cycling,swimming,team,combat,fitness,mind-body,adventure (best fit, else ""). ' +
-        'fitness_level one of: Not Tried,Social,Competitive,Representative,Professional (else ""). gender one of: any,women,men. ' +
+        'fitness_level one of: Just started,Recreational,Skilled,Highly skilled,Professional (else ""). gender one of: any,women,men. ' +
         'Resolve relative dates (e.g. "this weekend","tonight","next week") against the current local datetime given in the user message: ' +
         'date_from and date_to as "YYYY-MM-DD" (else ""). keywords = up to 4 salient words not already captured. ' +
         'sort one of: best,soonest,nearest (default "best"). Use ""/[] for anything not stated. Output JSON only.';
@@ -3725,7 +3729,7 @@ app.post('/api/ai/parse', async (req, res) => {
       sys = 'You convert a member\'s description of a fitness MEETUP they want to host into a structured draft for a form. ' +
         'Return ONLY valid minified JSON: {"title":string,"sport":string,"category":string,"fitness_level":string,"city":string,"country":string,"venue":string,"date":string,"time":string,"max_people":number,"gender":string,"age_from":number,"age_to":number,"description":string}. ' +
         'category one of: racquet,running,cycling,swimming,team,combat,fitness,mind-body,adventure. ' +
-        'fitness_level one of: Not Tried,Social,Competitive,Representative,Professional (else ""). gender one of: any,male,female. ' +
+        'fitness_level one of: Just started,Recreational,Skilled,Highly skilled,Professional (else ""). gender one of: any,male,female. ' +
         'title short (<=40 chars). max_people 2-8 (default 8). Resolve date/time against the current local datetime given in the user message: ' +
         'date "YYYY-MM-DD", time 24-hour "HH:MM" (default "18:00" if a day is given but no time; "" if no day). ' +
         'venue = place name if stated else "". description = a short friendly blurb (<=160 chars). Use ""/0 for anything not stated. Output JSON only.';
@@ -3779,7 +3783,7 @@ app.post('/api/ai/parse', async (req, res) => {
       } });
     } else if (kind === 'meetup_search') {
       var MS_CATS = ['racquet','running','cycling','swimming','team','combat','fitness','mind-body','adventure'];
-      var MS_LV = ['Not Tried','Social','Competitive','Representative','Professional'];
+      var MS_LV = ['Just started','Recreational','Skilled','Highly skilled','Professional'];
       var msPick = function (v, allow) { v = String(v || '').trim(); for (var i = 0; i < allow.length; i++) { if (allow[i].toLowerCase() === v.toLowerCase()) return allow[i]; } return ''; };
       var msDate = function (v) { v = String(v || '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : ''; };
       var I = parsed || {};
@@ -3796,7 +3800,7 @@ app.post('/api/ai/parse', async (req, res) => {
       } });
     } else if (kind === 'meetup_compose') {
       var MC_CATS = ['racquet','running','cycling','swimming','team','combat','fitness','mind-body','adventure'];
-      var MC_LV = ['Not Tried','Social','Competitive','Representative','Professional'];
+      var MC_LV = ['Just started','Recreational','Skilled','Highly skilled','Professional'];
       var mcPick = function (v, allow) { v = String(v || '').trim(); for (var i = 0; i < allow.length; i++) { if (allow[i].toLowerCase() === v.toLowerCase()) return allow[i]; } return ''; };
       var D = parsed || {};
       var dd = String(D.date || '').trim(); if (!/^\d{4}-\d{2}-\d{2}$/.test(dd)) dd = '';
