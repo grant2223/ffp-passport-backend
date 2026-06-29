@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v132
+// FFP Passport — Express Server (Vercel, CommonJS) — v133
+// v133 (2026-06-29): LOG ACTIVITY FROM A SCREENSHOT/PHOTO — /api/ai/parse now accepts an `image` (base64 data
+//      URL); when present it sends a Claude vision message (image block + instruction) instead of plain text, so a
+//      screenshot of a Strava/Garmin/Apple/WHOOP/treadmill/gym-board summary is read into the SAME activity JSON
+//      the text parser returns (frontend fill reused). text now optional when an image is given. Also works for food images.
 // v132 (2026-06-29): FITNESS LEVEL VOCABULARY restored to the correct set everywhere — AI parse prompts
 //      (meetup_search + meetup_compose) and the MS_LV/MC_LV validation arrays now read
 //      Just started/Recreational/Skilled/Highly skilled/Professional (was the dead Not Tried/Social/
@@ -3698,7 +3702,8 @@ app.post('/api/ai/parse', async (req, res) => {
     if (!ANTHROPIC_KEY) return res.status(503).json({ error: 'ai_not_configured' });
     const kind = String((req.body && req.body.kind) || '').trim();
     const text = String((req.body && req.body.text) || '').trim();
-    if (text.length < 2) return res.status(400).json({ error: 'text required' });
+    const image = String((req.body && req.body.image) || '').trim();   // base64 data URL — screenshot/photo (vision) parse
+    if (text.length < 2 && !image) return res.status(400).json({ error: 'text or image required' });
     let sys;
     if (kind === 'food') {
       sys = 'You convert a typed/spoken description of food eaten into structured nutrition data. ' +
@@ -3735,11 +3740,29 @@ app.post('/api/ai/parse', async (req, res) => {
         'venue = place name if stated else "". description = a short friendly blurb (<=160 chars). Use ""/0 for anything not stated. Output JSON only.';
     } else { return res.status(400).json({ error: 'bad kind' }); }
     const now = String((req.body && req.body.now) || '').trim();
-    const userContent = text + (now ? ('\n\nCurrent local datetime: ' + now) : '');
+    let msgContent;
+    if (image) {
+      // VISION parse: a screenshot/photo of a workout (or food) summary — Claude reads the numbers off it.
+      let mt = 'image/jpeg', b64 = image;
+      const mm = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/.exec(image);
+      if (mm) { mt = mm[1]; b64 = mm[2]; }
+      if (b64.length > 9 * 1024 * 1024) return res.status(413).json({ error: 'image_too_large' });
+      const instr = (kind === 'food'
+        ? 'The attached image is a photo of food or a nutrition label/menu. Read it and extract the items into the required JSON. Do NOT invent items not shown.'
+        : 'The attached image is a screenshot or photo of a workout/activity summary (e.g. Strava, Garmin, Apple Fitness, WHOOP, a treadmill or rowing-machine display, or a gym whiteboard). Read the numbers off it and extract the activity into the required JSON. Use 0 or "" for anything not shown — do NOT invent values.')
+        + (now ? ('\n\nCurrent local datetime: ' + now) : '')
+        + (text ? ('\n\nExtra context from the member: ' + text) : '');
+      msgContent = [
+        { type: 'image', source: { type: 'base64', media_type: mt, data: b64 } },
+        { type: 'text', text: instr }
+      ];
+    } else {
+      msgContent = text + (now ? ('\n\nCurrent local datetime: ' + now) : '');
+    }
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000),
-      body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1000, system: sys, messages: [{ role: 'user', content: userContent }] })
+      body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1000, system: sys, messages: [{ role: 'user', content: msgContent }] })
     });
     const j = await r.json();
     if (!r.ok) { console.error('[ai/parse] anthropic:', j && j.error); return res.status(502).json({ error: 'ai_error', detail: (j && j.error && j.error.message) || '' }); }
