@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v133
+// FFP Passport — Express Server (Vercel, CommonJS) — v134
+// v134 (2026-06-30): BROADCAST APP-AUDIENCE ROUTING. /api/admin/broadcast accepts `app` (member|professional|
+//      provider|booking|all) and stamps notifications.scope EXPLICITLY per app so a broadcast never crosses into
+//      the wrong app (fixes Pro/Provider notifications leaking onto the member Passport). GET /api/notifications/:id
+//      scope param generalised to member|professional|provider|booking. Phone push only fires when members are in scope.
 // v133 (2026-06-29): LOG ACTIVITY FROM A SCREENSHOT/PHOTO — /api/ai/parse now accepts an `image` (base64 data
 //      URL); when present it sends a Claude vision message (image block + instruction) instead of plain text, so a
 //      screenshot of a Strava/Garmin/Apple/WHOOP/treadmill/gym-board summary is read into the SAME activity JSON
@@ -2643,7 +2647,8 @@ app.get('/api/notifications/:member_id', async (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');   // v66: feed must never be cached (stale unread/badge)
     const memberId = req.params.member_id || req.query.member_id;       // v67: bell calls /api/notifications/<id> (path param)
     if (!memberId) return res.json({ success: true, notifications: [], unread: 0 });
-    const scope = (req.query.scope === 'professional') ? 'professional' : 'member';   // member app omits the param → member feed only
+    const _ALLOWED_SCOPES = ['member', 'professional', 'provider', 'booking'];
+    const scope = (_ALLOWED_SCOPES.indexOf(req.query.scope) >= 0) ? req.query.scope : 'member';   // member app omits the param → member feed only
     const { data: mem } = await supabase.from('members').select('notifs_seen_at, notifs_cleared_at').eq('id', memberId).maybeSingle();
     const seenAt = (mem && mem.notifs_seen_at) ? new Date(mem.notifs_seen_at).getTime() : 0;
     const clearedAt = (mem && mem.notifs_cleared_at) ? new Date(mem.notifs_cleared_at).getTime() : 0;
@@ -2736,21 +2741,30 @@ app.post('/api/admin/broadcast', async (req, res) => {
       if (!memberIds.length) return res.status(400).json({ error: 'No members match that audience.' });
     }
 
-    let rows;
-    if (Array.isArray(memberIds) && memberIds.length) {
-      rows = memberIds.map(function (mid) { return { audience: 'member', member_id: mid, title: b.title, body: b.body || null, icon: icon, link: b.link || null }; });
-    } else {
-      rows = [{ audience: 'all', member_id: null, title: b.title, body: b.body || null, icon: icon, link: b.link || null }];
-    }
+    // v120: APP-AUDIENCE ROUTING. app ∈ member|professional|provider|booking|all. `scope` is stamped EXPLICITLY
+    // on every row so a broadcast NEVER crosses into the wrong app (each app's feed filters by its scope).
+    // The member segment (member_ids) only applies to the member app.
+    const APP = (b.app && ['member', 'professional', 'provider', 'booking', 'all'].indexOf(b.app) >= 0) ? b.app : 'member';
+    const scopesFor = (APP === 'all') ? ['member', 'professional', 'provider', 'booking'] : [APP];
+    let rows = [];
+    scopesFor.forEach(function (sc) {
+      if (sc === 'member' && Array.isArray(memberIds) && memberIds.length) {
+        memberIds.forEach(function (mid) { rows.push({ audience: 'member', member_id: mid, scope: 'member', title: b.title, body: b.body || null, icon: icon, link: b.link || null }); });
+      } else {
+        rows.push({ audience: 'all', member_id: null, scope: sc, title: b.title, body: b.body || null, icon: icon, link: b.link || null });
+      }
+    });
     const { error } = await supabase.from('notifications').insert(rows);
     if (error) { console.error('[broadcast]', error.message); return res.status(500).json({ error: error.message }); }
-    // v83: also deliver as a PHONE push to opted-in members (rides along with the in-app bell notification).
+    // v83: phone push — ONLY the member app is push-wired, so push only when members are in scope.
     try {
-      const pl = { title: b.title, body: b.body || '', url: b.link || '/ffp-member-dashboard.html', icon: '/assets/icons/ffp-icon-192.png' };
-      if (Array.isArray(memberIds) && memberIds.length) { for (const mid of memberIds) { await sendPushToMember(mid, pl); } }
-      else { await sendPushToAll(pl); }
+      if (scopesFor.indexOf('member') >= 0) {
+        const pl = { title: b.title, body: b.body || '', url: b.link || '/ffp-member-dashboard.html', icon: '/assets/icons/ffp-icon-192.png' };
+        if (Array.isArray(memberIds) && memberIds.length) { for (const mid of memberIds) { await sendPushToMember(mid, pl); } }
+        else { await sendPushToAll(pl); }
+      }
     } catch (e) { console.warn('[broadcast push]', e.message); }
-    return res.json({ success: true, sent: rows.length });
+    return res.json({ success: true, sent: rows.length, app: APP });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
