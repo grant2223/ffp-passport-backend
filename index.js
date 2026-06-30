@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v134
+// FFP Passport — Express Server (Vercel, CommonJS) — v135
+// v135 (2026-06-30): MONTHLY WRAP-UP email. GET /api/cron/monthly-wrapup (CRON_SECRET; ?only=<id|email> test;
+//      ?force=1 send-all-now) sends on the 1st (UTC): active members get last-month stats (member_monthly_wrapup
+//      RPC) + "do more of what you love"; quiet members get a warm come-back. Vercel cron '0 0 1 * *'. Honours
+//      preferences.no_monthly_email. Mirrors the sunday-summary pattern (mailer + brandEmail + MAIL_FROM).
 // v134 (2026-06-30): BROADCAST APP-AUDIENCE ROUTING. /api/admin/broadcast accepts `app` (member|professional|
 //      provider|booking|all) and stamps notifications.scope EXPLICITLY per app so a broadcast never crosses into
 //      the wrong app (fixes Pro/Provider notifications leaking onto the member Passport). GET /api/notifications/:id
@@ -5386,6 +5390,85 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
       } catch (e) { skipped++; }
     }
     res.json({ success: true, sent: sent, skipped: skipped, total: (members || []).length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// v135: MONTHLY WRAP-UP — emailed on the 1st (UTC). Active members get last-month stats + "do more of what you
+// love"; quiet members get a warm come-back. Mirror of sunday-summary (CRON_SECRET; ?only=<id|email> test; ?force=1).
+app.get('/api/cron/monthly-wrapup', async (req, res) => {
+  var secret = process.env.CRON_SECRET || '';
+  var auth = req.headers['authorization'] || '';
+  var ok = secret && (auth === ('Bearer ' + secret) || req.query.secret === secret);
+  if (!ok) return res.status(401).json({ error: 'unauthorized' });
+  var only = (req.query.only || '').trim();
+  var force = req.query.force === '1' || req.query.force === 'true';
+  var now = new Date();
+  if (!only && !force && now.getUTCDate() !== 1) return res.json({ success: true, skipped: 'not the 1st', sent: 0 });
+  var to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));            // 1st of this month
+  var from = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth() - 1, 1));        // 1st of last month
+  var monName = from.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
+  var nextName = to.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
+  var APP_URL = 'https://ffppassport.com/ffp-member-dashboard.html';
+  var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); };
+  try {
+    var qy = supabase.from('members').select('id, full_name, given_names, email, preferences');
+    if (only) { qy = (only.indexOf('@') > -1) ? qy.eq('email', only) : qy.eq('id', only); }
+    else { qy = qy.eq('role', 'member').eq('status', 'active').eq('profile_complete', true); }
+    var { data: members, error } = await qy;
+    if (error) throw error;
+    var sent = 0, skipped = 0;
+    var cta = '<div style="text-align:center;margin:26px 0 4px;"><a href="' + APP_URL + '" style="display:inline-block;background:#FFCC00;color:#082335;font-weight:800;font-size:15px;text-decoration:none;padding:13px 26px;border-radius:10px;">Open your Passport</a></div>';
+    for (var i = 0; i < (members || []).length; i++) {
+      var m = members[i];
+      if (!m.email) { skipped++; continue; }
+      var prefs = m.preferences || {};
+      if (prefs.no_monthly_email === true) { skipped++; continue; }   // honours unsubscribe
+      var first = String(m.given_names || m.full_name || 'there').split(' ')[0];
+      var wr = await supabase.rpc('member_monthly_wrapup', { p_me: m.id, p_from: from.toISOString(), p_to: to.toISOString() });
+      var d = (wr && !wr.error && wr.data) ? wr.data : {};
+      var fmtT = function (mins) { var h = Math.floor((mins || 0) / 60), x = (mins || 0) % 60; return h ? (h + 'h' + (x ? (' ' + x + 'm') : '')) : ((mins || 0) + 'm'); };
+      var feedback = '<div style="margin-top:26px;padding-top:18px;border-top:1px solid #16283a;">' +
+        '<p style="font-size:14px;color:#cfd6dc;line-height:1.6;"><strong style="color:#2ba8e0;">Help us make FFP better.</strong> What do you love, what is missing, what should we build next? Your feedback shapes the experience for the whole community.</p>' +
+        '<div style="text-align:center;margin-top:12px;"><a href="' + APP_URL + '?feedback=1" style="display:inline-block;background:transparent;color:#2ba8e0;border:1px solid #2ba8e0;font-weight:800;font-size:14px;text-decoration:none;padding:11px 22px;border-radius:10px;">Share your feedback</a></div></div>';
+      var subject, body;
+      if ((d.activities || 0) > 0) {
+        subject = 'Your ' + monName + ' on Find Fit People';
+        var ba = Array.isArray(d.by_activity) ? d.by_activity : [];
+        var actRows = ba.slice(0, 7).map(function (a) {
+          var bits = [a.count + ' session' + (a.count === 1 ? '' : 's'), fmtT(a.minutes)];
+          if (a.km && a.km > 0) bits.push(a.km + ' km');
+          return '<tr><td style="padding:8px 0;border-bottom:1px solid #16283a;font-size:14px;color:#e8eef4;font-weight:700;">' + esc(a.activity) + '</td><td style="padding:8px 0;border-bottom:1px solid #16283a;font-size:12.5px;color:#8a99a8;text-align:right;">' + bits.join(' &middot; ') + '</td></tr>';
+        }).join('');
+        var moreActs = ba.length > 7 ? '<p style="font-size:12px;color:#8a99a8;margin:6px 0 0;">+ ' + (ba.length - 7) + ' more.</p>' : '';
+        var pa = d.prev_activities || 0, imp;
+        if (pa > 0 && d.activities > pa) imp = 'You stepped it up — <strong>' + d.activities + '</strong> activities vs ' + pa + ' the month before.';
+        else if (pa === 0 && d.activities > 0) imp = 'A strong month — <strong>' + d.activities + '</strong> activities logged.';
+        else if (d.activities < pa) imp = 'A quieter month than last (' + d.activities + ' vs ' + pa + ') — ' + nextName + ' is a clean slate.';
+        else imp = 'Steady as ever — <strong>' + d.activities + '</strong> activities.';
+        if ((d.distance_km || 0) > 0) imp += ' You covered <strong>' + d.distance_km + ' km</strong>' + (((d.prev_distance_km || 0) > 0) ? (' (vs ' + d.prev_distance_km + ' km before)') : '') + ', ' + fmtT(d.minutes) + ' moving.';
+        var ppl = Array.isArray(d.partners) ? d.partners : [];
+        var pplLine = ppl.length ? ('<p style="font-size:14px;color:#cfd6dc;line-height:1.6;"><strong style="color:#2ba8e0;">Better together:</strong> you shared activities with ' + ppl.slice(0, 5).map(esc).join(', ') + (ppl.length > 5 ? (' and ' + (ppl.length - 5) + ' more') : '') + '.</p>') : '';
+        var foodLine = (d.food_days > 0) ? ('<p style="font-size:14px;color:#cfd6dc;line-height:1.6;"><strong style="color:#2ba8e0;">Nutrition:</strong> you logged food on ' + d.food_days + ' day' + (d.food_days === 1 ? '' : 's') + ' (' + d.food_items + ' entr' + (d.food_items === 1 ? 'y' : 'ies') + ') — fuel counts too.</p>') : '';
+        var social = []; if (d.meetups) social.push(d.meetups + ' meet-up' + (d.meetups === 1 ? '' : 's')); if (d.new_connections) social.push(d.new_connections + ' new connection' + (d.new_connections === 1 ? '' : 's'));
+        var socialLine = social.length ? ('<p style="font-size:14px;color:#cfd6dc;line-height:1.6;">You also made ' + social.join(' and ') + ' across ' + (d.cities || 1) + ' cit' + ((d.cities || 1) === 1 ? 'y' : 'ies') + '.</p>') : '';
+        body = '<p style="font-size:15px;color:#cfd6dc;line-height:1.6;">Hi ' + esc(first) + ', here is your ' + monName + ' on the Passport — the full picture.</p>' +
+          '<p style="font-size:14px;color:#e8eef4;line-height:1.6;margin:14px 0 4px;">' + imp + '</p>' +
+          '<div style="font-size:11px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:#8a99a8;margin:18px 0 4px;">What you did</div>' +
+          '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + actRows + '</table>' + moreActs +
+          (d.top_activity ? '<p style="background:rgba(255,204,0,0.10);border:1px solid rgba(255,204,0,0.3);border-radius:10px;padding:13px;font-size:14px;color:#e8eef4;margin-top:16px;"><strong style="color:#b8965a;">What you loved most:</strong> ' + esc(d.top_activity) + '. Do more of it in ' + nextName + ' — find a meet-up or host one yourself.</p>' : '') +
+          pplLine + foodLine + socialLine + cta + feedback;
+      } else {
+        subject = 'We missed you in ' + monName + ' — Find Fit People';
+        body = '<p style="font-size:15px;color:#cfd6dc;line-height:1.6;">Hi ' + esc(first) + ', we did not see you on the Passport much in ' + monName + ' — and that is okay. Every month is a fresh start.</p>' +
+          '<p style="font-size:14px;color:#cfd6dc;line-height:1.65;">Your crew has been active, and there are meet-ups and a new quest running this ' + nextName + '. The easiest way back in is one small activity logged, or joining a meet-up near you.</p>' +
+          '<p style="font-size:14px;color:#cfd6dc;line-height:1.65;">Do more of what you love — we are here to help you find the people to do it with.</p>' + cta + feedback;
+      }
+      try {
+        await mailer.sendMail({ from: MAIL_FROM, to: m.email, subject: subject, html: brandEmail(monName + ' wrap-up', body) });
+        sent++;
+      } catch (e) { skipped++; }
+    }
+    res.json({ success: true, month: monName, sent: sent, skipped: skipped, total: (members || []).length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
