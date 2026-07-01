@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v140
+// FFP Passport — Express Server (Vercel, CommonJS) — v141
+// v141 (2026-07-01): STREAK REWARDS + NUDGE. DB: member_activity_streak(p_me) (consecutive days, ONE make-up save)
+//      + trigger activity_streak_reward (credits $20 at 14 / $50 at 30 as a transactions 'in' row → shows in
+//      earnings balance + bell notif; existing streaks seeded so no back-pay). GET /api/cron/streak-nudge (daily
+//      14:00 UTC): evening push to members who haven't logged today — "keep your N-day streak" / new members
+//      "Day X of your first 14". notifyMember only. cronAuthed; ?only test.
 // v140 (2026-07-01): ONBOARDING LIFECYCLE DRIP. Welcome email reskinned to the new brand (install-the-app = step 1;
 //      steps: install / complete profile / Open Connections / Log an activity). New members.lifecycle_sent jsonb.
 //      ffpLifecycleEmail() shell + sendProfileReminderEmail + sendWinbackEmail. GET /api/cron/lifecycle (daily 07:00
@@ -5766,6 +5771,38 @@ app.get('/api/cron/lifecycle', async (req, res) => {
       if (changed) { try { await supabase.from('members').update({ lifecycle_sent: flags }).eq('id', m.id); } catch (e) {} }
     }
     res.json({ success: true, profile_reminder: out.profile_reminder, winback: out.winback, skipped: out.skipped, total: (members || []).length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// v141: STREAK NUDGE — evening push (bell + phone) to members who haven't logged today, so they keep the
+// daily streak. Streak-holders get "keep your N-day streak"; new members (<14 days) get "Day X of your first 14".
+// notifyMember only (NO email). cronAuthed; ?only=<email|id> to test.
+app.get('/api/cron/streak-nudge', async (req, res) => {
+  if (!(await cronAuthed(req))) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    var only = (req.query.only || '').trim();
+    var today = new Date().toISOString().slice(0, 10);
+    var qy = supabase.from('members').select('id, given_names, full_name, created_at');
+    if (only) { qy = (only.indexOf('@') > -1) ? qy.eq('email', only) : qy.eq('id', only); }
+    else { qy = qy.eq('role', 'member').eq('status', 'active'); }
+    var { data: members, error } = await qy;
+    if (error) throw error;
+    var now = Date.now(), sent = 0, skipped = 0;
+    for (var i = 0; i < (members || []).length; i++) {
+      var m = members[i];
+      var pt = await supabase.from('activity_logs').select('id', { count: 'exact', head: true }).eq('member_id', m.id).gte('logged_at', today + 'T00:00:00Z');
+      var postedToday = (pt && typeof pt.count === 'number') ? pt.count : 0;
+      if (postedToday > 0) { skipped++; continue; }   // already posted today — no nudge
+      var sr = await supabase.rpc('member_activity_streak', { p_me: m.id });
+      var streak = (sr && !sr.error) ? (sr.data || 0) : 0;
+      var ageDays = m.created_at ? Math.floor((now - new Date(m.created_at).getTime()) / 86400000) : 999;
+      var msg = null;
+      if (streak >= 2) msg = { title: 'Keep your ' + streak + '-day streak', body: 'Log an activity today to keep your streak alive — every day gets you closer to the reward.', icon: 'local_fire_department', link: '/ffp-member-dashboard.html' };
+      else if (ageDays < 14) msg = { title: 'Day ' + (ageDays + 1) + ' of your first 14', body: 'Post one activity today to build the habit. 14 days in a row = $20 in your earnings.', icon: 'directions_run', link: '/ffp-member-dashboard.html' };
+      if (!msg) { skipped++; continue; }
+      try { await notifyMember(m.id, msg); sent++; } catch (e) { skipped++; }
+    }
+    res.json({ success: true, sent: sent, skipped: skipped, total: (members || []).length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
