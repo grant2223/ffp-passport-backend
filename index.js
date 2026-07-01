@@ -1,5 +1,10 @@
 // FFP Passport — Express Server (Vercel, CommonJS) — v146
-// v146 (2026-07-01): COACH MOMENTUM BUGFIX. computeCoachProfile was calling a 30-day-consistent, 30-day-streak
+// v146 (2026-07-01) [b] COACH LEARNS HABITS + POSITIVE INFLUENCE. computeCoachProfile now pulls 120 days and derives
+//      real habits into facts: favourites (top-3), variety, typical_session_min, weekend_share (weekday-regular vs
+//      weekend-warrior), longest_streak. The memory `summary`, the `coach_line` prompt and coachLineFallback now use
+//      these to coach from real patterns and be a genuinely positive influence (reinforce their active identity,
+//      celebrate progress) — while still protecting streaks (never "slipping" to a consistent member).
+// v146 (2026-07-01) [a] COACH MOMENTUM BUGFIX. computeCoachProfile was calling a 30-day-consistent, 30-day-streak
 //      member "slipping" — momentum was a naive 7d-vs-prior-7d activity COUNT with zero streak awareness. Now:
 //      compute a real consecutive-day `streak` + `logged_today`; momentum is STREAK-AWARE (streak>=7 → 'rising';
 //      only 'slipping' for a real drop when NOT on a streak); facts carry streak/logged_today; at_risk requires
@@ -5118,11 +5123,24 @@ async function computeCoachProfile(memberId) {
   const momentum = (streak >= 7) ? 'rising'
     : (thisW > lastW ? 'rising'
     : ((thisW < lastW - 1 && streak < 2) ? 'slipping' : 'steady'));
+  // HABITS — how this member actually trains (from the 120-day pull), so the coach references real patterns
+  // and is a positive influence instead of generic. favourites = their go-to activities; weekend_share =
+  // weekday-regular vs weekend-warrior; typical_session_min = usual session; longest_streak = their best run.
+  const favourites = Object.keys(actCount).sort(function (a, b) { return actCount[b] - actCount[a]; }).slice(0, 3);
+  const variety = Object.keys(actCount).length;
+  const typical_session_min = durN ? Math.round(durSum / durN) : null;
+  const weekend_share = dayCountN ? Math.round(weekendN / dayCountN * 100) : null;   // % of sessions on Sat/Sun
+  let longest_streak = 0; { const _days = Object.keys(daySet).sort(); let _run = 0, _prev = null; for (let i = 0; i < _days.length; i++) { const _c = new Date(_days[i] + 'T00:00:00Z').getTime(); _run = (_prev != null && Math.round((_c - _prev) / DAY) === 1) ? _run + 1 : 1; if (_run > longest_streak) longest_streak = _run; _prev = _c; } }
   const facts = {
     activities_30d: c30,
     weekly_cadence: Math.round(c30 / 30 * 7 * 10) / 10,
     top_activity: topActivity || null,
+    favourites: favourites,
+    variety: variety,
+    typical_session_min: typical_session_min,
+    weekend_share: weekend_share,
     streak: streak,
+    longest_streak: longest_streak,
     logged_today: logged_today,
     last_active_days: lastActiveDays,
     momentum: momentum,
@@ -5132,7 +5150,7 @@ async function computeCoachProfile(memberId) {
   let summary = '';
   try {
     if (ANTHROPIC_KEY) {
-      const sys = 'You are Grant, FFP\'s fitness coach. From these JSON facts about ONE member, write 2-3 short sentences (max ~45 words, no emojis) capturing what you know about their training — favourite activity, how often they train, momentum, and recovery/sleep if present. Specific and factual; this is your private memory to personalise future coaching. Speak about them in third person ("they").';
+      const sys = 'You are Grant, FFP\'s active-lifestyle coach. From these JSON facts about ONE member, write 2-4 short sentences (max ~55 words, no emojis) capturing what you KNOW about how they train — their favourite activities (facts.favourites), how often (weekly_cadence) and their weekday-vs-weekend rhythm (weekend_share), typical session length (typical_session_min), current and best streak (streak / longest_streak), momentum, and recovery/sleep if present. Specific and factual; this is your private memory to personalise future coaching and be a positive influence. Speak about them in third person ("they").';
       const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 150, system: sys, messages: [{ role: 'user', content: JSON.stringify(facts) }] }) });
       const j = await r.json(); if (r.ok) summary = ((j.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
     }
@@ -5141,7 +5159,7 @@ async function computeCoachProfile(memberId) {
   let coach_line = '';
   try {
     if (ANTHROPIC_KEY) {
-      const sysL = 'You are Grant, FFP\'s active-lifestyle coach, speaking DIRECTLY to this member (second person, "you"). From the JSON facts, write ONE warm, specific, actionable line (max ~30 words, no emojis) that reflects where they are RIGHT NOW. CRITICAL: if facts.streak is 3 or more, or facts.logged_today is true, ACKNOWLEDGE and protect that consistency — NEVER tell them their momentum is slipping or that they have been away. Use their favourite activity, streak, recovery/sleep if present, and nudge ONE concrete next step (log today, take it easy on low recovery, join or host a meet-up, bring a friend). Encouraging, never clinical, never about anyone else.';
+      const sysL = 'You are Grant, FFP\'s active-lifestyle coach, speaking DIRECTLY to this member (second person, "you"). From the JSON facts, write ONE warm, specific, actionable line (max ~30 words, no emojis) that reflects where they are RIGHT NOW and draws on what you KNOW about their habits (facts.favourites, their weekday/weekend rhythm from weekend_share, typical session length, current + best streak) so it feels personal, not generic. Be a genuinely POSITIVE influence: reinforce their identity as an active person, celebrate progress, and make the next step feel easy and worth it. CRITICAL: if facts.streak is 3 or more, or facts.logged_today is true, ACKNOWLEDGE and protect that consistency — NEVER tell them their momentum is slipping or that they have been away. Nudge ONE concrete next step (log today, take it easy on low recovery, join or host a meet-up, bring a friend). Encouraging, never clinical, never about anyone else.';
       const rl = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 120, system: sysL, messages: [{ role: 'user', content: JSON.stringify(facts) }] }) });
       const jl = await rl.json(); if (rl.ok) coach_line = ((jl.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
     }
