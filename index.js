@@ -5325,7 +5325,10 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
   try {
     var qy = supabase.from('members').select('id, full_name, given_names, email, preferences, tier');
     if (only) {
-      qy = (only.indexOf('@') > -1) ? qy.eq('email', only) : qy.eq('id', only);
+      var _p = only.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+      var _em = _p.filter(function (s) { return s.indexOf('@') > -1; });
+      var _id = _p.filter(function (s) { return s.indexOf('@') === -1; });
+      qy = (_em.length && !_id.length) ? qy.in('email', _em) : ((_id.length && !_em.length) ? qy.in('id', _id) : qy.in('email', _em));
     } else {
       // MEMBERS ONLY — real passport members. grant@ is a member so he's included; admin@findfitpeople
       // (super_admin) and providers are system/partner accounts and are NOT emailed the member digest.
@@ -5611,7 +5614,12 @@ app.get('/api/cron/monthly-wrapup', async (req, res) => {
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); };
   try {
     var qy = supabase.from('members').select('id, full_name, given_names, email, preferences');
-    if (only) { qy = (only.indexOf('@') > -1) ? qy.eq('email', only) : qy.eq('id', only); }
+    if (only) {
+      var _p = only.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+      var _em = _p.filter(function (s) { return s.indexOf('@') > -1; });
+      var _id = _p.filter(function (s) { return s.indexOf('@') === -1; });
+      qy = (_em.length && !_id.length) ? qy.in('email', _em) : ((_id.length && !_em.length) ? qy.in('id', _id) : qy.in('email', _em));
+    }
     else { qy = qy.eq('role', 'member').eq('status', 'active').eq('profile_complete', true); }
     var { data: members, error } = await qy;
     if (error) throw error;
