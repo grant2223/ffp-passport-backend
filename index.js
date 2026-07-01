@@ -5451,7 +5451,7 @@ function ffpWrapupEmail(o) {
     var bits = a.count + ' · ' + (a.km > 0 ? (a.km + ' km') : fmtT(a.minutes));
     var h = thick[i] || 8;
     return '<div style="margin-bottom:12px;"><table role="presentation" width="100%"><tr><td style="font-size:13px;font-weight:800;color:#0d2b45;">' + esc(a.activity) + '</td><td style="font-size:12.5px;color:#5a7186;text-align:right;">' + bits + '</td></tr></table>'
-      + '<div style="height:' + h + 'px;border-radius:8px;background:#eef2f6;margin-top:4px;"><div style="height:' + h + 'px;border-radius:8px;width:' + w + '%;background:' + palette[i % palette.length] + ';"></div></div></div>';
+      + '<div style="height:' + h + 'px;border-radius:8px;background:#eef2f6;margin-top:4px;"><div style="height:' + h + 'px;border-radius:8px;width:' + w + '%;background:' + palette[i % palette.length] + ';background-image:repeating-linear-gradient(45deg,rgba(255,255,255,0.22),rgba(255,255,255,0.22) 5px,rgba(255,255,255,0) 5px,rgba(255,255,255,0) 11px);"></div></div></div>';
   }).join('');
   var whiteMain = '<div style="background:#ffffff;padding:24px 26px;">'
     + hdD('Your month, by activity')
@@ -5465,13 +5465,13 @@ function ffpWrapupEmail(o) {
     + (ba.length > 6 ? ('<div style="font-size:12px;color:#8299ab;margin-top:2px;">+ ' + (ba.length - 6) + ' more activities</div>') : '')
     + '</div>';
   // ---------- NAVY band: connect + engage ----------
-  var av = ppl.slice(0, 3).map(function (n, i) { var cc = ['#2ba8e0', '#8b7cf0', '#14b8a6'][i] || '#2ba8e0'; return '<td width="44"><div style="width:40px;height:40px;border-radius:50%;background:' + cc + ';color:#fff;text-align:center;line-height:40px;font-weight:800;border:2px solid #10314c;">' + esc(String(n).charAt(0)) + '</div></td>'; }).join('');
-  var dstat = function (n, l, first) { return '<td width="33%" style="text-align:center;' + (first ? '' : 'border-left:1px solid #1e415f;') + '"><div style="font-size:22px;font-weight:900;color:#7ec8ee;">' + n + '</div><div style="font-size:11px;color:#8ba6bd;">' + l + '</div></td>'; };
-  var ceBand = '<div style="background:#0d2b45;padding:24px 26px;">'
-    + '<div style="font-size:12px;font-weight:900;letter-spacing:.6px;color:#ffffff;text-transform:uppercase;">Connect + Engage</div>'
-    + '<div style="font-size:12.5px;color:#9fc4dd;margin:6px 0 16px;">Real people, real places, good energy — this is how we <b style="color:#ffffff;">find fit people</b>, together.</div>'
-    + (ppl.length ? ('<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:18px;"><tr>' + av + '<td style="padding-left:10px;font-size:13.5px;color:#cfe0ee;">You moved with ' + ppl.slice(0, 2).map(esc).join(' &amp; ') + (ppl.length > 2 ? (' and ' + (ppl.length - 2) + ' others') : '') + '.</td></tr></table>') : '')
-    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>' + dstat(d.meetups || 0, 'meet-ups', true) + dstat(d.new_connections || 0, 'new connections') + dstat(d.cities || 1, 'cities') + '</tr></table></div>';
+  var av = ppl.slice(0, 3).map(function (n, i) { var cc = ['#2ba8e0', '#8b7cf0', '#14b8a6'][i] || '#2ba8e0'; return '<td width="44"><div style="width:40px;height:40px;border-radius:50%;background:' + cc + ';color:#fff;text-align:center;line-height:40px;font-weight:800;border:2px solid #ffffff;box-shadow:0 1px 3px rgba(13,43,69,0.18);">' + esc(String(n).charAt(0)) + '</div></td>'; }).join('');
+  var dstat = function (n, l, first) { return '<td width="33%" style="text-align:center;' + (first ? '' : 'border-left:1px solid #cfe0ee;') + '"><div style="font-size:23px;font-weight:900;color:#2ba8e0;">' + n + '</div><div style="font-size:11px;color:#5a7186;">' + l + '</div></td>'; };
+  var ceBand = '<div style="background:#e9f4fc;background-image:linear-gradient(135deg,#f3faff,#dceffb);padding:24px 26px;">'
+    + '<div style="font-size:12px;font-weight:900;letter-spacing:.6px;color:#0d2b45;text-transform:uppercase;">Connect + Engage</div>'
+    + '<div style="font-size:12.5px;color:#3a5169;margin:6px 0 16px;">Real people, real places, good energy — this is how we <b style="color:#0d2b45;">find fit people</b>, together.</div>'
+    + (ppl.length ? ('<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:18px;"><tr>' + av + '<td style="padding-left:10px;font-size:13.5px;color:#33475b;">You moved with ' + ppl.slice(0, 2).map(esc).join(' &amp; ') + (ppl.length > 2 ? (' and ' + (ppl.length - 2) + ' others') : '') + '.</td></tr></table>') : '')
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + '<tr>' + dstat(d.meetups || 0, 'meet-ups', true) + dstat(d.new_connections || 0, 'new connections') + dstat(d.cities || 1, 'cities') + '</tr></table></div>';
   // ---------- WHITE band: you vs your connections ----------
   var connBand = '';
   var cn = d.connections;
@@ -5485,7 +5485,7 @@ function ffpWrapupEmail(o) {
       return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:9px;"><tr>'
         + '<td width="18" style="font-size:12px;color:' + (r.is_me ? '#2ba8e0' : '#8299ab') + ';font-weight:' + (r.is_me ? '800' : '700') + ';">' + (i + 1) + '</td>'
         + '<td width="66" style="font-size:12.5px;' + (r.is_me ? 'font-weight:900;color:#2ba8e0;' : 'color:#33475b;') + '">' + esc(r.name) + '</td>'
-        + '<td><div style="height:14px;border-radius:7px;background:#eef2f6;"><div style="height:14px;border-radius:7px;width:' + w + '%;background:' + (r.is_me ? '#2ba8e0' : '#c3d0dc') + ';"></div></div></td>'
+        + '<td><div style="height:14px;border-radius:7px;background:#eef2f6;"><div style="height:14px;border-radius:7px;width:' + w + '%;background:' + (r.is_me ? '#2ba8e0' : '#c3d0dc') + ';background-image:repeating-linear-gradient(45deg,rgba(255,255,255,0.25),rgba(255,255,255,0.25) 5px,rgba(255,255,255,0) 5px,rgba(255,255,255,0) 11px);"></div></div></td>'
         + '<td width="28" style="text-align:right;font-size:12.5px;font-weight:' + (r.is_me ? '800' : '700') + ';' + (r.is_me ? 'color:#2ba8e0;' : '') + '">' + r.sessions + '</td>'
         + '</tr></table>';
     }).join('');
@@ -5541,7 +5541,7 @@ function ffpWrapupEmail(o) {
       var aw = Math.max(2, Math.round((avg / scale) * 100));
       return '<div style="margin-bottom:16px;">'
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:7px;"><tr><td style="font-size:12px;color:#5a7186;">' + title + '</td><td style="text-align:right;"><span style="background:#e7f7ee;color:#1a9d5a;font-weight:800;font-size:11px;padding:1px 9px;border-radius:10px;">Top ' + badge + '%</span></td></tr></table>'
-        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:6px;"><tr><td width="52" style="font-size:11px;font-weight:800;color:#0d2b45;">You</td><td><div style="height:12px;border-radius:6px;background:#e2e9f0;"><div style="height:12px;border-radius:6px;width:' + yw + '%;background:#2ba8e0;"></div></div></td><td width="26" style="text-align:right;font-size:11px;font-weight:800;color:#0d2b45;">' + c.my_sessions + '</td></tr></table>'
+        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:6px;"><tr><td width="52" style="font-size:11px;font-weight:800;color:#0d2b45;">You</td><td><div style="height:12px;border-radius:6px;background:#e2e9f0;"><div style="height:12px;border-radius:6px;width:' + yw + '%;background:#2ba8e0;background-image:repeating-linear-gradient(45deg,rgba(255,255,255,0.25),rgba(255,255,255,0.25) 5px,rgba(255,255,255,0) 5px,rgba(255,255,255,0) 11px);"></div></div></td><td width="26" style="text-align:right;font-size:11px;font-weight:800;color:#0d2b45;">' + c.my_sessions + '</td></tr></table>'
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="52" style="font-size:11px;color:#8299ab;">Average</td><td><div style="height:12px;border-radius:6px;background:#e2e9f0;"><div style="height:12px;border-radius:6px;width:' + aw + '%;background:#c3d0dc;"></div></div></td><td width="26" style="text-align:right;font-size:11px;color:#8299ab;">' + avg + '</td></tr></table>'
         + '</div>';
     };
@@ -5553,14 +5553,14 @@ function ffpWrapupEmail(o) {
   }
   // ---------- WHITE band: CTA ----------
   var ctaBand = '<div style="background:#ffffff;padding:26px;text-align:center;"><a href="' + app + '" style="display:inline-block;background:#FFCC00;color:#082335;font-weight:900;font-size:15px;text-decoration:none;padding:14px 32px;border-radius:12px;">Open your Passport</a></div>';
-  // ---------- NAVY band: Find Fit People signoff ----------
-  var signBand = '<div style="background:#0d2b45;background-image:linear-gradient(135deg,#12659a,#0d2b45);padding:28px 26px;text-align:center;">'
-    + '<div style="font-size:22px;font-weight:900;color:#ffffff;letter-spacing:-.3px;">Find Fit People.</div>'
-    + '<div style="font-size:13px;color:#bcd6e8;margin-top:7px;line-height:1.5;">It’s not just our name — it’s what we do, together.</div></div>';
+  // ---------- WHITE band: Find Fit People signoff (blue type, no dark slab) ----------
+  var signBand = '<div style="background:#ffffff;padding:2px 26px 26px;text-align:center;">'
+    + '<div style="font-size:21px;font-weight:900;color:#2ba8e0;letter-spacing:-.3px;">Find Fit People.</div>'
+    + '<div style="font-size:12.5px;color:#5a7186;margin-top:6px;line-height:1.5;">It’s not just our name — it’s what we do, together.</div></div>';
   // ---------- LIGHT band: feedback ----------
   var fbBand = '<div style="background:#eef4f9;padding:22px 26px;text-align:center;"><div style="font-size:13.5px;color:#3a5169;line-height:1.55;"><b style="color:#0d2b45;">Help Coach Grant help you.</b> What do you love, what’s missing, what should we build next?</div><a href="' + app + '?feedback=1" style="display:inline-block;margin-top:12px;background:#ffffff;color:#2ba8e0;border:1px solid #2ba8e0;font-weight:800;font-size:13.5px;text-decoration:none;padding:10px 22px;border-radius:10px;">Share your feedback</a></div>';
-  // ---------- DARK footer band (bookends the hero) ----------
-  var footBand = '<div style="background:#081826;padding:20px 26px;text-align:center;font-size:11px;color:#7f96a9;">Find Fit People &middot; UAE 2026 &middot; <a href="https://ffppassport.com" style="color:#4bb4e6;text-decoration:none;">ffppassport.com</a></div>';
+  // ---------- footer band (light) ----------
+  var footBand = '<div style="background:#e3ebf2;padding:18px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; UAE 2026 &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div>';
   // ---------- LIGHT band: Coach Grant (top accent rule, no card) ----------
   var coachBand = '<div style="background:#eef4f9;"><div style="height:4px;background-color:#2ba8e0;background-image:linear-gradient(90deg,#2ba8e0,#7ed0f5);"></div><div style="padding:22px 26px;">'
     + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="46" style="vertical-align:middle;"><div style="width:46px;height:46px;border-radius:50%;background:#173a5a;color:#ffffff;text-align:center;line-height:46px;font-weight:900;font-size:16px;">CG</div></td><td style="padding-left:12px;vertical-align:middle;"><div style="font-size:15px;font-weight:900;color:#0d2b45;">Coach Grant</div><div style="font-size:11px;color:#5a7186;">Your FFP coach &middot; a note for ' + nxt + '</div></td></tr></table>'
@@ -5578,7 +5578,7 @@ function ffpWrapupEmail(o) {
     + '<div style="font-size:15px;color:#dff0fb;margin-top:8px;">' + (d.activities || 0) + ' activities &middot; ' + (d.distance_km || 0) + ' km &middot; ' + fmtT(d.minutes) + ' moving</div>' + upchip + '</div>';
   var heroImg = hero ? ('<img src="' + hero + '" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;" alt="">') : '';
   // ---------- assemble (alternating bands) ----------
-  var inner = heroBand + heroImg + coachBand + whiteMain + ceBand + connBand + matchBand + vsBand + cmpBand + ctaBand + signBand + fbBand + footBand;
+  var inner = heroBand + heroImg + coachBand + whiteMain + ceBand + connBand + cmpBand + vsBand + matchBand + ctaBand + signBand + fbBand + footBand;
   return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">'
     + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:18px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
     + '<tr><td style="padding:0;">' + inner + '</td></tr></table></td></tr></table>';
