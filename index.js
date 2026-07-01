@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v136
+// FFP Passport — Express Server (Vercel, CommonJS) — v137
+// v137 (2026-07-01): ADMIN-TRIGGERABLE BATCH SENDS. New cronAuthed(req) helper — cron endpoints
+//      (monthly-wrapup, sunday-summary, meetup-reminders, coach-nudges) now accept EITHER CRON_SECRET
+//      OR a valid ?admin_id=<admin_users.id> (whitespace-trimmed, so a stray newline in the env can't 401).
+//      Powers the Admin → Emails panel: "Send test to me" (?only=<admin email>&force=1) + "Send to everyone"
+//      (?force=1) with NO secret. Manual browser ?secret= URLs no longer needed.
 // v136 (2026-07-01): MONTHLY WRAP-UP redesign — world-class, email-safe full-width doc (ffpWrapupEmail): brand hero
 //      + storage photo, Coach Grant (connect/commend/recommend), QuickChart activity doughnut, WHAT-YOU-DID bars,
 //      CONNECT+ENGAGE, YOU-vs-CONNECTIONS leaderboard, FIT-PEOPLE-FOR-YOU matches, month-vs-month, HOW-YOU-COMPARE
@@ -2603,11 +2608,22 @@ app.post('/api/notify/member', async (req, res) => {
 });
 
 // Reminder cron — meet-ups starting within 24h, email each attendee once (reminder_sent_at flag).
+// v137: admin-triggerable batch sends. Cron endpoints accept EITHER the CRON_SECRET (Vercel cron / manual)
+// OR a valid admin_id (from the admin dashboard, checked against admin_users) — so admins fire sends from the
+// UI with no secret at all. Whitespace-trimmed so a stray space/newline in the env can never cause a false 401.
+async function cronAuthed(req) {
+  var secret = (process.env.CRON_SECRET || '').trim();
+  var auth = (req.headers['authorization'] || '').trim();
+  var qsec = (req.query.secret || '').trim();
+  if (secret && (auth === ('Bearer ' + secret) || qsec === secret)) return true;
+  var adminId = (req.query.admin_id || '').trim();
+  if (adminId) {
+    try { var r = await supabase.from('admin_users').select('id').eq('id', adminId).maybeSingle(); if (r && r.data) return true; } catch (e) {}
+  }
+  return false;
+}
 app.get('/api/cron/meetup-reminders', async (req, res) => {
-  var secret = process.env.CRON_SECRET || '';
-  var auth = req.headers['authorization'] || '';
-  var ok = secret && (auth === ('Bearer ' + secret) || req.query.secret === secret);
-  if (!ok) return res.status(401).json({ error: 'unauthorized' });
+  if (!(await cronAuthed(req))) return res.status(401).json({ error: 'unauthorized' });
   try {
     // TWO reminder windows, each tracked by its own flag so a member gets BOTH (day-before + starting-soon).
     // For the 2-hour reminder to be timely this endpoint must be called HOURLY (see deploy notes). Calling it
@@ -5074,9 +5090,7 @@ function socialNudge(ops) {
 
 // Daily nudge cron (Vercel cron, secret-gated). ?only=<member|email> for a safe single test; ?dry=1 to preview without sending.
 app.get('/api/cron/coach-nudges', async (req, res) => {
-  const secret = process.env.CRON_SECRET || '';
-  const auth = req.headers['authorization'] || '';
-  if (!(secret && (auth === ('Bearer ' + secret) || req.query.secret === secret))) return res.status(401).json({ error: 'unauthorized' });
+  if (!(await cronAuthed(req))) return res.status(401).json({ error: 'unauthorized' });
   try {
     const only = (req.query.only || '').trim();
     const dry = req.query.dry === '1' || req.query.dry === 'true';
@@ -5302,10 +5316,7 @@ function renderSundaySummary(name, d){
 }
 // Cron endpoint (Vercel Cron sends Authorization: Bearer ${CRON_SECRET}). Also accepts ?secret= for manual test runs.
 app.get('/api/cron/sunday-summary', async (req, res) => {
-  var secret = process.env.CRON_SECRET || '';
-  var auth = req.headers['authorization'] || '';
-  var ok = secret && (auth === ('Bearer ' + secret) || req.query.secret === secret);
-  if (!ok) return res.status(401).json({ error: 'unauthorized' });
+  if (!(await cronAuthed(req))) return res.status(401).json({ error: 'unauthorized' });
   // ?only=<member_id OR email> → send to just that one member (SAFE TEST: doesn't email everyone)
   var only = (req.query.only || '').trim();
   var force = req.query.force === '1' || req.query.force === 'true';   // manual "send to everyone now", any day
@@ -5587,10 +5598,7 @@ function ffpWrapupEmail(o) {
 // v136: MONTHLY WRAP-UP — emailed on the 1st (UTC). Active members get a world-class stats + Coach Grant email
 // (ffpWrapupEmail); quiet members get a warm come-back. (CRON_SECRET; ?only=<id|email> test; ?force=1).
 app.get('/api/cron/monthly-wrapup', async (req, res) => {
-  var secret = process.env.CRON_SECRET || '';
-  var auth = req.headers['authorization'] || '';
-  var ok = secret && (auth === ('Bearer ' + secret) || req.query.secret === secret);
-  if (!ok) return res.status(401).json({ error: 'unauthorized' });
+  if (!(await cronAuthed(req))) return res.status(401).json({ error: 'unauthorized' });
   var only = (req.query.only || '').trim();
   var force = req.query.force === '1' || req.query.force === 'true';
   var now = new Date();
