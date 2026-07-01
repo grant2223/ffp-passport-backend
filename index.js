@@ -5440,34 +5440,40 @@ function ffpWrapupEmail(o) {
     + '<div style="font-size:11px;font-weight:800;color:#c17d1a;text-transform:uppercase;letter-spacing:.5px;margin:15px 0 8px;">&#9650; Where we build next</div>' + liList(build)
     + '<div style="font-size:13.5px;line-height:1.55;color:#33475b;margin-top:6px;">Do those and ' + nxt + ' won’t just match ' + mon + ' — it’ll be your strongest yet. That’s what we’re here for: helping you <b>find fit people</b> and become one. I’m with you. &#128170;</div>'
     + '</div>';
-  // ---------- pie card ----------
-  var pieCard = '<div style="margin:16px 20px 4px;background:#ffffff;border:1px solid #e4ecf3;border-radius:14px;padding:16px 18px;">'
-    + '<div style="font-size:13px;font-weight:900;color:#0d2b45;margin-bottom:10px;">YOUR MONTH, BY ACTIVITY</div>'
-    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-    + '<td width="150" style="vertical-align:middle;"><img src="' + pieUrl + '" width="130" height="130" style="display:block;border:0;width:130px;height:130px;" alt="Activity mix"></td>'
-    + '<td style="vertical-align:middle;padding-left:8px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + legend + '</table></td>'
-    + '</tr></table></div>';
-  // ---------- what you did (bars, varied thickness) ----------
+  // ===== FULL-BLEED BANDS (no per-section cards) — headers + dividers, alternating light/white/navy =====
+  var hdD = function (t, sub) { return '<div style="font-size:12px;font-weight:900;letter-spacing:.6px;color:#0d2b45;text-transform:uppercase;">' + t + (sub ? (' <span style="font-weight:600;color:#8299ab;font-size:11px;text-transform:none;letter-spacing:0;">' + sub + '</span>') : '') + '</div>'; };
+  var rule = '<div style="height:1px;background:#e9eef3;margin:20px 0;"></div>';
+  // ---------- WHITE band: activity doughnut + what you did ----------
   var bmax = ba.length ? ba[0].count : 1;
   var thick = [16, 13, 11, 10, 9, 9, 8, 8];
   var bars = ba.slice(0, 6).map(function (a, i) {
     var w = Math.max(6, Math.round((a.count / bmax) * 100));
-    var bits = [a.count + ' · ' + (a.km > 0 ? (a.km + ' km') : fmtT(a.minutes))];
+    var bits = a.count + ' · ' + (a.km > 0 ? (a.km + ' km') : fmtT(a.minutes));
     var h = thick[i] || 8;
     return '<div style="margin-bottom:12px;"><table role="presentation" width="100%"><tr><td style="font-size:13px;font-weight:800;color:#0d2b45;">' + esc(a.activity) + '</td><td style="font-size:12.5px;color:#5a7186;text-align:right;">' + bits + '</td></tr></table>'
-      + '<div style="height:' + h + 'px;border-radius:8px;background:#e4ecf3;margin-top:4px;"><div style="height:' + h + 'px;border-radius:8px;width:' + w + '%;background:' + palette[i % palette.length] + ';"></div></div></div>';
+      + '<div style="height:' + h + 'px;border-radius:8px;background:#eef2f6;margin-top:4px;"><div style="height:' + h + 'px;border-radius:8px;width:' + w + '%;background:' + palette[i % palette.length] + ';"></div></div></div>';
   }).join('');
-  var didCard = '<div style="margin:16px 20px 4px;background:#ffffff;border:1px solid #e4ecf3;border-radius:14px;padding:16px 18px;"><div style="font-size:13px;font-weight:900;color:#0d2b45;margin-bottom:14px;">WHAT YOU DID</div>' + bars + (ba.length > 6 ? ('<div style="font-size:12px;color:#8299ab;margin-top:2px;">+ ' + (ba.length - 6) + ' more activities</div>') : '') + '</div>';
-  // ---------- connect + engage ----------
-  var av = ppl.slice(0, 3).map(function (n, i) { var cc = ['#2ba8e0', '#8b7cf0', '#14b8a6'][i] || '#173a5a'; return '<td width="46"><div style="width:42px;height:42px;border-radius:50%;background:' + cc + ';color:#fff;text-align:center;line-height:42px;font-weight:800;">' + esc(String(n).charAt(0)) + '</div></td>'; }).join('');
-  var chip = function (n, l) { return '<td width="33%" style="padding:0 4px;"><div style="background:#ffffff;border-radius:10px;padding:10px;text-align:center;"><div style="font-size:19px;font-weight:900;color:#2ba8e0;">' + n + '</div><div style="font-size:11px;color:#5a7186;">' + l + '</div></div></td>'; };
-  var ceCard = '<div style="margin:16px 20px 4px;background:#eef6fd;border:1px solid #cfe6f6;border-radius:16px;padding:18px;">'
-    + '<div style="font-size:13px;font-weight:900;color:#0d2b45;">CONNECT + ENGAGE</div>'
-    + '<div style="font-size:12.5px;color:#3a5169;margin:4px 0 14px;">Real people, real places, good energy — this is how we <b>find fit people</b>, together.</div>'
-    + (ppl.length ? ('<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:14px;"><tr>' + av + '<td style="padding-left:10px;font-size:13.5px;color:#33475b;">You moved with ' + ppl.slice(0, 2).map(esc).join(', ') + (ppl.length > 2 ? (' and ' + (ppl.length - 2) + ' others') : '') + ' this month.</td></tr></table>') : '')
-    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>' + chip(d.meetups || 0, 'meet-ups') + chip(d.new_connections || 0, 'new connections') + chip(d.cities || 1, 'cities') + '</tr></table></div>';
-  // ---------- you vs your connections ----------
-  var connCard = '';
+  var whiteMain = '<div style="background:#ffffff;padding:24px 26px;">'
+    + hdD('Your month, by activity')
+    + '<div style="height:12px;"></div>'
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+    + '<td width="150" style="vertical-align:middle;"><img src="' + pieUrl + '" width="130" height="130" style="display:block;border:0;width:130px;height:130px;" alt="Activity mix"></td>'
+    + '<td style="vertical-align:middle;padding-left:8px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + legend + '</table></td>'
+    + '</tr></table>'
+    + rule
+    + hdD('What you did') + '<div style="height:14px;"></div>' + bars
+    + (ba.length > 6 ? ('<div style="font-size:12px;color:#8299ab;margin-top:2px;">+ ' + (ba.length - 6) + ' more activities</div>') : '')
+    + '</div>';
+  // ---------- NAVY band: connect + engage ----------
+  var av = ppl.slice(0, 3).map(function (n, i) { var cc = ['#2ba8e0', '#8b7cf0', '#14b8a6'][i] || '#2ba8e0'; return '<td width="44"><div style="width:40px;height:40px;border-radius:50%;background:' + cc + ';color:#fff;text-align:center;line-height:40px;font-weight:800;border:2px solid #10314c;">' + esc(String(n).charAt(0)) + '</div></td>'; }).join('');
+  var dstat = function (n, l, first) { return '<td width="33%" style="text-align:center;' + (first ? '' : 'border-left:1px solid #1e415f;') + '"><div style="font-size:22px;font-weight:900;color:#7ec8ee;">' + n + '</div><div style="font-size:11px;color:#8ba6bd;">' + l + '</div></td>'; };
+  var ceBand = '<div style="background:#0d2b45;padding:24px 26px;">'
+    + '<div style="font-size:12px;font-weight:900;letter-spacing:.6px;color:#ffffff;text-transform:uppercase;">Connect + Engage</div>'
+    + '<div style="font-size:12.5px;color:#9fc4dd;margin:6px 0 16px;">Real people, real places, good energy — this is how we <b style="color:#ffffff;">find fit people</b>, together.</div>'
+    + (ppl.length ? ('<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:18px;"><tr>' + av + '<td style="padding-left:10px;font-size:13.5px;color:#cfe0ee;">You moved with ' + ppl.slice(0, 2).map(esc).join(' &amp; ') + (ppl.length > 2 ? (' and ' + (ppl.length - 2) + ' others') : '') + '.</td></tr></table>') : '')
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>' + dstat(d.meetups || 0, 'meet-ups', true) + dstat(d.new_connections || 0, 'new connections') + dstat(d.cities || 1, 'cities') + '</tr></table></div>';
+  // ---------- WHITE band: you vs your connections ----------
+  var connBand = '';
   var cn = d.connections;
   if (cn && Array.isArray(cn.board) && cn.conn_total >= 3) {
     var board = cn.board.slice();
@@ -5483,13 +5489,13 @@ function ffpWrapupEmail(o) {
         + '<td width="28" style="text-align:right;font-size:12.5px;font-weight:' + (r.is_me ? '800' : '700') + ';' + (r.is_me ? 'color:#2ba8e0;' : '') + '">' + r.sessions + '</td>'
         + '</tr></table>';
     }).join('');
-    connCard = '<div style="margin:16px 20px 4px;background:#ffffff;border:1px solid #e4ecf3;border-radius:14px;padding:16px 18px;">'
-      + '<div style="font-size:13px;font-weight:900;color:#0d2b45;">YOU vs YOUR CONNECTIONS <span style="font-weight:600;color:#8299ab;font-size:11px;">&middot; sessions in ' + mon + '</span></div>'
-      + '<div style="font-size:12px;color:#3a5169;margin:5px 0 14px;">You’re <b style="color:#2ba8e0;">#' + cn.my_rank + ' of ' + cn.conn_total + '</b> — more active than ' + cn.pct_more + '% of your circle. Keep chasing the top. &#128064;</div>'
+    connBand = '<div style="background:#ffffff;padding:24px 26px;">'
+      + hdD('You vs your connections', '&middot; sessions in ' + mon)
+      + '<div style="font-size:12.5px;color:#3a5169;margin:7px 0 15px;">You’re <b style="color:#2ba8e0;">#' + cn.my_rank + ' of ' + cn.conn_total + '</b> — more active than ' + cn.pct_more + '% of your circle. Keep chasing the top. &#128064;</div>'
       + rows + '</div>';
   }
-  // ---------- fit people for you (matches) ----------
-  var matchCard = '';
+  // ---------- LIGHT band: fit people for you (matches) ----------
+  var matchBand = '';
   if (Array.isArray(d.matches) && d.matches.length) {
     var mrows = d.matches.map(function (m) {
       var sp = Array.isArray(m.sports) ? m.sports.filter(Boolean) : [];
@@ -5501,13 +5507,13 @@ function ffpWrapupEmail(o) {
         + '<td width="86" style="text-align:right;vertical-align:middle;"><a href="' + app + '#connections" style="background:#2ba8e0;color:#fff;font-size:12px;font-weight:800;text-decoration:none;padding:8px 14px;border-radius:9px;">Connect</a></td>'
         + '</tr></table>';
     }).join('');
-    matchCard = '<div style="margin:16px 20px 4px;background:#ffffff;border:1px solid #e4ecf3;border-radius:14px;padding:16px 18px;">'
-      + '<div style="font-size:13px;font-weight:900;color:#0d2b45;">FIT PEOPLE FOR YOU</div>'
-      + '<div style="font-size:12px;color:#3a5169;margin:5px 0 14px;">We found people near you who love what you love — your top matches this month.</div>' + mrows + '</div>';
+    matchBand = '<div style="background:#eef4f9;padding:24px 26px;">'
+      + hdD('Fit people for you')
+      + '<div style="font-size:12.5px;color:#3a5169;margin:7px 0 15px;">We found people near you who love what you love — your top matches this month.</div>' + mrows + '</div>';
   }
-  // ---------- June vs May ----------
-  var vsRow = function (label, prev, cur, delta) {
-    return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-bottom:1px solid #eef2f6;"><tr>'
+  // ---------- WHITE band: month vs month ----------
+  var vsRow = function (label, prev, cur, delta, last) {
+    return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"' + (last ? '' : ' style="border-bottom:1px solid #eef2f6;"') + '><tr>'
       + '<td style="padding:9px 0;font-size:13.5px;color:#33475b;">' + label + '</td>'
       + '<td width="60" style="padding:9px 0;font-size:13.5px;color:#8299ab;text-align:right;">' + prev + '</td>'
       + '<td width="22" style="padding:9px 0;color:#c3d0dc;text-align:center;">&rarr;</td>'
@@ -5516,51 +5522,65 @@ function ffpWrapupEmail(o) {
       + '</tr></table>';
   };
   var dAct = (d.activities || 0) - (d.prev_activities || 0);
-  var vsCard = '<div style="margin:16px 20px 4px;background:#ffffff;border:1px solid #e4ecf3;border-radius:14px;padding:16px 18px;">'
-    + '<div style="font-size:13px;font-weight:900;color:#0d2b45;">' + mon.toUpperCase() + ' vs ' + o.prevMonName.toUpperCase() + '</div>'
-    + '<div style="font-size:11px;color:#8299ab;margin:2px 0 12px;">how this month stacks up against last</div>'
+  var dDays = (d.active_days || 0) - (d.prev_active_days || 0);
+  var vsBand = '<div style="background:#ffffff;padding:24px 26px;">'
+    + hdD(mon + ' vs ' + o.prevMonName)
+    + '<div style="font-size:11px;color:#8299ab;margin:3px 0 8px;">how this month stacks up against last</div>'
     + vsRow('Activities', (d.prev_activities || 0), (d.activities || 0), (dAct > 0 ? ('+' + dAct) : (dAct === 0 ? '&mdash;' : dAct)))
     + vsRow('Distance', (d.prev_distance_km || 0) + ' km', (d.distance_km || 0) + ' km', ((d.distance_km || 0) > (d.prev_distance_km || 0) ? '&#9650;' : '&mdash;'))
     + vsRow('Moving time', fmtT(d.prev_minutes || 0), fmtT(d.minutes || 0), ((d.minutes || 0) > (d.prev_minutes || 0) ? '&#9650;' : '&mdash;'))
-    + vsRow('Active days', (d.prev_active_days || 0), (d.active_days || 0), (((d.active_days || 0) - (d.prev_active_days || 0)) > 0 ? ('+' + ((d.active_days || 0) - (d.prev_active_days || 0))) : '&mdash;'))
+    + vsRow('Active days', (d.prev_active_days || 0), (d.active_days || 0), (dDays > 0 ? ('+' + dDays) : '&mdash;'), true)
     + '</div>';
-  // ---------- how you compare (grouped bars) ----------
-  var cmpCard = '';
+  // ---------- LIGHT band: how you compare ----------
+  var cmpBand = '';
   var c = d.compare;
   if (c) {
-    var cmpGroup = function (title, top2, avg, badge) {
+    var cmpGroup = function (title, avg, badge) {
       var scale = Math.max(c.my_sessions || 1, avg || 1);
       var yw = Math.max(4, Math.round((c.my_sessions / scale) * 100));
       var aw = Math.max(2, Math.round((avg / scale) * 100));
-      return '<div style="margin-bottom:15px;">'
+      return '<div style="margin-bottom:16px;">'
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:7px;"><tr><td style="font-size:12px;color:#5a7186;">' + title + '</td><td style="text-align:right;"><span style="background:#e7f7ee;color:#1a9d5a;font-weight:800;font-size:11px;padding:1px 9px;border-radius:10px;">Top ' + badge + '%</span></td></tr></table>'
-        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:6px;"><tr><td width="52" style="font-size:11px;font-weight:800;color:#0d2b45;">You</td><td><div style="height:12px;border-radius:6px;background:#eef2f6;"><div style="height:12px;border-radius:6px;width:' + yw + '%;background:#2ba8e0;"></div></div></td><td width="26" style="text-align:right;font-size:11px;font-weight:800;color:#0d2b45;">' + c.my_sessions + '</td></tr></table>'
-        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="52" style="font-size:11px;color:#8299ab;">Average</td><td><div style="height:12px;border-radius:6px;background:#eef2f6;"><div style="height:12px;border-radius:6px;width:' + aw + '%;background:#c3d0dc;"></div></div></td><td width="26" style="text-align:right;font-size:11px;color:#8299ab;">' + avg + '</td></tr></table>'
+        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:6px;"><tr><td width="52" style="font-size:11px;font-weight:800;color:#0d2b45;">You</td><td><div style="height:12px;border-radius:6px;background:#e2e9f0;"><div style="height:12px;border-radius:6px;width:' + yw + '%;background:#2ba8e0;"></div></div></td><td width="26" style="text-align:right;font-size:11px;font-weight:800;color:#0d2b45;">' + c.my_sessions + '</td></tr></table>'
+        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="52" style="font-size:11px;color:#8299ab;">Average</td><td><div style="height:12px;border-radius:6px;background:#e2e9f0;"><div style="height:12px;border-radius:6px;width:' + aw + '%;background:#c3d0dc;"></div></div></td><td width="26" style="text-align:right;font-size:11px;color:#8299ab;">' + avg + '</td></tr></table>'
         + '</div>';
     };
-    cmpCard = '<div style="margin:16px 20px 4px;background:#ffffff;border:1px solid #e4ecf3;border-radius:14px;padding:16px 18px;">'
-      + '<div style="font-size:13px;font-weight:900;color:#0d2b45;margin-bottom:12px;">HOW YOU COMPARE <span style="font-weight:600;color:#8299ab;font-size:11px;">&middot; sessions / month</span></div>'
-      + cmpGroup('All FFP members', null, c.all_avg, c.all_top)
-      + (c.gender_label ? cmpGroup(c.gender_label, null, c.gender_avg, c.gender_top) : '')
+    cmpBand = '<div style="background:#eef4f9;padding:24px 26px;">'
+      + hdD('How you compare', '&middot; sessions / month') + '<div style="height:14px;"></div>'
+      + cmpGroup('All FFP members', c.all_avg, c.all_top)
+      + (c.gender_label ? cmpGroup(c.gender_label, c.gender_avg, c.gender_top) : '')
       + '</div>';
   }
-  // ---------- CTA + brand signoff + feedback + footer ----------
-  var tail = '<div style="text-align:center;padding:22px 20px 4px;"><a href="' + app + '" style="display:inline-block;background:#FFCC00;color:#082335;font-weight:900;font-size:15px;text-decoration:none;padding:14px 30px;border-radius:12px;">Open your Passport</a></div>'
-    + '<div style="text-align:center;font-size:14px;font-weight:800;color:#2ba8e0;padding:14px 20px 4px;line-height:1.5;">Find Fit People.<br><span style="color:#5a7186;font-weight:600;font-size:12.5px;">It’s not just our name — it’s what we do, together.</span></div>'
-    + '<div style="margin:14px 20px 4px;padding:16px 18px;background:#eef4f9;border-radius:14px;text-align:center;"><div style="font-size:13.5px;color:#3a5169;line-height:1.55;"><b style="color:#0d2b45;">Help Coach Grant help you.</b> What do you love, what’s missing, what should we build next?</div><a href="' + app + '?feedback=1" style="display:inline-block;margin-top:11px;background:#ffffff;color:#2ba8e0;border:1px solid #2ba8e0;font-weight:800;font-size:13.5px;text-decoration:none;padding:10px 22px;border-radius:10px;">Share your feedback</a></div>'
-    + '<div style="text-align:center;font-size:11px;color:#8299ab;padding:18px;">Find Fit People &middot; UAE 2026 &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div>';
+  // ---------- WHITE band: CTA ----------
+  var ctaBand = '<div style="background:#ffffff;padding:26px;text-align:center;"><a href="' + app + '" style="display:inline-block;background:#FFCC00;color:#082335;font-weight:900;font-size:15px;text-decoration:none;padding:14px 32px;border-radius:12px;">Open your Passport</a></div>';
+  // ---------- NAVY band: Find Fit People signoff ----------
+  var signBand = '<div style="background:#0d2b45;background-image:linear-gradient(135deg,#12659a,#0d2b45);padding:28px 26px;text-align:center;">'
+    + '<div style="font-size:22px;font-weight:900;color:#ffffff;letter-spacing:-.3px;">Find Fit People.</div>'
+    + '<div style="font-size:13px;color:#bcd6e8;margin-top:7px;line-height:1.5;">It’s not just our name — it’s what we do, together.</div></div>';
+  // ---------- LIGHT band: feedback ----------
+  var fbBand = '<div style="background:#eef4f9;padding:22px 26px;text-align:center;"><div style="font-size:13.5px;color:#3a5169;line-height:1.55;"><b style="color:#0d2b45;">Help Coach Grant help you.</b> What do you love, what’s missing, what should we build next?</div><a href="' + app + '?feedback=1" style="display:inline-block;margin-top:12px;background:#ffffff;color:#2ba8e0;border:1px solid #2ba8e0;font-weight:800;font-size:13.5px;text-decoration:none;padding:10px 22px;border-radius:10px;">Share your feedback</a></div>';
+  // ---------- DARK footer band (bookends the hero) ----------
+  var footBand = '<div style="background:#081826;padding:20px 26px;text-align:center;font-size:11px;color:#7f96a9;">Find Fit People &middot; UAE 2026 &middot; <a href="https://ffppassport.com" style="color:#4bb4e6;text-decoration:none;">ffppassport.com</a></div>';
+  // ---------- LIGHT band: Coach Grant (top accent rule, no card) ----------
+  var coachBand = '<div style="background:#eef4f9;"><div style="height:4px;background-color:#2ba8e0;background-image:linear-gradient(90deg,#2ba8e0,#7ed0f5);"></div><div style="padding:22px 26px;">'
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="46" style="vertical-align:middle;"><div style="width:46px;height:46px;border-radius:50%;background:#173a5a;color:#ffffff;text-align:center;line-height:46px;font-weight:900;font-size:16px;">CG</div></td><td style="padding-left:12px;vertical-align:middle;"><div style="font-size:15px;font-weight:900;color:#0d2b45;">Coach Grant</div><div style="font-size:11px;color:#5a7186;">Your FFP coach &middot; a note for ' + nxt + '</div></td></tr></table>'
+    + '<div style="font-size:14px;line-height:1.6;color:#33475b;margin-top:14px;">' + esc(first) + ' — I’ve watched your ' + mon + ' unfold and it’s a real shift. You went from ticking over to showing up almost every day, and the best part? You didn’t do it alone.</div>'
+    + (shone.length ? ('<div style="font-size:11px;font-weight:800;color:#1a9d5a;text-transform:uppercase;letter-spacing:.5px;margin:15px 0 8px;">&#10003; Where you shone</div>' + liList(shone)) : '')
+    + '<div style="font-size:11px;font-weight:800;color:#c17d1a;text-transform:uppercase;letter-spacing:.5px;margin:15px 0 8px;">&#9650; Where we build next</div>' + liList(build)
+    + '<div style="font-size:13.5px;line-height:1.55;color:#33475b;margin-top:6px;">Do those and ' + nxt + ' won’t just match ' + mon + ' — it’ll be your strongest yet. That’s what we’re here for: helping you <b>find fit people</b> and become one. I’m with you. &#128170;</div>'
+    + '</div></div>';
   // ---------- hero ----------
-  var upchip = ((d.prev_activities || 0) >= 0 && (d.activities || 0) > (d.prev_activities || 0))
+  var upchip = ((d.activities || 0) > (d.prev_activities || 0))
     ? '<div style="margin-top:14px;display:inline-block;font-size:12.5px;font-weight:700;color:#ffffff;background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.30);border-radius:10px;padding:7px 13px;"><span style="color:#7ef0a8;">&#9650;</span> ' + (d.activities || 0) + ' activities, up from ' + (d.prev_activities || 0) + ' in ' + o.prevMonName + '</div>' : '';
-  var heroBand = '<div style="background:#0d2b45;background-image:linear-gradient(135deg,#2ba8e0 0%,#0d2b45 100%);padding:26px 26px 22px;">'
+  var heroBand = '<div style="background:#0d2b45;background-image:linear-gradient(135deg,#2ba8e0 0%,#0d2b45 100%);padding:28px 26px 24px;">'
     + '<div style="font-size:12px;font-weight:800;letter-spacing:1.5px;color:#bfe2f5;">FIND FIT PEOPLE</div>'
     + '<div style="font-size:28px;font-weight:900;color:#ffffff;margin-top:8px;line-height:1.1;">Your ' + mon + ', ' + esc(first) + '.</div>'
     + '<div style="font-size:15px;color:#dff0fb;margin-top:8px;">' + (d.activities || 0) + ' activities &middot; ' + (d.distance_km || 0) + ' km &middot; ' + fmtT(d.minutes) + ' moving</div>' + upchip + '</div>';
   var heroImg = hero ? ('<img src="' + hero + '" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;" alt="">') : '';
-  // ---------- assemble ----------
-  var inner = heroBand + heroImg + coach + pieCard + didCard + ceCard + connCard + matchCard + vsCard + cmpCard + tail;
+  // ---------- assemble (alternating bands) ----------
+  var inner = heroBand + heroImg + coachBand + whiteMain + ceBand + connBand + matchBand + vsBand + cmpBand + ctaBand + signBand + fbBand + footBand;
   return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">'
-    + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#f4f7fa;border-radius:18px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
+    + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:18px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
     + '<tr><td style="padding:0;">' + inner + '</td></tr></table></td></tr></table>';
 }
 
