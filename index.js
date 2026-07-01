@@ -1,4 +1,7 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v138
+// FFP Passport — Express Server (Vercel, CommonJS) — v139
+// v139 (2026-07-01): SUMMARIES ARE MANDATORY — removed the opt-out skips on monthly-wrapup (no_monthly_email)
+//      and sunday-summary (no_weekly_email). Members can't opt out of summaries (leaving the platform is the
+//      only opt-out). Other emails' opt-outs untouched.
 // v138 (2026-07-01): WRAP-UP HERO = Quest-feature-card style — background photo (email-safe td `background`
 //      image + navy bgcolor fallback) with the white FFP logo top-left and the title/stats overlaid on a
 //      bottom dark gradient (was a flat navy band + separate photo). Adds the FFP logo to the wrap-up email.
@@ -1066,62 +1069,67 @@ async function sendCodeEmail(email, name, code, type) {
 // city param kept on the signature for future personalisation; currently unused.
 async function sendWelcomeEmail(email, firstName, city) {
   const safeName = escapeHtml(firstName);
-  const subject = `Welcome to FFP Passport, ${firstName}`;
+  const subject = `Welcome to Find Fit People, ${firstName}`;
   const html = `
-    <div style="font-family:Montserrat,sans-serif;max-width:480px;margin:0 auto;background:#081420;color:#fff;padding:32px;border-radius:16px;">
-      <div style="font-size:22px;font-weight:900;letter-spacing:3px;margin-bottom:8px;">FFP <span style="color:#2ba8e0;">PASSPORT</span></div>
-      <div style="font-size:12px;color:#6a90a8;letter-spacing:2px;text-transform:uppercase;margin-bottom:32px;">Find Fit People</div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:18px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">
+    <tr><td style="padding:0;">
 
-      <p style="font-size:18px;color:#fff;font-weight:700;margin:0 0 14px;">Hey, ${safeName}.</p>
-
-      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 14px;">
-        You are now officially an FFP Passport holder - so cool!
-      </p>
-
-      <p style="font-size:14px;color:#9dbdd0;line-height:1.7;margin:0 0 18px;">
-        As a new member of the community, let's get you set up and connected with the best experiences:
-      </p>
-
-      <!-- Step 1 -->
-      <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:10px;">
-        <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;">1. Complete your profile</div>
-        <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">This one matters most &mdash; your profile helps match you. Add: location, gender, age, interests + level, a few words.</div>
+      <div style="background-color:#0d2b45;background-image:linear-gradient(135deg,#2ba8e0 0%,#0d2b45 62%);padding:28px 28px 26px;">
+        <img src="https://kxzyuofecmtymablnmak.supabase.co/storage/v1/object/public/site-images/ffp-logo-white.png" alt="Find Fit People" width="112" style="display:block;border:0;height:auto;margin-bottom:18px;">
+        <div style="font-size:12px;font-weight:800;letter-spacing:2px;color:#bfe2f5;text-transform:uppercase;">Welcome aboard</div>
+        <div style="font-size:30px;font-weight:900;color:#ffffff;margin-top:8px;line-height:1.06;">Welcome to FFP,<br>${safeName}.</div>
+        <div style="font-size:15px;color:#dff0fb;margin-top:9px;">You're officially a Passport holder. Let's get you doing what you love, with the right people.</div>
       </div>
 
-      <!-- Step 2 -->
-      <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:10px;">
-        <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;">2. Open the Meet &amp; Move panel</div>
-        <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">Where you'll see your matches and can start connecting with your people.</div>
+      <div style="background:#eef4f9;"><div style="height:4px;background-image:linear-gradient(90deg,#2ba8e0,#7ed0f5);"></div>
+      <div style="padding:22px 26px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+          <td width="36" valign="top"><div style="width:32px;height:32px;border-radius:50%;background:#2ba8e0;color:#ffffff;text-align:center;line-height:32px;font-weight:900;font-size:15px;">1</div></td>
+          <td style="padding-left:12px;">
+            <div style="font-size:16px;font-weight:900;color:#0d2b45;">Install the app first</div>
+            <div style="font-size:13.5px;color:#33475b;line-height:1.6;margin-top:5px;">This is where the real experience lives &mdash; full screen, one tap, no browser bars. Add it to your home screen now:</div>
+            <div style="margin-top:12px;background:#ffffff;border:1px solid #dceaf5;border-radius:12px;padding:14px 16px;font-size:13.5px;color:#33475b;line-height:1.8;">
+              <b style="color:#0d2b45;">iPhone / iPad (Safari):</b> tap <b>Share</b> &rarr; <b>Add to Home Screen</b> &rarr; <b>Add</b>.<br>
+              <b style="color:#0d2b45;">Android (Chrome):</b> tap <b>menu (&#8942;)</b> &rarr; <b>Add to Home screen</b> / <b>Install app</b>.
+            </div>
+          </td>
+        </tr></table>
+      </div></div>
+
+      <div style="background:#ffffff;padding:22px 26px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;"><tr>
+          <td width="36" valign="top"><div style="width:32px;height:32px;border-radius:50%;background:#e7f0fb;color:#2ba8e0;text-align:center;line-height:32px;font-weight:900;font-size:15px;">2</div></td>
+          <td style="padding-left:12px;"><div style="font-size:15px;font-weight:800;color:#0d2b45;">Complete your profile</div><div style="font-size:13px;color:#5a7186;line-height:1.55;margin-top:3px;">This is what matches you to the right people &mdash; add your location, gender, age, interests + level, and a few words about you.</div></td>
+        </tr></table>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;"><tr>
+          <td width="36" valign="top"><div style="width:32px;height:32px;border-radius:50%;background:#e7f0fb;color:#2ba8e0;text-align:center;line-height:32px;font-weight:900;font-size:15px;">3</div></td>
+          <td style="padding-left:12px;"><div style="font-size:15px;font-weight:800;color:#0d2b45;">Open Connections</div><div style="font-size:13px;color:#5a7186;line-height:1.55;margin-top:3px;">See your matches and start connecting with your people.</div></td>
+        </tr></table>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+          <td width="36" valign="top"><div style="width:32px;height:32px;border-radius:50%;background:#e7f0fb;color:#2ba8e0;text-align:center;line-height:32px;font-weight:900;font-size:15px;">4</div></td>
+          <td style="padding-left:12px;"><div style="font-size:15px;font-weight:800;color:#0d2b45;">Log an activity</div><div style="font-size:13px;color:#5a7186;line-height:1.55;margin-top:3px;">Post your first session &mdash; it builds your Passport, your stats, and better matches.</div></td>
+        </tr></table>
       </div>
 
-      <!-- Step 3 -->
-      <div style="padding:14px 16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.2);border-radius:10px;margin-bottom:18px;">
-        <div style="font-size:13px;font-weight:800;color:#fff;">3. Join a Meet, or host your own</div>
-      </div>
-
-      <!-- What's a Meet? -->
-      <div style="padding:14px 16px;background:rgba(255,204,0,.06);border:1px solid rgba(255,204,0,.2);border-radius:10px;margin-bottom:24px;">
-        <div style="font-size:11px;font-weight:800;color:#FFCC00;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:6px;">What's a Meet?</div>
-        <div style="font-size:12px;color:#9dbdd0;line-height:1.5;">They are small active meet ups (max 8 persons) to connect you to people with the same skill + ability. Eg; Yoga - beginner, Tennis - intermediate, Powerlifting - Advanced, etc.</div>
-      </div>
-
-      <!-- Add to Home Screen -->
-      <div style="padding:16px;background:rgba(43,168,224,.08);border:1px solid rgba(43,168,224,.25);border-radius:10px;margin-bottom:24px;">
-        <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:8px;">Add FFP Passport to your home screen</div>
-        <div style="font-size:12px;color:#9dbdd0;line-height:1.6;">Open it like a real app — one tap, full screen, no browser bars.<br><br>
-          <strong style="color:#fff;">iPhone / iPad (Safari):</strong> tap the Share icon, then <strong>Add to Home Screen</strong>, then Add.<br>
-          <strong style="color:#fff;">Android (Chrome):</strong> tap the menu (&#8942;), then <strong>Add to Home screen</strong> / <strong>Install app</strong>.
+      <div style="background:#eef4f9;padding:6px 26px 22px;">
+        <div style="background:linear-gradient(135deg,#fff7d6,#fdeeb0);border-radius:14px;padding:16px 18px;">
+          <div style="font-size:11px;font-weight:900;color:#8a6d00;text-transform:uppercase;letter-spacing:.5px;">What's a Meet?</div>
+          <div style="font-size:13.5px;color:#5a4a12;line-height:1.55;margin-top:5px;">Small active meet-ups (max 8 people) that connect you with others at your skill + level &mdash; e.g. Yoga (beginner), Tennis (intermediate), Powerlifting (advanced).</div>
         </div>
       </div>
 
-      <div style="text-align:center;margin:24px 0 28px;">
-        <a href="https://ffppassport.com/ffp-member-dashboard.html#profile" style="display:inline-block;background:#2ba8e0;color:#081420;text-decoration:none;font-weight:800;font-size:14px;padding:14px 32px;border-radius:8px;letter-spacing:.5px;">Go To Dashboard</a>
+      <div style="background:#ffffff;padding:6px 26px 26px;text-align:center;">
+        <a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;background:#FFCC00;color:#082335;font-weight:900;font-size:15px;text-decoration:none;padding:14px 32px;border-radius:12px;">Open your Passport</a>
       </div>
 
-      <div style="margin-top:32px;padding-top:24px;border-top:1px solid rgba(43,168,224,.1);font-size:11px;color:#6a90a8;">
-        FFP Passport · UAE 2026 · ffppassport.com
+      <div style="background:#0d2b45;background-image:linear-gradient(135deg,#12659a,#0d2b45);padding:22px 26px;text-align:center;">
+        <div style="font-size:19px;font-weight:900;color:#ffffff;letter-spacing:-.3px;">Find Fit People.</div>
+        <div style="font-size:12.5px;color:#bcd6e8;margin-top:5px;">It's not just our name &mdash; it's what we do, together.</div>
       </div>
-    </div>
+      <div style="background:#e3ebf2;padding:16px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; UAE 2026 &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div>
+
+    </td></tr></table></td></tr></table>
   `;
   await mailer.sendMail({
     from: MAIL_FROM,
@@ -5345,7 +5353,7 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
       var m = members[i];
       if (!m.email) { skipped++; continue; }
       var prefs = m.preferences || {};
-      if (prefs.no_weekly_email === true) { skipped++; continue; }   // honours unsubscribe
+      // v139: weekly summary is NOT opt-out — every eligible member gets it; leaving the platform is the only opt-out.
       var dg = await supabase.rpc('member_weekly_digest', { p_me: m.id });
       if (dg.error || !dg.data) { skipped++; continue; }
       var d = dg.data;
@@ -5643,7 +5651,7 @@ app.get('/api/cron/monthly-wrapup', async (req, res) => {
       var m = members[i];
       if (!m.email) { skipped++; continue; }
       var prefs = m.preferences || {};
-      if (prefs.no_monthly_email === true) { skipped++; continue; }   // honours unsubscribe
+      // v139: summaries are NOT opt-out — every member gets them; leaving the platform is the only opt-out.
       var first = String(m.given_names || m.full_name || 'there').split(' ')[0];
       var wr = await supabase.rpc('member_monthly_wrapup_v2', { p_me: m.id, p_from: from.toISOString(), p_to: to.toISOString() });
       var d = (wr && !wr.error && wr.data) ? wr.data : {};
