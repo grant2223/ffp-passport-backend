@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v139
+// FFP Passport — Express Server (Vercel, CommonJS) — v140
+// v140 (2026-07-01): ONBOARDING LIFECYCLE DRIP. Welcome email reskinned to the new brand (install-the-app = step 1;
+//      steps: install / complete profile / Open Connections / Log an activity). New members.lifecycle_sent jsonb.
+//      ffpLifecycleEmail() shell + sendProfileReminderEmail + sendWinbackEmail. GET /api/cron/lifecycle (daily 07:00
+//      UTC, cronAuthed): profile-reminder (incomplete 3+ days after signup, once) + we-miss-you (complete profile,
+//      7+ days inactive, max 1/21 days). ?only=<email|id>, ?preview=profile|winback to force-send for testing.
 // v139 (2026-07-01): SUMMARIES ARE MANDATORY — removed the opt-out skips on monthly-wrapup (no_monthly_email)
 //      and sunday-summary (no_weekly_email). Members can't opt out of summaries (leaving the platform is the
 //      only opt-out). Other emails' opt-outs untouched.
@@ -1137,6 +1142,40 @@ async function sendWelcomeEmail(email, firstName, city) {
     subject,
     html
   });
+}
+// v140: shared new-brand shell for lifecycle/onboarding emails — hero (logo + kicker + title + sub) → white
+// body → Find-Fit-People signoff → light footer. o = {kicker,title,sub,body,ctaText,ctaHref}.
+function ffpLifecycleEmail(o) {
+  var LOGO = 'https://kxzyuofecmtymablnmak.supabase.co/storage/v1/object/public/site-images/ffp-logo-white.png';
+  var cta = (o.ctaText && o.ctaHref) ? ('<div style="background:#ffffff;padding:2px 26px 26px;text-align:center;"><a href="' + o.ctaHref + '" style="display:inline-block;background:#FFCC00;color:#082335;font-weight:900;font-size:15px;text-decoration:none;padding:14px 32px;border-radius:12px;">' + o.ctaText + '</a></div>') : '';
+  return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">'
+    + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:18px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;"><tr><td style="padding:0;">'
+    + '<div style="background-color:#0d2b45;background-image:linear-gradient(135deg,#2ba8e0 0%,#0d2b45 62%);padding:28px 28px 26px;">'
+    + '<img src="' + LOGO + '" alt="Find Fit People" width="112" style="display:block;border:0;height:auto;margin-bottom:18px;">'
+    + '<div style="font-size:12px;font-weight:800;letter-spacing:2px;color:#bfe2f5;text-transform:uppercase;">' + o.kicker + '</div>'
+    + '<div style="font-size:29px;font-weight:900;color:#ffffff;margin-top:8px;line-height:1.06;">' + o.title + '</div>'
+    + (o.sub ? ('<div style="font-size:15px;color:#dff0fb;margin-top:9px;">' + o.sub + '</div>') : '')
+    + '</div>'
+    + '<div style="background:#ffffff;padding:24px 26px;font-size:14px;color:#33475b;line-height:1.7;">' + o.body + '</div>'
+    + cta
+    + '<div style="background:#0d2b45;background-image:linear-gradient(135deg,#12659a,#0d2b45);padding:22px 26px;text-align:center;"><div style="font-size:19px;font-weight:900;color:#ffffff;letter-spacing:-.3px;">Find Fit People.</div><div style="font-size:12.5px;color:#bcd6e8;margin-top:5px;">It&rsquo;s not just our name &mdash; it&rsquo;s what we do, together.</div></div>'
+    + '<div style="background:#e3ebf2;padding:16px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; UAE 2026 &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div>'
+    + '</td></tr></table></td></tr></table>';
+}
+async function sendProfileReminderEmail(email, firstName) {
+  var name = escapeHtml(firstName || 'there');
+  var body = '<p style="margin:0 0 12px;">Hey ' + name + ', you&rsquo;re in &mdash; but your profile isn&rsquo;t finished, and that&rsquo;s the one thing that connects you to the right people.</p>'
+    + '<p style="margin:0 0 12px;">Two minutes to add your <b style="color:#0d2b45;">location, gender, age, interests + level</b>, and a few words about you. That&rsquo;s what powers your matches and meet-up suggestions.</p>'
+    + '<p style="margin:0;">Do it now and your people start showing up.</p>';
+  await mailer.sendMail({ from: MAIL_FROM, to: email, subject: 'Finish your Find Fit People profile, ' + firstName, html: ffpLifecycleEmail({ kicker: 'One step left', title: 'Complete your profile, ' + name + '.', sub: 'It&rsquo;s what matches you to your people.', body: body, ctaText: 'Complete your profile', ctaHref: 'https://ffppassport.com/ffp-member-dashboard.html#profile' }) });
+}
+async function sendWinbackEmail(email, firstName, days) {
+  var name = escapeHtml(firstName || 'there');
+  var d = days || 7;
+  var body = '<p style="margin:0 0 12px;">Hey ' + name + ', it&rsquo;s been ' + d + ' days &mdash; we miss you, and every week is a fresh start.</p>'
+    + '<p style="margin:0 0 12px;">Your crew has been active, and there are meet-ups and a quest running. The easiest way back in is <b style="color:#0d2b45;">one small activity logged</b>, or joining a meet-up near you.</p>'
+    + '<p style="margin:0;">Do more of what you love &mdash; we&rsquo;re here to help you find the people to do it with.</p>';
+  await mailer.sendMail({ from: MAIL_FROM, to: email, subject: 'We miss you at Find Fit People, ' + firstName, html: ffpLifecycleEmail({ kicker: 'We miss you', title: 'Come back, ' + name + '.', sub: 'Your people are still here.', body: body, ctaText: 'Open your Passport', ctaHref: 'https://ffppassport.com/ffp-member-dashboard.html' }) });
 }
 // v4 helper — escapes user-supplied text before interpolating into HTML emails.
 // First name and city come from the profile form, so we never want raw input
@@ -5674,6 +5713,59 @@ app.get('/api/cron/monthly-wrapup', async (req, res) => {
       } catch (e) { skipped++; }
     }
     res.json({ success: true, month: monName, sent: sent, skipped: skipped, total: (members || []).length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// v140: LIFECYCLE / ONBOARDING drip — daily. For each active member, evaluates signup age + profile_complete +
+// last activity and sends ONE-TIME emails, tracked in members.lifecycle_sent so nothing repeats:
+//   • complete-profile reminder — profile still incomplete 3+ days after signup (once)
+//   • we-miss-you — completed profile + 7+ days inactive, at most once per 21 days
+// Auth: cronAuthed (CRON_SECRET or admin_id). ?only=<email|id> to scope; ?preview=profile|winback force-sends
+// that template to `only` (for testing the look, ignores the timing rules).
+app.get('/api/cron/lifecycle', async (req, res) => {
+  if (!(await cronAuthed(req))) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    var only = (req.query.only || '').trim();
+    var preview = (req.query.preview || '').trim();
+    var now = Date.now();
+    var qy = supabase.from('members').select('id, email, full_name, given_names, created_at, profile_complete, lifecycle_sent, role, status');
+    if (only) { qy = (only.indexOf('@') > -1) ? qy.eq('email', only) : qy.eq('id', only); }
+    else { qy = qy.eq('role', 'member').eq('status', 'active'); }
+    var { data: members, error } = await qy;
+    if (error) throw error;
+    var out = { profile_reminder: 0, winback: 0, skipped: 0 };
+    for (var i = 0; i < (members || []).length; i++) {
+      var m = members[i];
+      if (!m.email) { out.skipped++; continue; }
+      var first = String(m.given_names || m.full_name || 'there').split(' ')[0];
+      // Preview mode: force one template to the targeted address, ignore timing.
+      if (only && preview) {
+        try {
+          if (preview === 'profile') { await sendProfileReminderEmail(m.email, first); out.profile_reminder++; }
+          else if (preview === 'winback') { await sendWinbackEmail(m.email, first, 9); out.winback++; }
+        } catch (e) { out.skipped++; }
+        continue;
+      }
+      var flags = m.lifecycle_sent || {};
+      var changed = false;
+      var ageDays = m.created_at ? Math.floor((now - new Date(m.created_at).getTime()) / 86400000) : 0;
+      var la = await supabase.from('activity_logs').select('logged_at').eq('member_id', m.id).order('logged_at', { ascending: false }).limit(1);
+      var lastAct = (la && la.data && la.data[0]) ? new Date(la.data[0].logged_at).getTime() : null;
+      var inactiveDays = lastAct != null ? Math.floor((now - lastAct) / 86400000) : null;
+      if (!m.profile_complete && ageDays >= 3 && !flags.profile_reminder) {
+        try { await sendProfileReminderEmail(m.email, first); flags.profile_reminder = new Date().toISOString(); changed = true; out.profile_reminder++; }
+        catch (e) { out.skipped++; }
+      } else if (m.profile_complete) {
+        var lapsed = (inactiveDays != null && inactiveDays >= 7) || (inactiveDays == null && ageDays >= 7);
+        var lastWb = flags.winback ? new Date(flags.winback).getTime() : 0;
+        if (lapsed && (now - lastWb) > 21 * 86400000) {
+          try { await sendWinbackEmail(m.email, first, inactiveDays != null ? inactiveDays : ageDays); flags.winback = new Date().toISOString(); changed = true; out.winback++; }
+          catch (e) { out.skipped++; }
+        }
+      }
+      if (changed) { try { await supabase.from('members').update({ lifecycle_sent: flags }).eq('id', m.id); } catch (e) {} }
+    }
+    res.json({ success: true, profile_reminder: out.profile_reminder, winback: out.winback, skipped: out.skipped, total: (members || []).length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
