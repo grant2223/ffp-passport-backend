@@ -5637,7 +5637,7 @@ app.get('/api/cron/monthly-wrapup', async (req, res) => {
     var prevFrom = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() - 1, 1));
     var prevName = prevFrom.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
     var daysInMonth = Math.round((to - from) / 86400000);
-    var HERO_IMG = 'https://kxzyuofecmtymablnmak.supabase.co/storage/v1/render/image/public/site-images/calories-in-park.png?width=1000&quality=68';
+    var HERO_IMG = 'https://kxzyuofecmtymablnmak.supabase.co/storage/v1/render/image/public/site-images/passport-on-stepper.png?width=1000&quality=68';
     var fmtT = function (mins) { var h = Math.floor((mins || 0) / 60), x = (mins || 0) % 60; return h ? (h + 'h' + (x ? (' ' + x + 'm') : '')) : ((mins || 0) + 'm'); };
     for (var i = 0; i < (members || []).length; i++) {
       var m = members[i];
