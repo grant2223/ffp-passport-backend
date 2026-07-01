@@ -1,4 +1,11 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v145
+// FFP Passport — Express Server (Vercel, CommonJS) — v146
+// v146 (2026-07-01): COACH MOMENTUM BUGFIX. computeCoachProfile was calling a 30-day-consistent, 30-day-streak
+//      member "slipping" — momentum was a naive 7d-vs-prior-7d activity COUNT with zero streak awareness. Now:
+//      compute a real consecutive-day `streak` + `logged_today`; momentum is STREAK-AWARE (streak>=7 → 'rising';
+//      only 'slipping' for a real drop when NOT on a streak); facts carry streak/logged_today; at_risk requires
+//      streak===0. coach_line AI prompt + coachLineFallback + /api/coach/chat all celebrate streaks and never say
+//      "slipping" to a consistent member. /api/coach/profile now recomputes (not serves 24h cache) once the member
+//      has logged since the profile was built, so "trained this morning" is reflected immediately.
 // v145 (2026-07-01): COACH GRANT = ACTIVE-LIFESTYLE COACH. computeCoachProfile now also writes a 2nd-person,
 //      actionable `coach_line` (member_coach_profile.coach_line; AI + coachLineFallback rules) returned by
 //      /api/coach/profile. NEW conversational support: POST /api/coach/chat {refresh,message} — Claude grounded
@@ -5022,24 +5029,36 @@ app.post('/api/visits/log', async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════
 async function computeCoachProfile(memberId) {
   const DAY = 86400000, now = Date.now();
-  // Activities — last 45 days
+  // Activities — last 120 days (enough to learn real HABITS: favourites, rhythm, session length, best streak).
   let acts = [];
   try {
-    const ar = await supabase.from('activity_logs').select('activity, logged_at')
-      .eq('member_id', memberId).gte('logged_at', new Date(now - 45 * DAY).toISOString()).order('logged_at', { ascending: false });
+    const ar = await supabase.from('activity_logs').select('activity, logged_at, duration_min, city')
+      .eq('member_id', memberId).gte('logged_at', new Date(now - 120 * DAY).toISOString()).order('logged_at', { ascending: false });
     acts = (ar && ar.data) ? ar.data : [];
   } catch (e) {}
-  let thisW = 0, lastW = 0, c30 = 0, lastActiveDays = null; const actCount = {};
+  let thisW = 0, lastW = 0, c30 = 0, lastActiveDays = null; const actCount = {}, actMin = {};
+  let durSum = 0, durN = 0, weekendN = 0, dayCountN = 0;
   acts.forEach(function (a) {
     const t = a.logged_at ? new Date(a.logged_at).getTime() : 0; if (!t) return;
     const d = (now - t) / DAY;
     if (d <= 7) thisW++; else if (d <= 14) lastW++;
     if (d <= 30) c30++;
     if (lastActiveDays == null) lastActiveDays = Math.floor(d);
-    if (a.activity) actCount[a.activity] = (actCount[a.activity] || 0) + 1;
+    if (a.activity) { actCount[a.activity] = (actCount[a.activity] || 0) + 1; if (a.duration_min) actMin[a.activity] = (actMin[a.activity] || 0) + a.duration_min; }
+    if (a.duration_min) { durSum += a.duration_min; durN++; }
+    const dow = new Date(t).getUTCDay(); if (dow === 0 || dow === 6) weekendN++;
+    dayCountN++;
   });
   let topActivity = '', topN = 0;
   Object.keys(actCount).forEach(function (k) { if (actCount[k] > topN) { topN = actCount[k]; topActivity = k; } });
+  // Consecutive-day STREAK + logged-today (same UTC-day basis as support_ops). The coach MUST know this so it
+  // never tells a highly consistent member their momentum is "slipping". Streak stays alive through today if
+  // logged today, else counts back from yesterday.
+  const daySet = {};
+  acts.forEach(function (a) { if (a.logged_at) daySet[new Date(a.logged_at).toISOString().slice(0, 10)] = 1; });
+  const _isoDay = function (d) { return d.toISOString().slice(0, 10); };
+  const logged_today = !!daySet[_isoDay(new Date())];
+  let streak = 0; { let dd = new Date(); if (!daySet[_isoDay(dd)]) dd.setUTCDate(dd.getUTCDate() - 1); while (daySet[_isoDay(dd)]) { streak++; dd.setUTCDate(dd.getUTCDate() - 1); } }
   // Wearable — last 14 days
   let wd = [];
   try {
@@ -5095,14 +5114,20 @@ async function computeCoachProfile(memberId) {
     }
   } catch (e) {}
   support_ops = support_ops.slice(0, 6);
+  // Momentum — STREAK-AWARE. A solid streak is never "slipping"; only flag a real drop for someone NOT on a streak.
+  const momentum = (streak >= 7) ? 'rising'
+    : (thisW > lastW ? 'rising'
+    : ((thisW < lastW - 1 && streak < 2) ? 'slipping' : 'steady'));
   const facts = {
     activities_30d: c30,
     weekly_cadence: Math.round(c30 / 30 * 7 * 10) / 10,
     top_activity: topActivity || null,
+    streak: streak,
+    logged_today: logged_today,
     last_active_days: lastActiveDays,
-    momentum: thisW > lastW ? 'rising' : (thisW < lastW ? 'slipping' : 'steady'),
+    momentum: momentum,
     latest_recovery: latestRec, latest_strain: latestStrain, avg_sleep_7d: avgSleep,
-    connections: connections, at_risk: (lastActiveDays != null && lastActiveDays > 10)
+    connections: connections, at_risk: (streak === 0 && lastActiveDays != null && lastActiveDays > 10)
   };
   let summary = '';
   try {
@@ -5116,7 +5141,7 @@ async function computeCoachProfile(memberId) {
   let coach_line = '';
   try {
     if (ANTHROPIC_KEY) {
-      const sysL = 'You are Grant, FFP\'s active-lifestyle coach, speaking DIRECTLY to this member (second person, "you"). From the JSON facts, write ONE warm, specific, actionable line (max ~30 words, no emojis) that reflects where they are RIGHT NOW — favourite activity, momentum, recovery/sleep if present, or that it has been a while — and nudges ONE concrete next step (log today, take it easy, join or host a meet-up, bring a friend). Encouraging, never clinical, never about anyone else.';
+      const sysL = 'You are Grant, FFP\'s active-lifestyle coach, speaking DIRECTLY to this member (second person, "you"). From the JSON facts, write ONE warm, specific, actionable line (max ~30 words, no emojis) that reflects where they are RIGHT NOW. CRITICAL: if facts.streak is 3 or more, or facts.logged_today is true, ACKNOWLEDGE and protect that consistency — NEVER tell them their momentum is slipping or that they have been away. Use their favourite activity, streak, recovery/sleep if present, and nudge ONE concrete next step (log today, take it easy on low recovery, join or host a meet-up, bring a friend). Encouraging, never clinical, never about anyone else.';
       const rl = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 120, system: sysL, messages: [{ role: 'user', content: JSON.stringify(facts) }] }) });
       const jl = await rl.json(); if (rl.ok) coach_line = ((jl.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
     }
@@ -5129,11 +5154,13 @@ async function computeCoachProfile(memberId) {
 function coachLineFallback(f) {
   f = f || {};
   const love = f.top_activity || 'your training';
-  if (f.at_risk || (f.last_active_days != null && f.last_active_days > 10)) return 'It has been a while — the easiest restart is a meet-up near you. Show up once and the momentum comes back.';
+  // Low recovery wins (wellbeing). Then STREAK — a consistent member is celebrated, NEVER told they are slipping.
   if (f.latest_recovery != null && f.latest_recovery < 34) return 'Recovery is low today — keep the habit alive with something gentle. Rest is training too.';
+  if (f.streak >= 3) return 'You are on a ' + f.streak + '-day streak — brilliant consistency. Log today to keep it rolling; you are setting the standard here.';
+  if (f.at_risk || (f.last_active_days != null && f.last_active_days > 10)) return 'It has been a while — the easiest restart is a meet-up near you. Show up once and the momentum comes back.';
   if (f.latest_recovery != null && f.latest_recovery >= 67) return 'You are well recovered — a great day to push your ' + love + '. Log it while it is fresh.';
-  if (f.momentum === 'slipping') return 'A little down on last week — one ' + love + ' session closes the gap. Make it social and bring someone.';
   if (f.momentum === 'rising') return 'You are building nicely — line up another ' + love + ' this week, or host a meet-up so others join you.';
+  if (f.momentum === 'slipping') return 'A little down on last week — one ' + love + ' session closes the gap. Make it social and bring someone.';
   return 'Consistency beats intensity — a short ' + love + ' session today keeps your streak and your Trends moving.';
 }
 
@@ -5143,7 +5170,12 @@ app.post('/api/coach/profile', async (req, res) => {
     const v = verifyRefreshToken((req.body && req.body.refresh) || '');
     if (!v) return res.status(401).json({ error: 'auth' });
     const { data: ex } = await supabase.from('member_coach_profile').select('summary, facts, support_ops, coach_line, updated_at').eq('member_id', v.memberId).maybeSingle();
-    if (ex && ex.updated_at && (Date.now() - new Date(ex.updated_at).getTime() < 24 * 60 * 60 * 1000) && ex.coach_line) return res.json({ summary: ex.summary, facts: ex.facts, support_ops: ex.support_ops || [], coach_line: ex.coach_line });
+    if (ex && ex.updated_at && (Date.now() - new Date(ex.updated_at).getTime() < 24 * 60 * 60 * 1000) && ex.coach_line) {
+      // Don't serve a stale profile after the member has trained — recompute so today's session (and their streak) count.
+      let trainedSince = false;
+      try { const { data: nw } = await supabase.from('activity_logs').select('id').eq('member_id', v.memberId).gt('logged_at', ex.updated_at).limit(1); trainedSince = !!(nw && nw.length); } catch (e) {}
+      if (!trainedSince) return res.json({ summary: ex.summary, facts: ex.facts, support_ops: ex.support_ops || [], coach_line: ex.coach_line });
+    }
     const p = await computeCoachProfile(v.memberId);
     return res.json(p);
   } catch (e) { return res.status(500).json({ error: e.message }); }
@@ -5172,6 +5204,7 @@ app.post('/api/coach/chat', async (req, res) => {
       + 'Their current facts: ' + JSON.stringify((prof && prof.facts) || {}) + '. '
       + 'Their recent activities: ' + JSON.stringify(recent) + '. '
       + 'Coach them on movement, consistency, motivation, meet-ups and building an active social life. Be warm, specific and encouraging, reference what you know about them, and keep replies short (2-4 sentences) and conversational. '
+      + 'If facts.streak is 3+ or facts.logged_today is true, celebrate that consistency and NEVER tell them their momentum is slipping or that they have been away. '
       + 'Point them to concrete next steps: log an activity, join or host a meet-up, invite a friend, or take an easy day when recovery is low. '
       + 'You are NOT a doctor — for pain, injury or medical concerns, gently suggest they see a professional. No emojis unless they use them first. Never discuss another member\'s health.';
     let messages = hist.map(function (m) { return { role: (m.role === 'coach' ? 'assistant' : 'user'), content: m.content }; });
