@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v135
+// FFP Passport — Express Server (Vercel, CommonJS) — v136
+// v136 (2026-07-01): MONTHLY WRAP-UP redesign — world-class, email-safe full-width doc (ffpWrapupEmail): brand hero
+//      + storage photo, Coach Grant (connect/commend/recommend), QuickChart activity doughnut, WHAT-YOU-DID bars,
+//      CONNECT+ENGAGE, YOU-vs-CONNECTIONS leaderboard, FIT-PEOPLE-FOR-YOU matches, month-vs-month, HOW-YOU-COMPARE
+//      cohort (all + gender/age, gated >=5). New data RPC member_monthly_wrapup_v2 (adds active_days/prev_minutes/
+//      compare/connections/matches). Quiet-member branch relit to light theme. "Find Fit People" motif woven through.
 // v135 (2026-06-30): MONTHLY WRAP-UP email. GET /api/cron/monthly-wrapup (CRON_SECRET; ?only=<id|email> test;
 //      ?force=1 send-all-now) sends on the 1st (UTC): active members get last-month stats (member_monthly_wrapup
 //      RPC) + "do more of what you love"; quiet members get a warm come-back. Vercel cron '0 0 1 * *'. Honours
@@ -5393,8 +5398,174 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// v135: MONTHLY WRAP-UP — emailed on the 1st (UTC). Active members get last-month stats + "do more of what you
-// love"; quiet members get a warm come-back. Mirror of sunday-summary (CRON_SECRET; ?only=<id|email> test; ?force=1).
+// --- v136: world-class monthly wrap-up email builder (self-contained full-width doc, email-safe:
+//     tables for all horizontal layout, div-width bars, QuickChart doughnut for the pie — Gmail strips SVG).
+//     Coach Grant (Connect/Commend/Recommend), activity pie, Connect+Engage, You-vs-Connections,
+//     Fit-People-for-you matches, June-vs-May, How-you-compare cohort. "Find Fit People" motif woven through.
+function ffpWrapupEmail(o) {
+  var d = o.d || {}, esc = o.esc, fmtT = o.fmtT, first = o.first, mon = o.monName, nxt = o.nextName;
+  var app = o.appUrl, hero = o.heroImg, days = o.daysInMonth || 30;
+  var ba = Array.isArray(d.by_activity) ? d.by_activity : [];
+  var palette = ['#2ba8e0', '#4ade80', '#f5a623', '#8b7cf0', '#ef4444', '#c3d0dc'];
+  // ---------- activity doughnut (QuickChart) + HTML legend ----------
+  var top = ba.slice(0, 5), rest = ba.slice(5).reduce(function (s, a) { return s + (a.count || 0); }, 0);
+  var pLab = top.map(function (a) { return a.activity; }), pDat = top.map(function (a) { return a.count; });
+  var pCol = palette.slice(0, top.length);
+  if (rest > 0) { pLab.push('Other'); pDat.push(rest); pCol.push('#c3d0dc'); }
+  var pTot = pDat.reduce(function (s, n) { return s + n; }, 0) || 1;
+  var chart = { type: 'doughnut', data: { labels: pLab, datasets: [{ data: pDat, backgroundColor: pCol, borderWidth: 0 }] }, options: { cutout: '62%', plugins: { legend: { display: false } } } };
+  var pieUrl = 'https://quickchart.io/chart?v=4&w=260&h=260&bkg=%23ffffff&c=' + encodeURIComponent(JSON.stringify(chart));
+  var legend = pLab.map(function (l, i) { return '<tr><td style="padding:3px 0;font-size:13px;color:#33475b;"><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:' + pCol[i] + ';"></span>&nbsp;&nbsp;' + esc(l) + '</td><td style="padding:3px 0;font-size:13px;color:#5a7186;text-align:right;">' + Math.round(pDat[i] / pTot * 100) + '%</td></tr>'; }).join('');
+  // ---------- Coach Grant: connect / commend / recommend ----------
+  var shone = [];
+  if (top.length) { var t0 = top[0]; shone.push('<b>Your ' + esc(t0.activity) + ' was the engine.</b> ' + t0.count + ' session' + (t0.count === 1 ? '' : 's') + (t0.km > 0 ? (', ' + t0.km + ' km') : '') + ' this month.'); }
+  if ((d.active_days || 0) >= 8) shone.push('<b>You showed up ' + d.active_days + ' of ' + days + ' days.</b> Consistency like that beats any single big session.');
+  var ppl = Array.isArray(d.partners) ? d.partners : [];
+  if (ppl.length) shone.push('<b>You surrounded yourself with good people.</b> Training with ' + ppl.slice(0, 2).map(esc).join(' and ') + ' is what makes it last.');
+  shone = shone.slice(0, 3);
+  var build = [];
+  build.push('<b>Add 1&ndash;2 strength sessions a week.</b> It protects all that work and keeps you injury-free.');
+  build.push('<b>Take two real rest days.</b> Recovery is training too.');
+  if ((d.food_days || 0) > 0) build.push('<b>Stretch your food log past ' + d.food_days + ' days.</b> That’s where you’ll spot what fuels your best sessions.');
+  build.push('<b>Grow your circle.</b> Host a ' + nxt + ' meet-up or join one — the people around you keep you coming back.');
+  build = build.slice(0, 3);
+  var liList = function (arr, dot) { return arr.map(function (x) { return '<div style="font-size:13.5px;color:#33475b;line-height:1.5;margin-bottom:9px;">' + x + '</div>'; }).join(''); };
+  var coach = '<div style="margin:20px 20px 6px;background:#ffffff;border:1px solid #e4ecf3;border-left:5px solid #2ba8e0;border-radius:14px;padding:18px;">'
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+    + '<td width="46" style="vertical-align:middle;"><div style="width:46px;height:46px;border-radius:50%;background:#173a5a;color:#ffffff;text-align:center;line-height:46px;font-weight:900;font-size:16px;">CG</div></td>'
+    + '<td style="padding-left:12px;vertical-align:middle;"><div style="font-size:15px;font-weight:900;color:#0d2b45;">Coach Grant</div><div style="font-size:11px;color:#5a7186;">Your FFP coach &middot; a note for ' + nxt + '</div></td>'
+    + '</tr></table>'
+    + '<div style="font-size:14px;line-height:1.6;color:#33475b;margin-top:14px;">' + esc(first) + ' — I’ve watched your ' + mon + ' unfold and it’s a real shift. You went from ticking over to showing up almost every day, and the best part? You didn’t do it alone.</div>'
+    + (shone.length ? ('<div style="font-size:11px;font-weight:800;color:#1a9d5a;text-transform:uppercase;letter-spacing:.5px;margin:15px 0 8px;">&#10003; Where you shone</div>' + liList(shone)) : '')
+    + '<div style="font-size:11px;font-weight:800;color:#c17d1a;text-transform:uppercase;letter-spacing:.5px;margin:15px 0 8px;">&#9650; Where we build next</div>' + liList(build)
+    + '<div style="font-size:13.5px;line-height:1.55;color:#33475b;margin-top:6px;">Do those and ' + nxt + ' won’t just match ' + mon + ' — it’ll be your strongest yet. That’s what we’re here for: helping you <b>find fit people</b> and become one. I’m with you. &#128170;</div>'
+    + '</div>';
+  // ---------- pie card ----------
+  var pieCard = '<div style="margin:16px 20px 4px;background:#ffffff;border:1px solid #e4ecf3;border-radius:14px;padding:16px 18px;">'
+    + '<div style="font-size:13px;font-weight:900;color:#0d2b45;margin-bottom:10px;">YOUR MONTH, BY ACTIVITY</div>'
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+    + '<td width="150" style="vertical-align:middle;"><img src="' + pieUrl + '" width="130" height="130" style="display:block;border:0;width:130px;height:130px;" alt="Activity mix"></td>'
+    + '<td style="vertical-align:middle;padding-left:8px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + legend + '</table></td>'
+    + '</tr></table></div>';
+  // ---------- what you did (bars, varied thickness) ----------
+  var bmax = ba.length ? ba[0].count : 1;
+  var thick = [16, 13, 11, 10, 9, 9, 8, 8];
+  var bars = ba.slice(0, 6).map(function (a, i) {
+    var w = Math.max(6, Math.round((a.count / bmax) * 100));
+    var bits = [a.count + ' · ' + (a.km > 0 ? (a.km + ' km') : fmtT(a.minutes))];
+    var h = thick[i] || 8;
+    return '<div style="margin-bottom:12px;"><table role="presentation" width="100%"><tr><td style="font-size:13px;font-weight:800;color:#0d2b45;">' + esc(a.activity) + '</td><td style="font-size:12.5px;color:#5a7186;text-align:right;">' + bits + '</td></tr></table>'
+      + '<div style="height:' + h + 'px;border-radius:8px;background:#e4ecf3;margin-top:4px;"><div style="height:' + h + 'px;border-radius:8px;width:' + w + '%;background:' + palette[i % palette.length] + ';"></div></div></div>';
+  }).join('');
+  var didCard = '<div style="margin:16px 20px 4px;background:#ffffff;border:1px solid #e4ecf3;border-radius:14px;padding:16px 18px;"><div style="font-size:13px;font-weight:900;color:#0d2b45;margin-bottom:14px;">WHAT YOU DID</div>' + bars + (ba.length > 6 ? ('<div style="font-size:12px;color:#8299ab;margin-top:2px;">+ ' + (ba.length - 6) + ' more activities</div>') : '') + '</div>';
+  // ---------- connect + engage ----------
+  var av = ppl.slice(0, 3).map(function (n, i) { var cc = ['#2ba8e0', '#8b7cf0', '#14b8a6'][i] || '#173a5a'; return '<td width="46"><div style="width:42px;height:42px;border-radius:50%;background:' + cc + ';color:#fff;text-align:center;line-height:42px;font-weight:800;">' + esc(String(n).charAt(0)) + '</div></td>'; }).join('');
+  var chip = function (n, l) { return '<td width="33%" style="padding:0 4px;"><div style="background:#ffffff;border-radius:10px;padding:10px;text-align:center;"><div style="font-size:19px;font-weight:900;color:#2ba8e0;">' + n + '</div><div style="font-size:11px;color:#5a7186;">' + l + '</div></div></td>'; };
+  var ceCard = '<div style="margin:16px 20px 4px;background:#eef6fd;border:1px solid #cfe6f6;border-radius:16px;padding:18px;">'
+    + '<div style="font-size:13px;font-weight:900;color:#0d2b45;">CONNECT + ENGAGE</div>'
+    + '<div style="font-size:12.5px;color:#3a5169;margin:4px 0 14px;">Real people, real places, good energy — this is how we <b>find fit people</b>, together.</div>'
+    + (ppl.length ? ('<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:14px;"><tr>' + av + '<td style="padding-left:10px;font-size:13.5px;color:#33475b;">You moved with ' + ppl.slice(0, 2).map(esc).join(', ') + (ppl.length > 2 ? (' and ' + (ppl.length - 2) + ' others') : '') + ' this month.</td></tr></table>') : '')
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>' + chip(d.meetups || 0, 'meet-ups') + chip(d.new_connections || 0, 'new connections') + chip(d.cities || 1, 'cities') + '</tr></table></div>';
+  // ---------- you vs your connections ----------
+  var connCard = '';
+  var cn = d.connections;
+  if (cn && Array.isArray(cn.board) && cn.conn_total >= 3) {
+    var board = cn.board.slice();
+    var five = board.slice(0, 5);
+    if (!five.some(function (r) { return r.is_me; })) { var meRow = board.filter(function (r) { return r.is_me; })[0]; if (meRow) five[4] = meRow; }
+    var mx = board[0] ? (board[0].sessions || 1) : 1;
+    var rows = five.map(function (r, i) {
+      var w = Math.max(4, Math.round((r.sessions / mx) * 100));
+      return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:9px;"><tr>'
+        + '<td width="18" style="font-size:12px;color:' + (r.is_me ? '#2ba8e0' : '#8299ab') + ';font-weight:' + (r.is_me ? '800' : '700') + ';">' + (i + 1) + '</td>'
+        + '<td width="66" style="font-size:12.5px;' + (r.is_me ? 'font-weight:900;color:#2ba8e0;' : 'color:#33475b;') + '">' + esc(r.name) + '</td>'
+        + '<td><div style="height:14px;border-radius:7px;background:#eef2f6;"><div style="height:14px;border-radius:7px;width:' + w + '%;background:' + (r.is_me ? '#2ba8e0' : '#c3d0dc') + ';"></div></div></td>'
+        + '<td width="28" style="text-align:right;font-size:12.5px;font-weight:' + (r.is_me ? '800' : '700') + ';' + (r.is_me ? 'color:#2ba8e0;' : '') + '">' + r.sessions + '</td>'
+        + '</tr></table>';
+    }).join('');
+    connCard = '<div style="margin:16px 20px 4px;background:#ffffff;border:1px solid #e4ecf3;border-radius:14px;padding:16px 18px;">'
+      + '<div style="font-size:13px;font-weight:900;color:#0d2b45;">YOU vs YOUR CONNECTIONS <span style="font-weight:600;color:#8299ab;font-size:11px;">&middot; sessions in ' + mon + '</span></div>'
+      + '<div style="font-size:12px;color:#3a5169;margin:5px 0 14px;">You’re <b style="color:#2ba8e0;">#' + cn.my_rank + ' of ' + cn.conn_total + '</b> — more active than ' + cn.pct_more + '% of your circle. Keep chasing the top. &#128064;</div>'
+      + rows + '</div>';
+  }
+  // ---------- fit people for you (matches) ----------
+  var matchCard = '';
+  if (Array.isArray(d.matches) && d.matches.length) {
+    var mrows = d.matches.map(function (m) {
+      var sp = Array.isArray(m.sports) ? m.sports.filter(Boolean) : [];
+      var sub = sp.join(', ') + (m.city ? ((sp.length ? ' · ' : '') + esc(m.city)) : '');
+      var avatar = m.photo_url ? ('<img src="' + esc(m.photo_url) + '" width="42" height="42" style="width:42px;height:42px;border-radius:50%;display:block;border:0;object-fit:cover;" alt="">') : ('<div style="width:42px;height:42px;border-radius:50%;background:#14b8a6;color:#fff;text-align:center;line-height:42px;font-weight:800;">' + esc(String(m.name).charAt(0)) + '</div>');
+      return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;"><tr>'
+        + '<td width="46">' + avatar + '</td>'
+        + '<td style="padding-left:12px;vertical-align:middle;"><div style="font-size:13.5px;font-weight:800;color:#0d2b45;">' + esc(m.name) + ' <span style="background:#e7f0fb;color:#2ba8e0;font-size:11px;font-weight:800;padding:1px 8px;border-radius:9px;">' + m.pct + '% match</span></div><div style="font-size:11.5px;color:#5a7186;">' + sub + '</div></td>'
+        + '<td width="86" style="text-align:right;vertical-align:middle;"><a href="' + app + '#connections" style="background:#2ba8e0;color:#fff;font-size:12px;font-weight:800;text-decoration:none;padding:8px 14px;border-radius:9px;">Connect</a></td>'
+        + '</tr></table>';
+    }).join('');
+    matchCard = '<div style="margin:16px 20px 4px;background:#ffffff;border:1px solid #e4ecf3;border-radius:14px;padding:16px 18px;">'
+      + '<div style="font-size:13px;font-weight:900;color:#0d2b45;">FIT PEOPLE FOR YOU</div>'
+      + '<div style="font-size:12px;color:#3a5169;margin:5px 0 14px;">We found people near you who love what you love — your top matches this month.</div>' + mrows + '</div>';
+  }
+  // ---------- June vs May ----------
+  var vsRow = function (label, prev, cur, delta) {
+    return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-bottom:1px solid #eef2f6;"><tr>'
+      + '<td style="padding:9px 0;font-size:13.5px;color:#33475b;">' + label + '</td>'
+      + '<td width="60" style="padding:9px 0;font-size:13.5px;color:#8299ab;text-align:right;">' + prev + '</td>'
+      + '<td width="22" style="padding:9px 0;color:#c3d0dc;text-align:center;">&rarr;</td>'
+      + '<td width="60" style="padding:9px 0;font-size:13.5px;font-weight:800;color:#0d2b45;text-align:right;">' + cur + '</td>'
+      + '<td width="56" style="padding:9px 0;font-size:13.5px;font-weight:800;color:#1a9d5a;text-align:right;">' + delta + '</td>'
+      + '</tr></table>';
+  };
+  var dAct = (d.activities || 0) - (d.prev_activities || 0);
+  var vsCard = '<div style="margin:16px 20px 4px;background:#ffffff;border:1px solid #e4ecf3;border-radius:14px;padding:16px 18px;">'
+    + '<div style="font-size:13px;font-weight:900;color:#0d2b45;">' + mon.toUpperCase() + ' vs ' + o.prevMonName.toUpperCase() + '</div>'
+    + '<div style="font-size:11px;color:#8299ab;margin:2px 0 12px;">how this month stacks up against last</div>'
+    + vsRow('Activities', (d.prev_activities || 0), (d.activities || 0), (dAct > 0 ? ('+' + dAct) : (dAct === 0 ? '&mdash;' : dAct)))
+    + vsRow('Distance', (d.prev_distance_km || 0) + ' km', (d.distance_km || 0) + ' km', ((d.distance_km || 0) > (d.prev_distance_km || 0) ? '&#9650;' : '&mdash;'))
+    + vsRow('Moving time', fmtT(d.prev_minutes || 0), fmtT(d.minutes || 0), ((d.minutes || 0) > (d.prev_minutes || 0) ? '&#9650;' : '&mdash;'))
+    + vsRow('Active days', (d.prev_active_days || 0), (d.active_days || 0), (((d.active_days || 0) - (d.prev_active_days || 0)) > 0 ? ('+' + ((d.active_days || 0) - (d.prev_active_days || 0))) : '&mdash;'))
+    + '</div>';
+  // ---------- how you compare (grouped bars) ----------
+  var cmpCard = '';
+  var c = d.compare;
+  if (c) {
+    var cmpGroup = function (title, top2, avg, badge) {
+      var scale = Math.max(c.my_sessions || 1, avg || 1);
+      var yw = Math.max(4, Math.round((c.my_sessions / scale) * 100));
+      var aw = Math.max(2, Math.round((avg / scale) * 100));
+      return '<div style="margin-bottom:15px;">'
+        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:7px;"><tr><td style="font-size:12px;color:#5a7186;">' + title + '</td><td style="text-align:right;"><span style="background:#e7f7ee;color:#1a9d5a;font-weight:800;font-size:11px;padding:1px 9px;border-radius:10px;">Top ' + badge + '%</span></td></tr></table>'
+        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:6px;"><tr><td width="52" style="font-size:11px;font-weight:800;color:#0d2b45;">You</td><td><div style="height:12px;border-radius:6px;background:#eef2f6;"><div style="height:12px;border-radius:6px;width:' + yw + '%;background:#2ba8e0;"></div></div></td><td width="26" style="text-align:right;font-size:11px;font-weight:800;color:#0d2b45;">' + c.my_sessions + '</td></tr></table>'
+        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="52" style="font-size:11px;color:#8299ab;">Average</td><td><div style="height:12px;border-radius:6px;background:#eef2f6;"><div style="height:12px;border-radius:6px;width:' + aw + '%;background:#c3d0dc;"></div></div></td><td width="26" style="text-align:right;font-size:11px;color:#8299ab;">' + avg + '</td></tr></table>'
+        + '</div>';
+    };
+    cmpCard = '<div style="margin:16px 20px 4px;background:#ffffff;border:1px solid #e4ecf3;border-radius:14px;padding:16px 18px;">'
+      + '<div style="font-size:13px;font-weight:900;color:#0d2b45;margin-bottom:12px;">HOW YOU COMPARE <span style="font-weight:600;color:#8299ab;font-size:11px;">&middot; sessions / month</span></div>'
+      + cmpGroup('All FFP members', null, c.all_avg, c.all_top)
+      + (c.gender_label ? cmpGroup(c.gender_label, null, c.gender_avg, c.gender_top) : '')
+      + '</div>';
+  }
+  // ---------- CTA + brand signoff + feedback + footer ----------
+  var tail = '<div style="text-align:center;padding:22px 20px 4px;"><a href="' + app + '" style="display:inline-block;background:#FFCC00;color:#082335;font-weight:900;font-size:15px;text-decoration:none;padding:14px 30px;border-radius:12px;">Open your Passport</a></div>'
+    + '<div style="text-align:center;font-size:14px;font-weight:800;color:#2ba8e0;padding:14px 20px 4px;line-height:1.5;">Find Fit People.<br><span style="color:#5a7186;font-weight:600;font-size:12.5px;">It’s not just our name — it’s what we do, together.</span></div>'
+    + '<div style="margin:14px 20px 4px;padding:16px 18px;background:#eef4f9;border-radius:14px;text-align:center;"><div style="font-size:13.5px;color:#3a5169;line-height:1.55;"><b style="color:#0d2b45;">Help Coach Grant help you.</b> What do you love, what’s missing, what should we build next?</div><a href="' + app + '?feedback=1" style="display:inline-block;margin-top:11px;background:#ffffff;color:#2ba8e0;border:1px solid #2ba8e0;font-weight:800;font-size:13.5px;text-decoration:none;padding:10px 22px;border-radius:10px;">Share your feedback</a></div>'
+    + '<div style="text-align:center;font-size:11px;color:#8299ab;padding:18px;">Find Fit People &middot; UAE 2026 &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div>';
+  // ---------- hero ----------
+  var upchip = ((d.prev_activities || 0) >= 0 && (d.activities || 0) > (d.prev_activities || 0))
+    ? '<div style="margin-top:14px;display:inline-block;font-size:12.5px;font-weight:700;color:#ffffff;background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.30);border-radius:10px;padding:7px 13px;"><span style="color:#7ef0a8;">&#9650;</span> ' + (d.activities || 0) + ' activities, up from ' + (d.prev_activities || 0) + ' in ' + o.prevMonName + '</div>' : '';
+  var heroBand = '<div style="background:#0d2b45;background-image:linear-gradient(135deg,#2ba8e0 0%,#0d2b45 100%);padding:26px 26px 22px;">'
+    + '<div style="font-size:12px;font-weight:800;letter-spacing:1.5px;color:#bfe2f5;">FIND FIT PEOPLE</div>'
+    + '<div style="font-size:28px;font-weight:900;color:#ffffff;margin-top:8px;line-height:1.1;">Your ' + mon + ', ' + esc(first) + '.</div>'
+    + '<div style="font-size:15px;color:#dff0fb;margin-top:8px;">' + (d.activities || 0) + ' activities &middot; ' + (d.distance_km || 0) + ' km &middot; ' + fmtT(d.minutes) + ' moving</div>' + upchip + '</div>';
+  var heroImg = hero ? ('<img src="' + hero + '" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;" alt="">') : '';
+  // ---------- assemble ----------
+  var inner = heroBand + heroImg + coach + pieCard + didCard + ceCard + connCard + matchCard + vsCard + cmpCard + tail;
+  return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">'
+    + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#f4f7fa;border-radius:18px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
+    + '<tr><td style="padding:0;">' + inner + '</td></tr></table></td></tr></table>';
+}
+
+// v136: MONTHLY WRAP-UP — emailed on the 1st (UTC). Active members get a world-class stats + Coach Grant email
+// (ffpWrapupEmail); quiet members get a warm come-back. (CRON_SECRET; ?only=<id|email> test; ?force=1).
 app.get('/api/cron/monthly-wrapup', async (req, res) => {
   var secret = process.env.CRON_SECRET || '';
   var auth = req.headers['authorization'] || '';
@@ -5417,54 +5588,34 @@ app.get('/api/cron/monthly-wrapup', async (req, res) => {
     var { data: members, error } = await qy;
     if (error) throw error;
     var sent = 0, skipped = 0;
-    var cta = '<div style="text-align:center;margin:26px 0 4px;"><a href="' + APP_URL + '" style="display:inline-block;background:#FFCC00;color:#082335;font-weight:800;font-size:15px;text-decoration:none;padding:13px 26px;border-radius:10px;">Open your Passport</a></div>';
+    var prevFrom = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() - 1, 1));
+    var prevName = prevFrom.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
+    var daysInMonth = Math.round((to - from) / 86400000);
+    var HERO_IMG = 'https://kxzyuofecmtymablnmak.supabase.co/storage/v1/render/image/public/site-images/calories-in-park.png?width=1000&quality=68';
+    var fmtT = function (mins) { var h = Math.floor((mins || 0) / 60), x = (mins || 0) % 60; return h ? (h + 'h' + (x ? (' ' + x + 'm') : '')) : ((mins || 0) + 'm'); };
     for (var i = 0; i < (members || []).length; i++) {
       var m = members[i];
       if (!m.email) { skipped++; continue; }
       var prefs = m.preferences || {};
       if (prefs.no_monthly_email === true) { skipped++; continue; }   // honours unsubscribe
       var first = String(m.given_names || m.full_name || 'there').split(' ')[0];
-      var wr = await supabase.rpc('member_monthly_wrapup', { p_me: m.id, p_from: from.toISOString(), p_to: to.toISOString() });
+      var wr = await supabase.rpc('member_monthly_wrapup_v2', { p_me: m.id, p_from: from.toISOString(), p_to: to.toISOString() });
       var d = (wr && !wr.error && wr.data) ? wr.data : {};
-      var fmtT = function (mins) { var h = Math.floor((mins || 0) / 60), x = (mins || 0) % 60; return h ? (h + 'h' + (x ? (' ' + x + 'm') : '')) : ((mins || 0) + 'm'); };
-      var feedback = '<div style="margin-top:26px;padding-top:18px;border-top:1px solid #16283a;">' +
-        '<p style="font-size:14px;color:#cfd6dc;line-height:1.6;"><strong style="color:#2ba8e0;">Help us make FFP better.</strong> What do you love, what is missing, what should we build next? Your feedback shapes the experience for the whole community.</p>' +
-        '<div style="text-align:center;margin-top:12px;"><a href="' + APP_URL + '?feedback=1" style="display:inline-block;background:transparent;color:#2ba8e0;border:1px solid #2ba8e0;font-weight:800;font-size:14px;text-decoration:none;padding:11px 22px;border-radius:10px;">Share your feedback</a></div></div>';
-      var subject, body;
+      var subject, html;
       if ((d.activities || 0) > 0) {
         subject = 'Your ' + monName + ' on Find Fit People';
-        var ba = Array.isArray(d.by_activity) ? d.by_activity : [];
-        var actRows = ba.slice(0, 7).map(function (a) {
-          var bits = [a.count + ' session' + (a.count === 1 ? '' : 's'), fmtT(a.minutes)];
-          if (a.km && a.km > 0) bits.push(a.km + ' km');
-          return '<tr><td style="padding:8px 0;border-bottom:1px solid #16283a;font-size:14px;color:#e8eef4;font-weight:700;">' + esc(a.activity) + '</td><td style="padding:8px 0;border-bottom:1px solid #16283a;font-size:12.5px;color:#8a99a8;text-align:right;">' + bits.join(' &middot; ') + '</td></tr>';
-        }).join('');
-        var moreActs = ba.length > 7 ? '<p style="font-size:12px;color:#8a99a8;margin:6px 0 0;">+ ' + (ba.length - 7) + ' more.</p>' : '';
-        var pa = d.prev_activities || 0, imp;
-        if (pa > 0 && d.activities > pa) imp = 'You stepped it up — <strong>' + d.activities + '</strong> activities vs ' + pa + ' the month before.';
-        else if (pa === 0 && d.activities > 0) imp = 'A strong month — <strong>' + d.activities + '</strong> activities logged.';
-        else if (d.activities < pa) imp = 'A quieter month than last (' + d.activities + ' vs ' + pa + ') — ' + nextName + ' is a clean slate.';
-        else imp = 'Steady as ever — <strong>' + d.activities + '</strong> activities.';
-        if ((d.distance_km || 0) > 0) imp += ' You covered <strong>' + d.distance_km + ' km</strong>' + (((d.prev_distance_km || 0) > 0) ? (' (vs ' + d.prev_distance_km + ' km before)') : '') + ', ' + fmtT(d.minutes) + ' moving.';
-        var ppl = Array.isArray(d.partners) ? d.partners : [];
-        var pplLine = ppl.length ? ('<p style="font-size:14px;color:#cfd6dc;line-height:1.6;"><strong style="color:#2ba8e0;">Better together:</strong> you shared activities with ' + ppl.slice(0, 5).map(esc).join(', ') + (ppl.length > 5 ? (' and ' + (ppl.length - 5) + ' more') : '') + '.</p>') : '';
-        var foodLine = (d.food_days > 0) ? ('<p style="font-size:14px;color:#cfd6dc;line-height:1.6;"><strong style="color:#2ba8e0;">Nutrition:</strong> you logged food on ' + d.food_days + ' day' + (d.food_days === 1 ? '' : 's') + ' (' + d.food_items + ' entr' + (d.food_items === 1 ? 'y' : 'ies') + ') — fuel counts too.</p>') : '';
-        var social = []; if (d.meetups) social.push(d.meetups + ' meet-up' + (d.meetups === 1 ? '' : 's')); if (d.new_connections) social.push(d.new_connections + ' new connection' + (d.new_connections === 1 ? '' : 's'));
-        var socialLine = social.length ? ('<p style="font-size:14px;color:#cfd6dc;line-height:1.6;">You also made ' + social.join(' and ') + ' across ' + (d.cities || 1) + ' cit' + ((d.cities || 1) === 1 ? 'y' : 'ies') + '.</p>') : '';
-        body = '<p style="font-size:15px;color:#cfd6dc;line-height:1.6;">Hi ' + esc(first) + ', here is your ' + monName + ' on the Passport — the full picture.</p>' +
-          '<p style="font-size:14px;color:#e8eef4;line-height:1.6;margin:14px 0 4px;">' + imp + '</p>' +
-          '<div style="font-size:11px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:#8a99a8;margin:18px 0 4px;">What you did</div>' +
-          '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + actRows + '</table>' + moreActs +
-          (d.top_activity ? '<p style="background:rgba(255,204,0,0.10);border:1px solid rgba(255,204,0,0.3);border-radius:10px;padding:13px;font-size:14px;color:#e8eef4;margin-top:16px;"><strong style="color:#b8965a;">What you loved most:</strong> ' + esc(d.top_activity) + '. Do more of it in ' + nextName + ' — find a meet-up or host one yourself.</p>' : '') +
-          pplLine + foodLine + socialLine + cta + feedback;
+        html = ffpWrapupEmail({ first: first, monName: monName, nextName: nextName, prevMonName: prevName, appUrl: APP_URL, heroImg: HERO_IMG, daysInMonth: daysInMonth, d: d, esc: esc, fmtT: fmtT });
       } else {
         subject = 'We missed you in ' + monName + ' — Find Fit People';
-        body = '<p style="font-size:15px;color:#cfd6dc;line-height:1.6;">Hi ' + esc(first) + ', we did not see you on the Passport much in ' + monName + ' — and that is okay. Every month is a fresh start.</p>' +
-          '<p style="font-size:14px;color:#cfd6dc;line-height:1.65;">Your crew has been active, and there are meet-ups and a new quest running this ' + nextName + '. The easiest way back in is one small activity logged, or joining a meet-up near you.</p>' +
-          '<p style="font-size:14px;color:#cfd6dc;line-height:1.65;">Do more of what you love — we are here to help you find the people to do it with.</p>' + cta + feedback;
+        var body = '<div style="font-size:22px;font-weight:800;color:#0f2c47;margin-bottom:8px;letter-spacing:-0.3px;">We missed you in ' + monName + '</div>'
+          + '<p style="font-size:14px;color:#44586a;line-height:1.65;margin:0 0 12px;">Hi ' + esc(first) + ', we didn’t see you on the Passport much last month — and that’s okay. Every month is a fresh start.</p>'
+          + '<p style="font-size:14px;color:#44586a;line-height:1.65;margin:0 0 12px;">Your crew has been active, and there’s a new quest running this ' + nextName + '. The easiest way back in is one small activity logged, or joining a meet-up near you.</p>'
+          + '<p style="font-size:14px;color:#44586a;line-height:1.65;margin:0 0 4px;">Do more of what you love — <b style="color:#0f2c47;">we’re here to help you find fit people</b> to do it with.</p>'
+          + '<div style="text-align:center;margin:22px 0 6px;"><a href="' + APP_URL + '" style="display:inline-block;background:#FFCC00;color:#082335;font-weight:800;font-size:15px;text-decoration:none;padding:13px 26px;border-radius:10px;">Open your Passport</a></div>';
+        html = brandEmail(monName + ' on FFP', body);
       }
       try {
-        await mailer.sendMail({ from: MAIL_FROM, to: m.email, subject: subject, html: brandEmail(monName + ' wrap-up', body) });
+        await mailer.sendMail({ from: MAIL_FROM, to: m.email, subject: subject, html: html });
         sent++;
       } catch (e) { skipped++; }
     }
