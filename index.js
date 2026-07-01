@@ -5591,16 +5591,13 @@ function ffpWrapupEmail(o) {
   var LOGO = 'https://kxzyuofecmtymablnmak.supabase.co/storage/v1/object/public/site-images/ffp-logo-white.png';
   var upchip = ((d.activities || 0) > (d.prev_activities || 0))
     ? '<div style="margin-top:13px;display:inline-block;font-size:12.5px;font-weight:700;color:#ffffff;background:rgba(255,255,255,0.16);border:1px solid rgba(255,255,255,0.32);border-radius:10px;padding:7px 13px;"><span style="color:#7ef0a8;">&#9650;</span> ' + (d.activities || 0) + ' activities, up from ' + (d.prev_activities || 0) + ' in ' + o.prevMonName + '</div>' : '';
-  var heroCard = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0d2b45;">'
-    + '<tr><td background="' + (hero || '') + '" bgcolor="#0d2b45" valign="bottom" style="background-color:#0d2b45;' + (hero ? ('background-image:url(\'' + hero + '\');background-size:cover;background-position:center;') : 'background-image:linear-gradient(135deg,#155e85,#0d2b45);') + '">'
-    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-    + '<tr><td style="padding:22px 26px 0;"><img src="' + LOGO + '" alt="Find Fit People" width="116" style="display:block;border:0;height:auto;"></td></tr>'
-    + '<tr><td style="font-size:0;line-height:0;height:112px;">&nbsp;</td></tr>'
-    + '<tr><td style="padding:0;"><div style="background-image:linear-gradient(180deg,rgba(9,20,32,0),rgba(9,20,32,0.55) 45%,rgba(9,20,32,0.88));padding:46px 26px 22px;">'
+  var heroCard = (hero ? ('<img src="' + hero + '" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;" alt="">') : '')
+    + '<div style="background-color:#0d2b45;background-image:linear-gradient(135deg,#155e85,#0d2b45);padding:20px 26px 22px;">'
+    + '<img src="' + LOGO + '" alt="Find Fit People" width="104" style="display:block;border:0;height:auto;margin-bottom:13px;">'
     + '<div style="font-size:12px;font-weight:800;letter-spacing:1.5px;color:#bfe2f5;">' + mon.toUpperCase() + ' WRAP-UP</div>'
     + '<div style="font-size:28px;font-weight:900;color:#ffffff;margin-top:6px;line-height:1.1;">Your ' + mon + ', ' + esc(first) + '.</div>'
     + '<div style="font-size:15px;color:#dff0fb;margin-top:6px;">' + (d.activities || 0) + ' activities &middot; ' + (d.distance_km || 0) + ' km &middot; ' + fmtT(d.minutes) + ' moving</div>' + upchip
-    + '</div></td></tr></table></td></tr></table>';
+    + '</div>';
   // ---------- assemble (alternating bands) ----------
   var inner = heroCard + coachBand + whiteMain + ceBand + connBand + cmpBand + vsBand + matchBand + ctaBand + signBand + fbBand + footBand;
   return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">'
