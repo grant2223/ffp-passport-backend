@@ -12,6 +12,7 @@
     { "path": "/api/cron/coach-profiles", "schedule": "0 2 * * *" },
     { "path": "/api/cron/coach-nudges", "schedule": "0 3 * * *" },
     { "path": "/api/cron/monthly-wrapup", "schedule": "0 5 1 * *" },
-    { "path": "/api/cron/lifecycle", "schedule": "0 7 * * *" }
+    { "path": "/api/cron/lifecycle", "schedule": "0 7 * * *" },
+    { "path": "/api/cron/streak-nudge", "schedule": "0 14 * * *" }
   ]
 }
