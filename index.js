@@ -1107,19 +1107,29 @@ async function sendWelcomeEmail(email, firstName, city) {
         </tr></table>
       </div></div>
 
-      <div style="background:#ffffff;padding:22px 26px;">
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;"><tr>
-          <td width="36" valign="top"><div style="width:32px;height:32px;border-radius:50%;background:#e7f0fb;color:#2ba8e0;text-align:center;line-height:32px;font-weight:900;font-size:15px;">2</div></td>
-          <td style="padding-left:12px;"><div style="font-size:15px;font-weight:800;color:#0d2b45;">Complete your profile</div><div style="font-size:13px;color:#5a7186;line-height:1.55;margin-top:3px;">This is what matches you to the right people &mdash; add your location, gender, age, interests + level, and a few words about you.</div></td>
-        </tr></table>
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;"><tr>
-          <td width="36" valign="top"><div style="width:32px;height:32px;border-radius:50%;background:#e7f0fb;color:#2ba8e0;text-align:center;line-height:32px;font-weight:900;font-size:15px;">3</div></td>
-          <td style="padding-left:12px;"><div style="font-size:15px;font-weight:800;color:#0d2b45;">Open Connections</div><div style="font-size:13px;color:#5a7186;line-height:1.55;margin-top:3px;">See your matches and start connecting with your people.</div></td>
-        </tr></table>
+      <div style="background:#ffffff;padding:22px 26px 20px;">
+        <div style="font-size:11px;font-weight:900;letter-spacing:.6px;color:#8299ab;text-transform:uppercase;margin-bottom:16px;">Then, in 5 minutes</div>
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
-          <td width="36" valign="top"><div style="width:32px;height:32px;border-radius:50%;background:#e7f0fb;color:#2ba8e0;text-align:center;line-height:32px;font-weight:900;font-size:15px;">4</div></td>
-          <td style="padding-left:12px;"><div style="font-size:15px;font-weight:800;color:#0d2b45;">Log an activity</div><div style="font-size:13px;color:#5a7186;line-height:1.55;margin-top:3px;">Post your first session &mdash; it builds your Passport, your stats, and better matches.</div></td>
+          <td width="52" style="vertical-align:top;"><div style="width:38px;height:38px;border-radius:11px;background-color:#2ba8e0;background-image:linear-gradient(135deg,#3fb4e8,#2088c0);color:#ffffff;text-align:center;line-height:38px;font-weight:900;font-size:16px;">2</div></td>
+          <td style="padding-left:6px;vertical-align:middle;"><div style="font-size:15.5px;font-weight:800;color:#0d2b45;">Complete your profile</div><div style="font-size:13px;color:#5a7186;line-height:1.5;margin-top:2px;">Location, age, interests + level &mdash; it&rsquo;s what matches you to the right people.</div></td>
         </tr></table>
+        <div style="height:1px;background:#eef2f6;margin:15px 0;"></div>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+          <td width="52" style="vertical-align:top;"><div style="width:38px;height:38px;border-radius:11px;background-color:#2ba8e0;background-image:linear-gradient(135deg,#3fb4e8,#2088c0);color:#ffffff;text-align:center;line-height:38px;font-weight:900;font-size:16px;">3</div></td>
+          <td style="padding-left:6px;vertical-align:middle;"><div style="font-size:15.5px;font-weight:800;color:#0d2b45;">Open Connections</div><div style="font-size:13px;color:#5a7186;line-height:1.5;margin-top:2px;">See your matches and start connecting with your people.</div></td>
+        </tr></table>
+        <div style="height:1px;background:#eef2f6;margin:15px 0;"></div>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+          <td width="52" style="vertical-align:top;"><div style="width:38px;height:38px;border-radius:11px;background-color:#2ba8e0;background-image:linear-gradient(135deg,#3fb4e8,#2088c0);color:#ffffff;text-align:center;line-height:38px;font-weight:900;font-size:16px;">4</div></td>
+          <td style="padding-left:6px;vertical-align:middle;"><div style="font-size:15.5px;font-weight:800;color:#0d2b45;">Log an activity</div><div style="font-size:13px;color:#5a7186;line-height:1.5;margin-top:2px;">Post your first session &mdash; that&rsquo;s Day 1 of your streak below.</div></td>
+        </tr></table>
+      </div>
+
+      <div style="background:#ffffff;padding:2px 26px 18px;">
+        <div style="background-color:#0d2b45;background-image:linear-gradient(135deg,#134063,#0d2b45);border-radius:14px;padding:18px;">
+          <div style="font-size:12px;font-weight:900;color:#FFCC00;text-transform:uppercase;letter-spacing:.5px;">&#128293; Daily streak &mdash; starts today</div>
+          <div style="font-size:14px;color:#e8f2fb;line-height:1.6;margin-top:8px;">Post an activity <b style="color:#ffffff;">every day</b>. Hit <b style="color:#ffffff;">14 days in a row for $20</b>, and <b style="color:#ffffff;">30 days for $50 total</b> &mdash; credited straight to your FFP earnings. Miss a day? One make-up save (post an extra activity) keeps your streak alive.</div>
+        </div>
       </div>
 
       <div style="background:#eef4f9;padding:6px 26px 22px;">
