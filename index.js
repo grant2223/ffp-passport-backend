@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v137
+// FFP Passport — Express Server (Vercel, CommonJS) — v138
+// v138 (2026-07-01): WRAP-UP HERO = Quest-feature-card style — background photo (email-safe td `background`
+//      image + navy bgcolor fallback) with the white FFP logo top-left and the title/stats overlaid on a
+//      bottom dark gradient (was a flat navy band + separate photo). Adds the FFP logo to the wrap-up email.
+//      Test-recipient list: monthly-wrapup + sunday-summary `only` now accept a comma-separated email/id list.
 // v137 (2026-07-01): ADMIN-TRIGGERABLE BATCH SENDS. New cronAuthed(req) helper — cron endpoints
 //      (monthly-wrapup, sunday-summary, meetup-reminders, coach-nudges) now accept EITHER CRON_SECRET
 //      OR a valid ?admin_id=<admin_users.id> (whitespace-trimmed, so a stray newline in the env can't 401).
@@ -5583,16 +5587,22 @@ function ffpWrapupEmail(o) {
     + '<div style="font-size:11px;font-weight:800;color:#c17d1a;text-transform:uppercase;letter-spacing:.5px;margin:15px 0 8px;">&#9650; Where we build next</div>' + liList(build)
     + '<div style="font-size:13.5px;line-height:1.55;color:#33475b;margin-top:6px;">Do those and ' + nxt + ' won’t just match ' + mon + ' — it’ll be your strongest yet. That’s what we’re here for: helping you <b>find fit people</b> and become one. I’m with you. &#128170;</div>'
     + '</div></div>';
-  // ---------- hero ----------
+  // ---------- hero — Quest-feature-card style: bg photo + white FFP logo top-left + title overlaid on a bottom gradient ----------
+  var LOGO = 'https://kxzyuofecmtymablnmak.supabase.co/storage/v1/object/public/site-images/ffp-logo-white.png';
   var upchip = ((d.activities || 0) > (d.prev_activities || 0))
-    ? '<div style="margin-top:14px;display:inline-block;font-size:12.5px;font-weight:700;color:#ffffff;background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.30);border-radius:10px;padding:7px 13px;"><span style="color:#7ef0a8;">&#9650;</span> ' + (d.activities || 0) + ' activities, up from ' + (d.prev_activities || 0) + ' in ' + o.prevMonName + '</div>' : '';
-  var heroBand = '<div style="background:#0d2b45;background-image:linear-gradient(135deg,#2ba8e0 0%,#0d2b45 100%);padding:28px 26px 24px;">'
-    + '<div style="font-size:12px;font-weight:800;letter-spacing:1.5px;color:#bfe2f5;">FIND FIT PEOPLE</div>'
-    + '<div style="font-size:28px;font-weight:900;color:#ffffff;margin-top:8px;line-height:1.1;">Your ' + mon + ', ' + esc(first) + '.</div>'
-    + '<div style="font-size:15px;color:#dff0fb;margin-top:8px;">' + (d.activities || 0) + ' activities &middot; ' + (d.distance_km || 0) + ' km &middot; ' + fmtT(d.minutes) + ' moving</div>' + upchip + '</div>';
-  var heroImg = hero ? ('<img src="' + hero + '" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;" alt="">') : '';
+    ? '<div style="margin-top:13px;display:inline-block;font-size:12.5px;font-weight:700;color:#ffffff;background:rgba(255,255,255,0.16);border:1px solid rgba(255,255,255,0.32);border-radius:10px;padding:7px 13px;"><span style="color:#7ef0a8;">&#9650;</span> ' + (d.activities || 0) + ' activities, up from ' + (d.prev_activities || 0) + ' in ' + o.prevMonName + '</div>' : '';
+  var heroCard = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0d2b45;">'
+    + '<tr><td background="' + (hero || '') + '" bgcolor="#0d2b45" valign="bottom" style="background-color:#0d2b45;' + (hero ? ('background-image:url(\'' + hero + '\');background-size:cover;background-position:center;') : 'background-image:linear-gradient(135deg,#155e85,#0d2b45);') + '">'
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
+    + '<tr><td style="padding:22px 26px 0;"><img src="' + LOGO + '" alt="Find Fit People" width="116" style="display:block;border:0;height:auto;"></td></tr>'
+    + '<tr><td style="font-size:0;line-height:0;height:112px;">&nbsp;</td></tr>'
+    + '<tr><td style="padding:0;"><div style="background-image:linear-gradient(180deg,rgba(9,20,32,0),rgba(9,20,32,0.55) 45%,rgba(9,20,32,0.88));padding:46px 26px 22px;">'
+    + '<div style="font-size:12px;font-weight:800;letter-spacing:1.5px;color:#bfe2f5;">' + mon.toUpperCase() + ' WRAP-UP</div>'
+    + '<div style="font-size:28px;font-weight:900;color:#ffffff;margin-top:6px;line-height:1.1;">Your ' + mon + ', ' + esc(first) + '.</div>'
+    + '<div style="font-size:15px;color:#dff0fb;margin-top:6px;">' + (d.activities || 0) + ' activities &middot; ' + (d.distance_km || 0) + ' km &middot; ' + fmtT(d.minutes) + ' moving</div>' + upchip
+    + '</div></td></tr></table></td></tr></table>';
   // ---------- assemble (alternating bands) ----------
-  var inner = heroBand + heroImg + coachBand + whiteMain + ceBand + connBand + cmpBand + vsBand + matchBand + ctaBand + signBand + fbBand + footBand;
+  var inner = heroCard + coachBand + whiteMain + ceBand + connBand + cmpBand + vsBand + matchBand + ctaBand + signBand + fbBand + footBand;
   return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">'
     + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:18px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
     + '<tr><td style="padding:0;">' + inner + '</td></tr></table></td></tr></table>';
