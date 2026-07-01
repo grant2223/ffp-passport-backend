@@ -5591,13 +5591,16 @@ function ffpWrapupEmail(o) {
   var LOGO = 'https://kxzyuofecmtymablnmak.supabase.co/storage/v1/object/public/site-images/ffp-logo-white.png';
   var upchip = ((d.activities || 0) > (d.prev_activities || 0))
     ? '<div style="margin-top:13px;display:inline-block;font-size:12.5px;font-weight:700;color:#ffffff;background:rgba(255,255,255,0.16);border:1px solid rgba(255,255,255,0.32);border-radius:10px;padding:7px 13px;"><span style="color:#7ef0a8;">&#9650;</span> ' + (d.activities || 0) + ' activities, up from ' + (d.prev_activities || 0) + ' in ' + o.prevMonName + '</div>' : '';
-  var heroCard = (hero ? ('<img src="' + hero + '" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;" alt="">') : '')
-    + '<div style="background-color:#0d2b45;background-image:linear-gradient(135deg,#155e85,#0d2b45);padding:20px 26px 22px;">'
-    + '<img src="' + LOGO + '" alt="Find Fit People" width="104" style="display:block;border:0;height:auto;margin-bottom:13px;">'
-    + '<div style="font-size:12px;font-weight:800;letter-spacing:1.5px;color:#bfe2f5;">' + mon.toUpperCase() + ' WRAP-UP</div>'
-    + '<div style="font-size:28px;font-weight:900;color:#ffffff;margin-top:6px;line-height:1.1;">Your ' + mon + ', ' + esc(first) + '.</div>'
-    + '<div style="font-size:15px;color:#dff0fb;margin-top:6px;">' + (d.activities || 0) + ' activities &middot; ' + (d.distance_km || 0) + ' km &middot; ' + fmtT(d.minutes) + ' moving</div>' + upchip
-    + '</div>';
+  var heroCard = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0d2b45;">'
+    + '<tr><td background="' + (hero || '') + '" bgcolor="#0d2b45" style="background-color:#0d2b45;' + (hero ? ('background-image:url(\'' + hero + '\');background-size:100% auto;background-position:center center;background-repeat:no-repeat;') : '') + '">'
+    + '<div style="background-image:linear-gradient(158deg,rgba(21,94,133,0.74) 0%,rgba(9,24,38,0.82) 55%,rgba(6,15,26,0.93) 100%);">'
+    + '<table role="presentation" width="100%" height="300" cellpadding="0" cellspacing="0">'
+    + '<tr><td valign="top" style="padding:26px 28px 0;"><img src="' + LOGO + '" alt="Find Fit People" width="110" style="display:block;border:0;height:auto;"></td></tr>'
+    + '<tr><td valign="bottom" style="padding:0 28px 26px;">'
+    + '<div style="font-size:12px;font-weight:800;letter-spacing:2px;color:#9fd4f2;text-transform:uppercase;">' + mon + ' Wrap-up</div>'
+    + '<div style="font-size:33px;font-weight:900;color:#ffffff;margin-top:9px;line-height:1.04;letter-spacing:-0.5px;">Your ' + mon + ',<br>' + esc(first) + '.</div>'
+    + '<div style="font-size:15px;color:#e4f1fb;margin-top:11px;font-weight:600;">' + (d.activities || 0) + ' activities &middot; ' + (d.distance_km || 0) + ' km &middot; ' + fmtT(d.minutes) + ' moving</div>' + upchip
+    + '</td></tr></table></div></td></tr></table>';
   // ---------- assemble (alternating bands) ----------
   var inner = heroCard + coachBand + whiteMain + ceBand + connBand + cmpBand + vsBand + matchBand + ctaBand + signBand + fbBand + footBand;
   return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">'
