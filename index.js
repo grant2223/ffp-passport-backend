@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v144
+// FFP Passport — Express Server (Vercel, CommonJS) — v145
+// v145 (2026-07-01): COACH GRANT = ACTIVE-LIFESTYLE COACH. computeCoachProfile now also writes a 2nd-person,
+//      actionable `coach_line` (member_coach_profile.coach_line; AI + coachLineFallback rules) returned by
+//      /api/coach/profile. NEW conversational support: POST /api/coach/chat {refresh,message} — Claude grounded
+//      in THIS member's summary+facts+recent logs+first name+prior turns (member_coach_messages), persists the
+//      exchange; POST /api/coach/history {refresh} returns the thread. Replaces the member app's 9 canned tips.
 // v144 (2026-07-01): PUSH APP-SCOPING (fixes member push showing "from FFP Pro"). push_subscriptions +
 //      device_push_tokens get an `app` column; /api/push/subscribe + register-device store it; sendPushToMember +
 //      sendFcmToMember send ONLY to app='member'. Frontend (ffp-pwa.js + ffp-native-push.js) tag the app from the
@@ -5107,8 +5112,29 @@ async function computeCoachProfile(memberId) {
       const j = await r.json(); if (r.ok) summary = ((j.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
     }
   } catch (e) {}
-  try { await supabase.from('member_coach_profile').upsert({ member_id: memberId, summary: summary || null, facts: facts, support_ops: support_ops, updated_at: new Date().toISOString() }, { onConflict: 'member_id' }); } catch (e) {}
-  return { summary: summary, facts: facts, support_ops: support_ops };
+  // MEMBER-FACING coach line — 2nd person ("you"), warm, ONE concrete next step, adapts to their state now.
+  let coach_line = '';
+  try {
+    if (ANTHROPIC_KEY) {
+      const sysL = 'You are Grant, FFP\'s active-lifestyle coach, speaking DIRECTLY to this member (second person, "you"). From the JSON facts, write ONE warm, specific, actionable line (max ~30 words, no emojis) that reflects where they are RIGHT NOW — favourite activity, momentum, recovery/sleep if present, or that it has been a while — and nudges ONE concrete next step (log today, take it easy, join or host a meet-up, bring a friend). Encouraging, never clinical, never about anyone else.';
+      const rl = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 120, system: sysL, messages: [{ role: 'user', content: JSON.stringify(facts) }] }) });
+      const jl = await rl.json(); if (rl.ok) coach_line = ((jl.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
+    }
+  } catch (e) {}
+  if (!coach_line) coach_line = coachLineFallback(facts);
+  try { await supabase.from('member_coach_profile').upsert({ member_id: memberId, summary: summary || null, facts: facts, support_ops: support_ops, coach_line: coach_line, updated_at: new Date().toISOString() }, { onConflict: 'member_id' }); } catch (e) {}
+  return { summary: summary, facts: facts, support_ops: support_ops, coach_line: coach_line };
+}
+// Deterministic member-facing coach line when the AI is unavailable — still adapts to their real state.
+function coachLineFallback(f) {
+  f = f || {};
+  const love = f.top_activity || 'your training';
+  if (f.at_risk || (f.last_active_days != null && f.last_active_days > 10)) return 'It has been a while — the easiest restart is a meet-up near you. Show up once and the momentum comes back.';
+  if (f.latest_recovery != null && f.latest_recovery < 34) return 'Recovery is low today — keep the habit alive with something gentle. Rest is training too.';
+  if (f.latest_recovery != null && f.latest_recovery >= 67) return 'You are well recovered — a great day to push your ' + love + '. Log it while it is fresh.';
+  if (f.momentum === 'slipping') return 'A little down on last week — one ' + love + ' session closes the gap. Make it social and bring someone.';
+  if (f.momentum === 'rising') return 'You are building nicely — line up another ' + love + ' this week, or host a meet-up so others join you.';
+  return 'Consistency beats intensity — a short ' + love + ' session today keeps your streak and your Trends moving.';
 }
 
 // On-demand profile (member app posts {refresh}). Returns cached if <24h old, else recomputes.
@@ -5116,10 +5142,59 @@ app.post('/api/coach/profile', async (req, res) => {
   try {
     const v = verifyRefreshToken((req.body && req.body.refresh) || '');
     if (!v) return res.status(401).json({ error: 'auth' });
-    const { data: ex } = await supabase.from('member_coach_profile').select('summary, facts, support_ops, updated_at').eq('member_id', v.memberId).maybeSingle();
-    if (ex && ex.updated_at && (Date.now() - new Date(ex.updated_at).getTime() < 24 * 60 * 60 * 1000)) return res.json({ summary: ex.summary, facts: ex.facts, support_ops: ex.support_ops || [] });
+    const { data: ex } = await supabase.from('member_coach_profile').select('summary, facts, support_ops, coach_line, updated_at').eq('member_id', v.memberId).maybeSingle();
+    if (ex && ex.updated_at && (Date.now() - new Date(ex.updated_at).getTime() < 24 * 60 * 60 * 1000) && ex.coach_line) return res.json({ summary: ex.summary, facts: ex.facts, support_ops: ex.support_ops || [], coach_line: ex.coach_line });
     const p = await computeCoachProfile(v.memberId);
     return res.json(p);
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// TALK TO COACH — conversational support. Claude grounded in THIS member's coach profile + recent activity + prior turns.
+app.post('/api/coach/chat', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    const msg = String((req.body && req.body.message) || '').trim().slice(0, 2000);
+    if (!msg) return res.status(400).json({ error: 'empty' });
+    if (!ANTHROPIC_KEY) return res.status(503).json({ error: 'coach_unavailable' });
+    // Ground the coach: profile memory (recompute if missing), recent activity, first name, prior conversation.
+    let prof = null;
+    try { const { data } = await supabase.from('member_coach_profile').select('summary, facts').eq('member_id', v.memberId).maybeSingle(); prof = data; } catch (e) {}
+    if (!prof || !prof.facts) { try { prof = await computeCoachProfile(v.memberId); } catch (e) {} }
+    let recent = [];
+    try { const { data } = await supabase.from('activity_logs').select('activity, logged_at, distance_km, duration_min, city').eq('member_id', v.memberId).order('logged_at', { ascending: false }).limit(8); recent = data || []; } catch (e) {}
+    let firstName = 'there';
+    try { const { data } = await supabase.from('members').select('given_names, full_name').eq('id', v.memberId).maybeSingle(); if (data) firstName = String(data.given_names || data.full_name || 'there').split(' ')[0]; } catch (e) {}
+    let hist = [];
+    try { const { data } = await supabase.from('member_coach_messages').select('role, content').eq('member_id', v.memberId).order('created_at', { ascending: false }).limit(10); hist = (data || []).reverse(); } catch (e) {}
+    const sys = 'You are Grant, the personal active-lifestyle coach inside Find Fit People (FFP). You are talking with ' + firstName + '. '
+      + 'What you remember about them: ' + ((prof && prof.summary) ? prof.summary : '(still getting to know them)') + ' '
+      + 'Their current facts: ' + JSON.stringify((prof && prof.facts) || {}) + '. '
+      + 'Their recent activities: ' + JSON.stringify(recent) + '. '
+      + 'Coach them on movement, consistency, motivation, meet-ups and building an active social life. Be warm, specific and encouraging, reference what you know about them, and keep replies short (2-4 sentences) and conversational. '
+      + 'Point them to concrete next steps: log an activity, join or host a meet-up, invite a friend, or take an easy day when recovery is low. '
+      + 'You are NOT a doctor — for pain, injury or medical concerns, gently suggest they see a professional. No emojis unless they use them first. Never discuss another member\'s health.';
+    let messages = hist.map(function (m) { return { role: (m.role === 'coach' ? 'assistant' : 'user'), content: m.content }; });
+    messages.push({ role: 'user', content: msg });
+    while (messages.length && messages[0].role === 'assistant') messages.shift();   // Anthropic requires the first message to be 'user'
+    let reply = '';
+    try {
+      const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(30000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 400, system: sys, messages: messages }) });
+      const j = await r.json(); if (r.ok) reply = ((j.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
+    } catch (e) {}
+    if (!reply) reply = 'I had a moment there — give me another go in a sec. Meanwhile: what is one small thing you could do today to move?';
+    try { await supabase.from('member_coach_messages').insert([{ member_id: v.memberId, role: 'user', content: msg }, { member_id: v.memberId, role: 'coach', content: reply }]); } catch (e) {}
+    return res.json({ reply: reply });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// Prior conversation for the Talk-to-Coach thread (oldest → newest).
+app.post('/api/coach/history', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    const { data } = await supabase.from('member_coach_messages').select('role, content, created_at').eq('member_id', v.memberId).order('created_at', { ascending: false }).limit(30);
+    return res.json({ messages: (data || []).reverse() });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
