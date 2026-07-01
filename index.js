@@ -1,4 +1,11 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v142
+// FFP Passport — Express Server (Vercel, CommonJS) — v144
+// v144 (2026-07-01): PUSH APP-SCOPING (fixes member push showing "from FFP Pro"). push_subscriptions +
+//      device_push_tokens get an `app` column; /api/push/subscribe + register-device store it; sendPushToMember +
+//      sendFcmToMember send ONLY to app='member'. Frontend (ffp-pwa.js + ffp-native-push.js) tag the app from the
+//      URL (professional/provider/booking/member). Existing subs re-tag on next app open.
+// v143 (2026-07-01): WEEKLY SUMMARY RESKIN — moved off the old dark theme onto the new LIGHT brand (navy hero +
+//      white FFP logo + white body bands + Find-Fit-People signoff + light footer), matching the wrap-up/welcome.
+//      Light `C` palette + gold for text-yellow + light bar tracks; yellow CTA. Data/sections unchanged.
 // v142 (2026-07-01): WEEKLY SUMMARY — "Near you this week" section: real people to connect with + meet-ups near
 //      you to join. New RPC member_weekly_opportunities(p_me) (top 3 unconnected matches by shared sport/city +
 //      up to 3 upcoming meet-ups in their city/region, next 10 days, not hosted/joined). Rendered in
@@ -2898,7 +2905,7 @@ async function sendPushToMember(memberId, payloadObj) {
   if (!memberId) return 0;
   let n = 0;
   if (PUSH_READY) {
-    const { data } = await supabase.from('push_subscriptions').select('endpoint, p256dh, auth').eq('member_id', memberId);
+    const { data } = await supabase.from('push_subscriptions').select('endpoint, p256dh, auth').eq('member_id', memberId).eq('app', 'member');   // member pushes ONLY to the member PWA (never FFP Pro/Provider/Booking)
     n += await _sendPushTo(data || [], payloadObj);
   }
   try { n += await sendFcmToMember(memberId, payloadObj); } catch (e) {}   // native (iOS/Android) — independent of VAPID
@@ -2954,7 +2961,7 @@ async function _fcmSendTokens(tokens, payloadObj) {
 }
 async function sendFcmToMember(memberId, payloadObj) {
   if (!FCM_READY || !memberId) return 0;
-  const { data } = await supabase.from('device_push_tokens').select('token').eq('member_id', memberId);
+  const { data } = await supabase.from('device_push_tokens').select('token').eq('member_id', memberId).eq('app', 'member');   // member pushes ONLY to the member app
   return _fcmSendTokens((data || []).map(function (d) { return d.token; }), payloadObj);
 }
 async function sendFcmToAll(payloadObj) {
@@ -2969,7 +2976,8 @@ app.post('/api/push/register-device', async (req, res) => {
     const v = verifyRefreshToken((req.body && req.body.refresh) || ''); if (!v) return res.status(401).json({ error: 'auth' });
     const token = req.body && req.body.token; const platform = (req.body && req.body.platform) || null;
     if (!token) return res.status(400).json({ error: 'token required' });
-    await supabase.from('device_push_tokens').upsert({ token: token, member_id: v.memberId, platform: platform, updated_at: new Date().toISOString() }, { onConflict: 'token' });
+    const _app = (req.body && (req.body.app === 'professional' || req.body.app === 'provider' || req.body.app === 'booking')) ? req.body.app : 'member';
+    await supabase.from('device_push_tokens').upsert({ token: token, member_id: v.memberId, platform: platform, app: _app, updated_at: new Date().toISOString() }, { onConflict: 'token' });
     return res.json({ ok: true });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
@@ -3005,9 +3013,10 @@ app.post('/api/push/subscribe', async (req, res) => {
     if (!memberId || !sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
       return res.status(400).json({ error: 'member_id + full subscription required' });
     }
+    const _app = (b.app === 'professional' || b.app === 'provider' || b.app === 'booking') ? b.app : 'member';   // which PWA registered this — member pushes only go to app='member'
     const row = {
       member_id: memberId, endpoint: sub.endpoint, p256dh: sub.keys.p256dh, auth: sub.keys.auth,
-      user_agent: String(b.user_agent || '').slice(0, 300), last_used_at: new Date().toISOString()
+      user_agent: String(b.user_agent || '').slice(0, 300), app: _app, last_used_at: new Date().toISOString()
     };
     const { error } = await supabase.from('push_subscriptions').upsert(row, { onConflict: 'endpoint' });
     if (error) return res.status(500).json({ error: error.message });
@@ -5315,7 +5324,7 @@ function renderSundaySummary(name, d){
   var wdArr = d.week_days || [0,0,0,0,0,0,0];
   var wdMax = Math.max.apply(null, wdArr.concat([1]));
   var dayLbls = ['M','T','W','T','F','S','S'];
-  var bars = wdArr.map(function(n){ var h = n>0 ? Math.round(14 + (n/wdMax)*52) : 8; var col = n>0 ? C.yellow : 'rgba(255,255,255,.10)'; return '<td style="text-align:center;vertical-align:bottom;"><div style="margin:0 auto;width:58%;height:'+h+'px;background:'+col+';border-radius:4px 4px 0 0;font-size:0;line-height:'+h+'px;">&nbsp;</div></td>'; }).join('');
+  var bars = wdArr.map(function(n){ var h = n>0 ? Math.round(14 + (n/wdMax)*52) : 8; var col = n>0 ? C.yellow : '#e2e9f0'; return '<td style="text-align:center;vertical-align:bottom;"><div style="margin:0 auto;width:58%;height:'+h+'px;background:'+col+';border-radius:4px 4px 0 0;font-size:0;line-height:'+h+'px;">&nbsp;</div></td>'; }).join('');
   var dlbls = dayLbls.map(function(x){ return '<td style="text-align:center;padding-top:6px;font-size:10px;color:'+C.dim+';font-weight:700;">'+x+'</td>'; }).join('');
   var graphHtml = '<tr><td style="padding:28px 30px 0;">'+ssEye('Your week in motion')+ssRule()
     +'<table role="presentation" width="100%" style="margin-top:16px;"><tr style="vertical-align:bottom;">'+bars+'</tr>'
@@ -5336,7 +5345,7 @@ function renderSundaySummary(name, d){
   }
   var mileBanner = '';
   if (d.milestone && d.milestone.title) {
-    mileBanner = '<tr><td style="padding:20px 30px 0;text-align:center;"><div style="font-size:13px;color:'+C.yellow+';font-weight:800;">&#127941; '+d.milestone.title+'</div>'+(d.milestone.body?('<div style="font-size:12px;color:'+C.soft+';margin-top:3px;">'+d.milestone.body+'</div>'):'')+'</td></tr>';
+    mileBanner = '<tr><td style="padding:20px 30px 0;text-align:center;"><div style="font-size:13px;color:'+C.gold+';font-weight:800;">&#127941; '+d.milestone.title+'</div>'+(d.milestone.body?('<div style="font-size:12px;color:'+C.soft+';margin-top:3px;">'+d.milestone.body+'</div>'):'')+'</td></tr>';
   }
   var cTotal = cn.total||0, cNew = cn.new_this_week||0;
   var connectBody = (cTotal? ('You’ve made '+cTotal+' connection'+(cTotal===1?'':'s')+(cNew?(' (+'+cNew+' this week)'):'')+'. ') : 'People who train where you do are on FFP. ')+'<a href="https://ffppassport.com/ffp-member-dashboard.html" style="color:'+C.accent+';text-decoration:none;font-weight:700;">Find your crew &#8250;</a>';
@@ -5394,12 +5403,11 @@ function renderSundaySummary(name, d){
     : 'A fresh week starts today — get moving, connect with people, and climb your passport.';
 
   return ''
-  +'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#050d16;"><tr><td align="center" style="padding:24px 14px;">'
-  +'<table role="presentation" width="500" cellpadding="0" cellspacing="0" style="max-width:500px;width:100%;background:#081420;border:1px solid rgba(43,168,224,.25);border-radius:18px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
-  +'<tr><td style="padding:32px 30px 0;text-align:center;"><img src="https://ffppassport.com/assets/ffp-emblem.png" alt="FFP" width="60" style="display:inline-block;border:0;"><div style="font-size:11px;color:'+C.accent+';letter-spacing:2.5px;text-transform:uppercase;font-weight:800;margin-top:14px;">Sunday Summary &nbsp;&middot;&nbsp; '+ss_date(d.week_start)+' &ndash; '+ss_date(d.week_end)+'</div></td></tr>'
+  +'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">'
+  +'<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:18px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
+  +'<tr><td style="padding:0;"><div style="background-color:#0d2b45;background-image:linear-gradient(135deg,#2ba8e0 0%,#0d2b45 62%);padding:28px 30px 26px;"><img src="https://kxzyuofecmtymablnmak.supabase.co/storage/v1/object/public/site-images/ffp-logo-white.png" alt="Find Fit People" width="106" style="display:block;border:0;height:auto;margin-bottom:16px;"><div style="font-size:12px;font-weight:800;letter-spacing:1.6px;color:#bfe2f5;text-transform:uppercase;">Sunday Summary &middot; '+ss_date(d.week_start)+' &ndash; '+ss_date(d.week_end)+'</div><div style="font-size:28px;font-weight:900;color:#ffffff;margin-top:8px;line-height:1.08;letter-spacing:-.5px;">'+greet+'</div><div style="font-size:14.5px;color:#dff0fb;line-height:1.55;margin-top:7px;">'+sub+'</div></div></td></tr>'
   + mileBanner
-  +'<tr><td style="padding:22px 30px 0;"><div style="font-size:25px;font-weight:900;color:'+C.white+';letter-spacing:-.5px;">'+greet+'</div><div style="font-size:14px;color:'+C.soft+';line-height:1.6;margin-top:8px;">'+sub+'</div></td></tr>'
-  + (d.coach_note ? '<tr><td style="padding:22px 30px 0;"><div style="border-left:3px solid '+C.yellow+';padding-left:14px;"><div style="font-size:10.5px;color:'+C.yellow+';letter-spacing:1.5px;text-transform:uppercase;font-weight:800;">Grant&#39;s note</div><div style="font-size:14px;color:'+C.white+';line-height:1.65;margin-top:7px;font-style:italic;">'+d.coach_note+'</div></div></td></tr>' : '')
+  + (d.coach_note ? '<tr><td style="padding:20px 30px 0;"><div style="background:#eef4f9;border-left:4px solid '+C.accent+';border-radius:0 12px 12px 0;padding:14px 16px;"><div style="font-size:10.5px;color:'+C.gold+';letter-spacing:1.5px;text-transform:uppercase;font-weight:800;">Grant&#39;s note</div><div style="font-size:14px;color:'+C.white+';line-height:1.65;margin-top:7px;font-style:italic;">'+d.coach_note+'</div></div></td></tr>' : '')
   + worldHtml
   + graphHtml
   + nutriHtml
@@ -5408,8 +5416,9 @@ function renderSundaySummary(name, d){
   + oppHtml
   + nudgesHtml
   + statusFlat
-  +'<tr><td style="padding:32px 30px 6px;text-align:center;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;background:'+C.accent+';color:#04121d;text-decoration:none;font-size:15px;font-weight:900;padding:15px 40px;border-radius:11px;letter-spacing:.3px;">Open your Passport</a></td></tr>'
-  +'<tr><td style="padding:22px 30px 30px;text-align:center;"><div style="border-top:1px solid rgba(43,168,224,.12);padding-top:18px;font-size:11px;color:'+C.mut+';font-weight:600;line-height:1.6;">Find Fit People &middot; Dubai 2026 &middot; ffppassport.com</div></td></tr>'
+  +'<tr><td style="padding:28px 30px 24px;text-align:center;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;background:#FFCC00;color:#082335;text-decoration:none;font-size:15px;font-weight:900;padding:14px 34px;border-radius:12px;letter-spacing:.2px;">Open your Passport</a></td></tr>'
+  +'<tr><td style="padding:0;"><div style="background-color:#0d2b45;background-image:linear-gradient(135deg,#12659a,#0d2b45);padding:22px 26px;text-align:center;"><div style="font-size:19px;font-weight:900;color:#ffffff;letter-spacing:-.3px;">Find Fit People.</div><div style="font-size:12.5px;color:#bcd6e8;margin-top:5px;">It&rsquo;s not just our name &mdash; it&rsquo;s what we do, together.</div></div></td></tr>'
+  +'<tr><td style="padding:0;"><div style="background:#e3ebf2;padding:16px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; UAE 2026 &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div></td></tr>'
   +'</table></td></tr></table>';
 }
 // Cron endpoint (Vercel Cron sends Authorization: Bearer ${CRON_SECRET}). Also accepts ?secret= for manual test runs.
