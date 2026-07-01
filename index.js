@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v141
+// FFP Passport — Express Server (Vercel, CommonJS) — v142
+// v142 (2026-07-01): WEEKLY SUMMARY — "Near you this week" section: real people to connect with + meet-ups near
+//      you to join. New RPC member_weekly_opportunities(p_me) (top 3 unconnected matches by shared sport/city +
+//      up to 3 upcoming meet-ups in their city/region, next 10 days, not hosted/joined). Rendered in
+//      renderSundaySummary (dark theme, hides when empty). Welcome email: box-free steps 2–4 + Day-1 streak.
 // v141 (2026-07-01): STREAK REWARDS + NUDGE. DB: member_activity_streak(p_me) (consecutive days, ONE make-up save)
 //      + trigger activity_streak_reward (credits $20 at 14 / $50 at 30 as a transactions 'in' row → shows in
 //      earnings balance + bell notif; existing streaks seeded so no back-pay). GET /api/cron/streak-nudge (daily
@@ -5234,9 +5238,10 @@ function renderSundaySummary(name, d){
   var tierName = curTier.charAt(0).toUpperCase()+curTier.slice(1);
   // v58: DARK FFP-brand layout (matches homepage + approved FFP-SUNDAY-SUMMARY mockup).
   // Email-safe: tables + inline styles, no icon fonts, no emojis (geometric arrows only).
-  var C = { accent:'#2ba8e0', yellow:'#FFCC00', white:'#ffffff', soft:'#b8d4e0', mut:'#9dbdd0', dim:'#6a90a8', green:'#22c55e', cell:'#0f1e2e', line:'rgba(43,168,224,.20)' };
+  // v143: LIGHT brand palette (matches the wrap-up / welcome). white=primary ink (navy), soft=secondary, gold=readable yellow for text.
+  var C = { accent:'#2ba8e0', yellow:'#FFCC00', gold:'#c17d1a', white:'#0d2b45', soft:'#5a7186', mut:'#8299ab', dim:'#8299ab', green:'#1a9d5a', cell:'#f4f8fc', line:'#e6eef6' };
   function ssEye(t){ return '<div style="font-size:11px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;color:'+C.accent+';">'+t+'</div>'; }
-  function ssGraphRow(label, value, caption, pct){ pct=Math.max(0,Math.min(100,Math.round(pct||0))); return '<div style="padding:14px 0;border-bottom:1px solid rgba(43,168,224,.12);"><table role="presentation" width="100%"><tr><td style="font-size:14px;font-weight:800;color:'+C.white+';">'+label+'</td><td align="right" style="font-size:13px;color:'+C.soft+';">'+value+(caption?(' &middot; <span style="color:'+C.yellow+';font-weight:800;">'+caption+'</span>'):'')+'</td></tr></table><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px;"><tr><td width="'+pct+'%" style="background:'+C.accent+';height:6px;font-size:0;line-height:6px;border-radius:4px 0 0 4px;">&nbsp;</td><td width="'+(100-pct)+'%" style="background:rgba(255,255,255,.08);height:6px;font-size:0;line-height:6px;border-radius:0 4px 4px 0;">&nbsp;</td></tr></table></div>'; }
+  function ssGraphRow(label, value, caption, pct){ pct=Math.max(0,Math.min(100,Math.round(pct||0))); return '<div style="padding:14px 0;border-bottom:1px solid rgba(43,168,224,.12);"><table role="presentation" width="100%"><tr><td style="font-size:14px;font-weight:800;color:'+C.white+';">'+label+'</td><td align="right" style="font-size:13px;color:'+C.soft+';">'+value+(caption?(' &middot; <span style="color:'+C.gold+';font-weight:800;">'+caption+'</span>'):'')+'</td></tr></table><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px;"><tr><td width="'+pct+'%" style="background:'+C.accent+';height:6px;font-size:0;line-height:6px;border-radius:4px 0 0 4px;">&nbsp;</td><td width="'+(100-pct)+'%" style="background:#e2e9f0;height:6px;font-size:0;line-height:6px;border-radius:0 4px 4px 0;">&nbsp;</td></tr></table></div>'; }
   function ssNudge(icon, title, body){ return '<table role="presentation" width="100%" style="border-bottom:1px solid rgba(43,168,224,.12);"><tr><td width="34" valign="top" style="padding:12px 0;"><div style="width:24px;height:24px;border-radius:50%;background:rgba(43,168,224,.16);color:'+C.accent+';text-align:center;line-height:24px;font-weight:900;font-size:13px;">'+icon+'</div></td><td valign="top" style="padding:12px 0 12px 10px;"><div style="font-size:13.5px;font-weight:800;color:'+C.white+';">'+title+'</div><div style="font-size:12.5px;color:'+C.soft+';line-height:1.5;margin-top:2px;">'+body+'</div></td></tr></table>'; }
   function ssRule(){ return '<div style="height:2px;background:rgba(43,168,224,.45);border-radius:2px;margin:12px 0 0;"></div>'; }
   function ssMetric(label, value, delta, dCol, last){
@@ -5255,7 +5260,7 @@ function renderSundaySummary(name, d){
       +'<td align="right" valign="top"><div style="font-size:30px;font-weight:900;color:'+C.white+';letter-spacing:-1px;line-height:1;">'+value+'</div></td>'
       +'</tr></table></td></tr></table>';
   }
-  function ssBarDark(pct){ pct=Math.max(0,Math.min(100,Math.round(pct))); return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;"><tr><td width="'+pct+'%" style="background:'+C.yellow+';height:8px;font-size:0;line-height:8px;border-radius:5px 0 0 5px;">&nbsp;</td><td width="'+(100-pct)+'%" style="background:rgba(255,255,255,.10);height:8px;font-size:0;line-height:8px;border-radius:0 5px 5px 0;">&nbsp;</td></tr></table>'; }
+  function ssBarDark(pct){ pct=Math.max(0,Math.min(100,Math.round(pct))); return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;"><tr><td width="'+pct+'%" style="background:'+C.yellow+';height:8px;font-size:0;line-height:8px;border-radius:5px 0 0 5px;">&nbsp;</td><td width="'+(100-pct)+'%" style="background:#e2e9f0;height:8px;font-size:0;line-height:8px;border-radius:0 5px 5px 0;">&nbsp;</td></tr></table>'; }
 
   // ---- MY FITNESS STATS — real per-stat rank (City/Gender/Age cohorts pending a ranking-data build) ----
   var fitHtml;
@@ -5356,6 +5361,32 @@ function renderSundaySummary(name, d){
       + '<div style="font-size:13px;color:'+C.soft+';line-height:1.6;margin-top:12px;"><strong style="color:'+C.white+';">Ambassador</strong> — the top tier. Keep your sections active to hold your status and your 20% referral rewards.</div></td></tr>';
   }
 
+  // ---- NEAR YOU — real people to connect with + meet-ups to join (v142; hides if none) ----
+  var opp = d.opportunities || {};
+  var oMatches = Array.isArray(opp.matches) ? opp.matches : [];
+  var oMeetups = Array.isArray(opp.meetups) ? opp.meetups : [];
+  function ssMeetWhen(iso){ try { var dt=new Date(iso); return dt.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',timeZone:'Asia/Dubai'})+' &middot; '+dt.toLocaleTimeString('en-GB',{hour:'numeric',minute:'2-digit',hour12:true,timeZone:'Asia/Dubai'}); } catch(e){ return ''; } }
+  var oppHtml = '';
+  if (oMatches.length || oMeetups.length) {
+    var oppRows = '';
+    if (oMatches.length) {
+      oppRows += '<div style="font-size:12px;color:'+C.dim+';margin:16px 0 4px;font-weight:700;">People to connect with</div>';
+      oppRows += oMatches.map(function(mm){
+        var sub=[mm.sport, mm.city].filter(Boolean).join(' &middot; ');
+        var av = mm.photo_url ? ('<img src="'+escapeHtml(mm.photo_url)+'" width="34" height="34" style="width:34px;height:34px;border-radius:50%;display:block;border:0;object-fit:cover;">') : ('<div style="width:34px;height:34px;border-radius:50%;background:rgba(43,168,224,.16);color:'+C.accent+';text-align:center;line-height:34px;font-weight:800;">'+escapeHtml(String(mm.name||'M').charAt(0))+'</div>');
+        return '<table role="presentation" width="100%" style="border-bottom:1px solid rgba(43,168,224,.12);"><tr><td width="44" valign="middle" style="padding:11px 0;">'+av+'</td><td valign="middle" style="padding:11px 0 11px 10px;"><div style="font-size:13.5px;font-weight:800;color:'+C.white+';">'+escapeHtml(mm.name||'Member')+'</div>'+(sub?('<div style="font-size:12px;color:'+C.soft+';margin-top:1px;">'+sub+'</div>'):'')+'</td><td align="right" valign="middle"><a href="https://ffppassport.com/ffp-member-dashboard.html#connections" style="color:'+C.accent+';text-decoration:none;font-weight:800;font-size:12.5px;white-space:nowrap;">Connect &#8250;</a></td></tr></table>';
+      }).join('');
+    }
+    if (oMeetups.length) {
+      oppRows += '<div style="font-size:12px;color:'+C.dim+';margin:18px 0 4px;font-weight:700;">Meet-ups near you</div>';
+      oppRows += oMeetups.map(function(mu){
+        var sub=[ssMeetWhen(mu.meets_at), (mu.city||mu.venue)].filter(Boolean).join(' &middot; ');
+        return '<table role="presentation" width="100%" style="border-bottom:1px solid rgba(43,168,224,.12);"><tr><td width="44" valign="middle" style="padding:11px 0;"><div style="width:34px;height:34px;border-radius:9px;background:rgba(255,204,0,.14);color:'+C.yellow+';text-align:center;line-height:34px;font-weight:800;">&#9650;</div></td><td valign="middle" style="padding:11px 0 11px 10px;"><div style="font-size:13.5px;font-weight:800;color:'+C.white+';">'+escapeHtml(mu.title||'Meet-up')+'</div>'+(sub?('<div style="font-size:12px;color:'+C.soft+';margin-top:1px;">'+sub+'</div>'):'')+'</td><td align="right" valign="middle"><a href="https://ffppassport.com/ffp-member-dashboard.html#panel-meetups" style="color:'+C.accent+';text-decoration:none;font-weight:800;font-size:12.5px;white-space:nowrap;">View &#8250;</a></td></tr></table>';
+      }).join('');
+    }
+    oppHtml = '<tr><td style="padding:28px 30px 0;">'+ssEye('Near you this week')+'<div style="font-size:12px;color:'+C.dim+';margin:11px 0 0;font-weight:700;">people to meet &amp; meet-ups to join</div>'+ssRule()+oppRows+'</td></tr>';
+  }
+
   var didStuff = rankings.length || (places.venues_new||0) || (places.cities_new||0) || (cn.new_this_week||0) || meetTotal || (tp.activities_logged||0);
   var greet = (didStuff ? ('Well done, '+name) : ('Hey, '+name)) + '.';
   var sub = didStuff
@@ -5374,6 +5405,7 @@ function renderSundaySummary(name, d){
   + nutriHtml
   + wearHtml
   + fitHtml
+  + oppHtml
   + nudgesHtml
   + statusFlat
   +'<tr><td style="padding:32px 30px 6px;text-align:center;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;background:'+C.accent+';color:#04121d;text-decoration:none;font-size:15px;font-weight:900;padding:15px 40px;border-radius:11px;letter-spacing:.3px;">Open your Passport</a></td></tr>'
@@ -5418,6 +5450,8 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
       var tprog = await supabase.rpc('member_tier_progress', { p_me: m.id });
       d.tier_progress = (tprog && !tprog.error && tprog.data) ? tprog.data : {};
       d.tier = m.tier || 'member';
+      var opp = await supabase.rpc('member_weekly_opportunities', { p_me: m.id });   // v142: people to connect + meet-ups near you
+      d.opportunities = (opp && !opp.error && opp.data) ? opp.data : {};
       // --- v126 enrich for the redesigned email (all defensive; each section hides if its data is absent) ---
       var _ws = d.week_start ? new Date(d.week_start) : new Date(Date.now() - 6 * 864e5);
       var _we = d.week_end ? new Date(new Date(d.week_end).getTime() + 864e5) : new Date(Date.now() + 864e5);
@@ -5758,6 +5792,7 @@ app.get('/api/cron/lifecycle', async (req, res) => {
         try {
           if (preview === 'profile') { await sendProfileReminderEmail(m.email, first); out.profile_reminder++; }
           else if (preview === 'winback') { await sendWinbackEmail(m.email, first, 9); out.winback++; }
+          else if (preview === 'welcome') { await sendWelcomeEmail(m.email, first, m.city || ''); out.profile_reminder++; }   // resend the updated welcome
         } catch (e) { out.skipped++; }
         continue;
       }
