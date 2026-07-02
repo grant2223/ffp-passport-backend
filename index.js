@@ -5692,7 +5692,7 @@ app.get('/api/cron/daily-activity-reminder', async (req, res) => {
       var localMidnightUtc = new Date(new Date(lp.date + 'T00:00:00Z').getTime() - tzOffsetMs(tz)).toISOString();
       var loggedToday = false;
       try { var a = await supabase.from('activity_logs').select('id', { count: 'exact', head: true }).eq('member_id', m.id).gte('logged_at', localMidnightUtc); if (a && typeof a.count === 'number' && a.count > 0) loggedToday = true; } catch (e) {}
-      if (loggedToday) { skipped++; continue; }                                            // they've trained today — no nudge
+      if (!force && loggedToday) { skipped++; continue; }                                   // they've trained today — no nudge (force=1 bypasses for testing)
       var first = String((m.full_name || '').split(' ')[0] || 'there').replace(/[<>]/g, '');
       // Build the active-life snapshot + the single best hook — drives BOTH the push and the rich email.
       var snap = null, hook = null;
