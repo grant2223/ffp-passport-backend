@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v149
+// FFP Passport — Express Server (Vercel, CommonJS) — v150
+// v150 (2026-07-02): COACH LINE FRESHNESS — the coach card was frozen all day (cached 24h, only recomputed on a new
+//      log). Now: refresh window 24h→3h so it updates through the day; computeCoachProfile adds part_of_day/local_hour
+//      (Dubai) to facts; the coach_line prompt opens time-appropriately + is told to VARY the angle (temperature 1);
+//      coachLineFallback is time-of-day aware and rotates by the hour. Feels current + fresh, not static.
 // v149 (2026-07-02): PER-CONTEXT SENDER — added MAIL_FROM_BOOKING ("Find Fit People" <noreply@findfitpeople.com>) +
 //      mailFromFor(brand). /api/notify/member now picks the sender by brand ('booking' → Find Fit People, else FFP
 //      Passport), so the two noreply addresses stay cleanly branded. Marketplace passes brand:'booking'. (~L1076.)
@@ -5196,6 +5200,11 @@ async function computeCoachProfile(memberId) {
     latest_recovery: latestRec, latest_strain: latestStrain, avg_sleep_7d: avgSleep,
     connections: connections, at_risk: (streak === 0 && lastActiveDays != null && lastActiveDays > 10)
   };
+  // v150: time-of-day context (Dubai UTC+4, the primary market) so the coach line feels CURRENT and changes
+  // through the day — morning / afternoon / evening framing — even when nothing else has changed.
+  const _dh = new Date(Date.now() + 4 * 3600 * 1000).getUTCHours();
+  facts.part_of_day = _dh < 5 ? 'late night' : _dh < 12 ? 'morning' : _dh < 17 ? 'afternoon' : _dh < 21 ? 'evening' : 'night';
+  facts.local_hour = _dh;
   let summary = '';
   try {
     if (ANTHROPIC_KEY) {
@@ -5208,8 +5217,8 @@ async function computeCoachProfile(memberId) {
   let coach_line = '';
   try {
     if (ANTHROPIC_KEY) {
-      const sysL = 'You are Grant, FFP\'s active-lifestyle coach, speaking DIRECTLY to this member (second person, "you"). From the JSON facts, write ONE warm, specific, actionable line (max ~30 words, no emojis) that reflects where they are RIGHT NOW and draws on what you KNOW about their habits (facts.favourites, their weekday/weekend rhythm from weekend_share, typical session length, current + best streak) so it feels personal, not generic. Be a genuinely POSITIVE influence: reinforce their identity as an active person, celebrate progress, and make the next step feel easy and worth it. CRITICAL: if facts.streak is 3 or more, or facts.logged_today is true, ACKNOWLEDGE and protect that consistency — NEVER tell them their momentum is slipping or that they have been away. Nudge ONE concrete next step (log today, take it easy on low recovery, join or host a meet-up, bring a friend). Encouraging, never clinical, never about anyone else.';
-      const rl = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 120, system: sysL, messages: [{ role: 'user', content: JSON.stringify(facts) }] }) });
+      const sysL = 'You are Grant, FFP\'s active-lifestyle coach, speaking DIRECTLY to this member (second person, "you"). From the JSON facts, write ONE warm, specific, actionable line (max ~30 words, no emojis) that reflects where they are RIGHT NOW and draws on what you KNOW about their habits (facts.favourites, their weekday/weekend rhythm from weekend_share, typical session length, current + best streak) so it feels personal, not generic. OPEN with a natural touch that fits facts.part_of_day (' + (facts.part_of_day || 'today') + ') so it reads as fresh and of-the-moment. IMPORTANT: this line is regenerated several times a day, so VARY the angle and wording each time — sometimes celebrate the streak, sometimes suggest a meet-up or bringing a friend, sometimes recovery/rest, sometimes a specific favourite activity — never a stock repeated phrase. Be a genuinely POSITIVE influence: reinforce their identity as an active person, celebrate progress, and make the next step feel easy and worth it. CRITICAL: if facts.streak is 3 or more, or facts.logged_today is true, ACKNOWLEDGE and protect that consistency — NEVER tell them their momentum is slipping or that they have been away. Nudge ONE concrete next step. Encouraging, never clinical, never about anyone else.';
+      const rl = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 120, temperature: 1, system: sysL, messages: [{ role: 'user', content: JSON.stringify(facts) }] }) });
       const jl = await rl.json(); if (rl.ok) coach_line = ((jl.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
     }
   } catch (e) {}
@@ -5221,23 +5230,33 @@ async function computeCoachProfile(memberId) {
 function coachLineFallback(f) {
   f = f || {};
   const love = f.top_activity || 'your training';
+  const pod = f.part_of_day || 'today';
+  const hi = pod === 'morning' ? 'Morning' : pod === 'afternoon' ? 'This afternoon' : pod === 'evening' ? 'This evening' : pod === 'night' ? 'Winding down' : 'Right now';
   // Low recovery wins (wellbeing). Then STREAK — a consistent member is celebrated, NEVER told they are slipping.
-  if (f.latest_recovery != null && f.latest_recovery < 34) return 'Recovery is low today — keep the habit alive with something gentle. Rest is training too.';
-  if (f.streak >= 3) return 'You are on a ' + f.streak + '-day streak — brilliant consistency. Log today to keep it rolling; you are setting the standard here.';
-  if (f.at_risk || (f.last_active_days != null && f.last_active_days > 10)) return 'It has been a while — the easiest restart is a meet-up near you. Show up once and the momentum comes back.';
-  if (f.latest_recovery != null && f.latest_recovery >= 67) return 'You are well recovered — a great day to push your ' + love + '. Log it while it is fresh.';
-  if (f.momentum === 'rising') return 'You are building nicely — line up another ' + love + ' this week, or host a meet-up so others join you.';
-  if (f.momentum === 'slipping') return 'A little down on last week — one ' + love + ' session closes the gap. Make it social and bring someone.';
-  return 'Consistency beats intensity — a short ' + love + ' session today keeps your streak and your Trends moving.';
+  if (f.latest_recovery != null && f.latest_recovery < 34) return hi + ' — recovery is low, so keep it gentle. Rest is training too, and it protects the habit.';
+  if (f.streak >= 3) return hi + ' — you are on a ' + f.streak + '-day streak. Brilliant consistency; log today to keep it rolling and set the standard.';
+  if (f.at_risk || (f.last_active_days != null && f.last_active_days > 10)) return hi + ' is a good time to restart — a meet-up near you is the easiest way back in. Show up once and momentum returns.';
+  if (f.latest_recovery != null && f.latest_recovery >= 67) return hi + ' — you are well recovered. A great window to push your ' + love + '; log it while it is fresh.';
+  if (f.momentum === 'rising') return hi + ' — you are building nicely. Line up another ' + love + ' this week, or host a meet-up so others join you.';
+  // Rotate the default by the hour so repeat views through the day feel fresh, not identical.
+  const opts = [
+    hi + ' — a short ' + love + ' session keeps your streak and your Trends moving.',
+    hi + ' is a great moment for a quick ' + love + '. Consistency beats intensity every time.',
+    hi + ' — even 20 minutes of ' + love + ' counts. Small and steady is how you win this.',
+    hi + ' — make it social: bring a friend to your next ' + love + ' and it barely feels like effort.'
+  ];
+  return opts[(f.local_hour || 0) % opts.length];
 }
 
-// On-demand profile (member app posts {refresh}). Returns cached if <24h old, else recomputes.
+// On-demand profile (member app posts {refresh}). v150: refresh window cut 24h → 3h so the coach line updates
+// through the day (morning/afternoon/evening), not once daily. Serves cache within the window (fast); recomputes
+// when older than 3h OR the member has trained since.
 app.post('/api/coach/profile', async (req, res) => {
   try {
     const v = verifyRefreshToken((req.body && req.body.refresh) || '');
     if (!v) return res.status(401).json({ error: 'auth' });
     const { data: ex } = await supabase.from('member_coach_profile').select('summary, facts, support_ops, coach_line, updated_at').eq('member_id', v.memberId).maybeSingle();
-    if (ex && ex.updated_at && (Date.now() - new Date(ex.updated_at).getTime() < 24 * 60 * 60 * 1000) && ex.coach_line) {
+    if (ex && ex.updated_at && (Date.now() - new Date(ex.updated_at).getTime() < 3 * 60 * 60 * 1000) && ex.coach_line) {
       // Don't serve a stale profile after the member has trained — recompute so today's session (and their streak) count.
       let trainedSince = false;
       try { const { data: nw } = await supabase.from('activity_logs').select('id').eq('member_id', v.memberId).gt('logged_at', ex.updated_at).limit(1); trainedSince = !!(nw && nw.length); } catch (e) {}
