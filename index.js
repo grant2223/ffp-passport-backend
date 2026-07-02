@@ -1,4 +1,10 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v152
+// FFP Passport — Express Server (Vercel, CommonJS) — v153
+// v153 (2026-07-02): ACTIVE-LIFE SNAPSHOT ENGINE. NEW computeActiveLifeSnapshot(memberId,tz) — the one data brain:
+//      weekly minutes/day by PILLAR (fitness/sports/wellness/adventure/recovery via taxonomy + keyword fallback),
+//      pillar breadth (of 5), streak, live points-race standing (quest_leaderboard), goals+motivations, one nearby
+//      meet-up/experience. + activeLifeHook(snap) picks the single best motivating angle (shared by card/email/push).
+//      NEW POST /api/coach/snapshot {refresh}. ANTI-DOUBLING: retired coach-nudges + streak-nudge crons (5pm reminder
+//      is the single daily Coach push; streak REWARDS are a trigger, unaffected). NEXT: rich email + card render + onboarding.
 // v152 (2026-07-02): FFP ACTIVE-LIFE COACHING BRAIN. NEW shared FFP_ETHOS const (5 pillars + coaching mindset + tone) +
 //      FFP_MOTIVATIONS catalog + motivationLabels() — injected into Coach Grant (card line, summary, chat) AND the
 //      pro/partner agent, so every AI surface thinks the same active-lifestyle way. NEW members columns motivations/goals/
@@ -5126,6 +5132,98 @@ app.post('/api/visits/log', async (req, res) => {
 // Deterministic facts + one cheap Haiku "summary" (the Coach's private memory). Feeds the Sunday
 // summary now; nudges + social accountability (Phases 2/3) will read the same profile.
 // ════════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════════
+// ACTIVE-LIFE SNAPSHOT (v153) — the ONE per-member data brain feeding the coach card, the 5pm email + push, and chat.
+// Reads their REAL week: minutes/day by pillar, pillar breadth (of 5), streak, live points-race standing, goals +
+// motivations, one nearby meet-up/experience. activeLifeHook() picks the single most-motivating angle. All defensive.
+// ════════════════════════════════════════════════════════════════════════════
+const FFP_PILLARS = ['fitness', 'sports', 'wellness', 'adventure', 'recovery'];
+let _pillarMap = null, _pillarMapAt = 0;
+async function loadPillarMap() {
+  if (_pillarMap && (Date.now() - _pillarMapAt < 3600000)) return _pillarMap;
+  const m = {};
+  try { const { data } = await supabase.from('taxonomy_items').select('value, parent').eq('list_key', 'activity').eq('active', true); (data || []).forEach(function (r) { if (r.value && r.parent) m[String(r.value).toLowerCase()] = r.parent; }); } catch (e) {}
+  _pillarMap = m; _pillarMapAt = Date.now(); return m;
+}
+// Classify a free-text activity into a pillar: taxonomy first (source of truth), keyword fallback for unmatched.
+function pillarFor(name, map) {
+  var s = (name || '').toString().trim().toLowerCase(); if (!s) return 'fitness';
+  if (map && map[s]) return map[s];
+  if (/(sauna|ice bath|cryo|massage|cold plunge|contrast therapy)/.test(s)) return 'recovery';
+  if (/(yoga|pilates|barre|meditat|breath|mindful|tai chi|mobility|stretch|flexib)/.test(s)) return 'wellness';
+  if (/(hik|climb|boulder|surf|kayak|paddle|\bski\b|snowboard|sail|scuba|dive|trek|trail|kite|paraglid|skydiv|bungee|outdoor|adventure|mountain|ruck)/.test(s)) return 'adventure';
+  if (/(run|jog|walk|cycl|bike|swim|padel|tennis|squash|badminton|footbal|soccer|futsal|rugby|cricket|basketball|netball|volleyball|hockey|golf|polo|handball|frisbee|marathon|triathlon|ironman|spartan|hyrox|\brow)/.test(s)) return 'sports';
+  return 'fitness';
+}
+async function computeActiveLifeSnapshot(memberId, tz) {
+  tz = tz || 'Asia/Dubai';
+  const snap = { first_name: 'there', streak: 0, logged_today: false, motivations: [], goals: [], week: {}, pillars: {}, race: null, nearby: null };
+  let mem = null;
+  try { const { data } = await supabase.from('members').select('given_names, full_name, city, motivations, goals').eq('id', memberId).maybeSingle(); mem = data; } catch (e) {}
+  if (mem) { snap.first_name = String(mem.given_names || mem.full_name || 'there').split(' ')[0]; snap.motivations = Array.isArray(mem.motivations) ? mem.motivations : []; snap.goals = Array.isArray(mem.goals) ? mem.goals : []; }
+  try { const { data } = await supabase.rpc('member_activity_streak', { p_me: memberId }); if (typeof data === 'number') snap.streak = data; } catch (e) {}
+
+  const off = tzOffsetMs(tz);
+  const lp = memberLocalParts(tz) || { date: new Date().toISOString().slice(0, 10) };
+  const todayLocalStart = new Date(lp.date + 'T00:00:00Z').getTime() - off;   // UTC instant of the member's local midnight
+  function dayStart(daysAgo) { return todayLocalStart - daysAgo * 86400000; }
+  const weekStart = dayStart(6), prevWeekStart = dayStart(13);
+  let logs = [];
+  try { const { data } = await supabase.from('activity_logs').select('activity, duration_min, logged_at').eq('member_id', memberId).gte('logged_at', new Date(prevWeekStart).toISOString()); logs = data || []; } catch (e) {}
+  const pmap = await loadPillarMap();
+  const WD = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+  const days = []; for (var d = 6; d >= 0; d--) { var st = dayStart(d); days.push({ start: st, end: st + 86400000, label: WD[new Date(st + off).getUTCDay()], min: 0, pillar: null }); }
+  const counts = { fitness: 0, sports: 0, wellness: 0, adventure: 0, recovery: 0 };
+  let weekMin = 0, prevMin = 0, sessions = 0;
+  (logs || []).forEach(function (l) {
+    var t = new Date(l.logged_at).getTime(); var mins = Number(l.duration_min || 0); var p = pillarFor(l.activity, pmap);
+    if (t >= weekStart) {
+      weekMin += mins; sessions++; if (counts[p] != null) counts[p]++;
+      for (var i = 0; i < days.length; i++) { if (t >= days[i].start && t < days[i].end) { days[i].min += mins; if (!days[i].pillar) days[i].pillar = p; break; } }
+      if (t >= todayLocalStart) snap.logged_today = true;
+    } else if (t >= prevWeekStart) { prevMin += mins; }
+  });
+  var touched = FFP_PILLARS.filter(function (p) { return counts[p] > 0; });
+  var missing = FFP_PILLARS.filter(function (p) { return counts[p] === 0; });
+  snap.week = { days: days.map(function (x) { return { label: x.label, min: x.min, pillar: x.pillar }; }), total_min: weekMin, avg_min: Math.round(weekMin / 7), vs_last_week: weekMin - prevMin, sessions: sessions };
+  snap.pillars = { counts: counts, touched: touched, missing: missing, touched_count: touched.length };
+
+  try {
+    const { data: qs } = await supabase.from('quests').select('id, title').eq('mode', 'points_race').eq('status', 'live').lte('active_from', new Date().toISOString()).gte('active_to', new Date().toISOString()).order('created_at', { ascending: false }).limit(1);
+    if (qs && qs.length) {
+      const { data: lb } = await supabase.rpc('quest_leaderboard', { p_quest: qs[0].id, p_limit: 300 });
+      if (Array.isArray(lb)) {
+        var idx = -1; for (var j = 0; j < lb.length; j++) { if (lb[j].member_id === memberId) { idx = j; break; } }
+        if (idx >= 0) { var above = lb[idx - 1] || null; snap.race = { quest: qs[0].title, rank: idx + 1, points: Math.round(Number(lb[idx].points || 0)), above_name: above ? String(above.name || '').split(' ')[0] : null, gap_to_above: above ? Math.max(0, Math.round(Number(above.points || 0) - Number(lb[idx].points || 0))) : 0 }; }
+      }
+    }
+  } catch (e) {}
+
+  try {
+    if (mem && mem.city) {
+      const { data: mu } = await supabase.from('meetups').select('title, sport, meets_at').eq('city', mem.city).eq('status', 'open').gt('meets_at', new Date().toISOString()).order('meets_at', { ascending: true }).limit(1);
+      if (mu && mu.length) snap.nearby = { kind: 'meetup', title: mu[0].title, sport: mu[0].sport || null };
+      if (!snap.nearby) { const { data: ex } = await supabase.from('experiences').select('title').eq('city', mem.city).eq('status', 'live').limit(1); if (ex && ex.length) snap.nearby = { kind: 'experience', title: ex[0].title }; }
+    }
+  } catch (e) {}
+
+  return snap;
+}
+// Pick the SINGLE most-motivating angle from a snapshot — shared by the email, the card and the push so the message
+// is consistent across surfaces. Priority: protect a streak > a winnable race spot > round out a missing pillar
+// (ideally via a nearby thing) > a quiet week > simple move-today > already-moved encouragement.
+function activeLifeHook(snap) {
+  var s = snap || {}, name = s.first_name || 'there', w = s.week || {}, p = s.pillars || {}, missing = p.missing || [];
+  if (s.streak >= 3 && !s.logged_today) return { key: 'streak', headline: "Don't stop now, " + name + ".", line: "You're on a " + s.streak + "-day streak — one activity today keeps it alive.", cta: 'Log today' };
+  if (s.race && s.race.gap_to_above > 0 && s.race.gap_to_above <= 15) return { key: 'race', headline: "You're " + s.race.gap_to_above + " points off " + (s.race.above_name || 'the spot above') + ".", line: 'One good session today and you climb the ' + (s.race.quest || 'race') + '.', cta: 'Log today' };
+  if (missing.length && s.nearby) return { key: 'pillar_nearby', headline: 'Round out your week, ' + name + '.', line: "You're light on " + missing[0] + ". " + (s.nearby.kind === 'meetup' ? ("There's a meet-up near you: " + s.nearby.title) : ('Try: ' + s.nearby.title)) + '.', cta: s.nearby.kind === 'meetup' ? 'See meet-ups' : 'Find an adventure' };
+  if (missing.length) return { key: 'pillar', headline: 'One pillar to go, ' + name + '.', line: 'Add some ' + missing[0] + ' today to round out your active week.', cta: 'Log today' };
+  if (w.vs_last_week != null && w.vs_last_week < -20) return { key: 'quiet', headline: "Let's get moving, " + name + '.', line: "This week's quieter than last — a short session today turns it around.", cta: 'Log today' };
+  if (!s.logged_today) return { key: 'move', headline: 'Move today, ' + name + '.', line: 'Even 20 minutes counts — a walk, a game, a stretch. Keep the momentum going.', cta: 'Log today' };
+  return { key: 'done', headline: 'Nice work today, ' + name + '.', line: "You've moved today — that's the habit. Line up tomorrow, or bring a friend along.", cta: 'See meet-ups' };
+}
+
 async function computeCoachProfile(memberId) {
   const DAY = 86400000, now = Date.now();
   // Activities — last 120 days (enough to learn real HABITS: favourites, rhythm, session length, best streak).
@@ -5343,6 +5441,18 @@ app.post('/api/coach/chat', async (req, res) => {
     if (!reply) reply = 'I had a moment there — give me another go in a sec. Meanwhile: what is one small thing you could do today to move?';
     try { await supabase.from('member_coach_messages').insert([{ member_id: v.memberId, role: 'user', content: msg }, { member_id: v.memberId, role: 'coach', content: reply }]); } catch (e) {}
     return res.json({ reply: reply });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// v153: ACTIVE-LIFE SNAPSHOT for the member app (rich coach card + the shared hook). Fresh each call — cheap DB reads.
+app.post('/api/coach/snapshot', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    var tz = 'Asia/Dubai';
+    try { const { data } = await supabase.from('members').select('timezone').eq('id', v.memberId).maybeSingle(); if (data && data.timezone) tz = data.timezone; } catch (e) {}
+    const snap = await computeActiveLifeSnapshot(v.memberId, tz);
+    return res.json({ snapshot: snap, hook: activeLifeHook(snap) });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
