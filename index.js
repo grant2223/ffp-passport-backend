@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v155
+// FFP Passport — Express Server (Vercel, CommonJS) — v156
+// v156 (2026-07-02): (a) GET / now returns {version} = BACKEND_VERSION so the LIVE deployed backend version is
+//      VERIFIABLE (RULE 0.6 — no more guessing whether v155 shipped). (b) activeLifeHook: when a member hasn't
+//      onboarded (coach_onboarded_at null), the coach card + 5pm reminder LEAD with the "Set my goals" intro invite
+//      so existing members get pulled into onboarding (re-engagement), not just brand-new sign-ups.
 // v155 (2026-07-02): COACH CARD DATA + ONBOARDING. /api/coach/snapshot now returns snapshot.onboarded + motivations_catalog
 //      (for the rich in-app card + the onboarding quick-pick). NEW POST /api/coach/onboard {motivations, goals} saves the
 //      member's WHY + goals and sets members.coach_onboarded_at. Frontend ffp-coach-loader renders the rich active-life card
@@ -532,6 +536,9 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const Stripe = require('stripe');
 const app = express();
+// SINGLE SOURCE OF TRUTH for the deployed backend version. Returned by GET / so the LIVE version is verifiable
+// (RULE 0.6). Bump on EVERY backend change; must match the top-of-file header comment.
+const BACKEND_VERSION = 'v156';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -1403,7 +1410,7 @@ async function sendTrialEndingEmail(toEmail, name, planLabel, amountLabel, endLa
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'FFP Passport API running' });
+  res.json({ status: 'FFP Passport API running', version: BACKEND_VERSION });
 });
 app.post('/api/auth/signup', async (req, res) => {
   if (process.env.ALLOW_FREE_SIGNUP !== 'true') {
@@ -5230,6 +5237,8 @@ function activeLifeHook(snap) {
   var s = snap || {}, name = s.first_name || 'there', w = s.week || {}, p = s.pillars || {}, missing = p.missing || [];
   var sparse = (s.nearby_meetups || 0) === 0;       // nothing to join near them
   var few = (s.connections || 0) < 3;
+  // NOT ONBOARDED → lead with the intro/goals invite (re-engages existing members: get to know them first).
+  if (s.onboarded === false) return { key: 'onboard', headline: 'Coach Grant here, ' + name + '.', line: "Tell me what an active life means to you and I'll tailor everything — your nudges, meet-ups and goals. Takes 2 minutes.", cta: 'Set my goals', action: 'onboard' };
   if (s.streak >= 3 && !s.logged_today) return { key: 'streak', headline: "Don't stop now, " + name + ".", line: "You're on a " + s.streak + "-day streak — one activity today keeps it alive.", cta: 'Log today', action: 'log' };
   if (s.race && s.race.gap_to_above > 0 && s.race.gap_to_above <= 15) return { key: 'race', headline: "You're " + s.race.gap_to_above + " points off " + (s.race.above_name || 'the spot above') + ".", line: 'One good session today and you climb the ' + (s.race.quest || 'race') + '.', cta: 'Log today', action: 'log' };
   // GROW THE COMMUNITY — when little is happening near them, turn it into a build-your-crew nudge (invite / host / share).
