@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v150
+// FFP Passport — Express Server (Vercel, CommonJS) — v151
+// v151 (2026-07-02): (a) COACH refresh window 3h→5min (Grant: keep Coach Grant current all day; app polls every 5 min).
+//      (b) NEW GET /api/cron/daily-activity-reminder (HOURLY cron in vercel.json): at 17:00 in each member's local tz,
+//      if they have NOT logged an activity that day, Coach Grant nudges via PUSH + EMAIL, once/local-day, honours
+//      no_coach_nudges. Uses new members.timezone (default Asia/Dubai) + members.last_daily_reminder_on. ?dry=1 / ?only= / ?force=1 for testing.
 // v150 (2026-07-02): COACH LINE FRESHNESS — the coach card was frozen all day (cached 24h, only recomputed on a new
 //      log). Now: refresh window 24h→3h so it updates through the day; computeCoachProfile adds part_of_day/local_hour
 //      (Dubai) to facts; the coach_line prompt opens time-appropriately + is told to VARY the angle (temperature 1);
@@ -5248,15 +5252,15 @@ function coachLineFallback(f) {
   return opts[(f.local_hour || 0) % opts.length];
 }
 
-// On-demand profile (member app posts {refresh}). v150: refresh window cut 24h → 3h so the coach line updates
-// through the day (morning/afternoon/evening), not once daily. Serves cache within the window (fast); recomputes
-// when older than 3h OR the member has trained since.
+// On-demand profile (member app posts {refresh}). v151: refresh window 3h → 5 MINUTES (Grant) so Coach Grant stays
+// current with the member throughout the day — the app polls every 5 min and the line recomputes at most that often.
+// Serves cache within the 5-min window (fast); recomputes when older than 5 min OR the member has trained since.
 app.post('/api/coach/profile', async (req, res) => {
   try {
     const v = verifyRefreshToken((req.body && req.body.refresh) || '');
     if (!v) return res.status(401).json({ error: 'auth' });
     const { data: ex } = await supabase.from('member_coach_profile').select('summary, facts, support_ops, coach_line, updated_at').eq('member_id', v.memberId).maybeSingle();
-    if (ex && ex.updated_at && (Date.now() - new Date(ex.updated_at).getTime() < 3 * 60 * 60 * 1000) && ex.coach_line) {
+    if (ex && ex.updated_at && (Date.now() - new Date(ex.updated_at).getTime() < 5 * 60 * 1000) && ex.coach_line) {
       // Don't serve a stale profile after the member has trained — recompute so today's session (and their streak) count.
       let trainedSince = false;
       try { const { data: nw } = await supabase.from('activity_logs').select('id').eq('member_id', v.memberId).gt('logged_at', ex.updated_at).limit(1); trainedSince = !!(nw && nw.length); } catch (e) {}
@@ -5391,6 +5395,68 @@ app.get('/api/cron/coach-nudges', async (req, res) => {
       if (!dry) {
         try { await notifyMember(p.member_id, { title: n.title, body: n.body, icon: n.icon, link: '/ffp-member-dashboard.html' }); } catch (e) {}
         try { await supabase.from('member_coach_profile').update({ last_nudge_at: new Date().toISOString(), last_nudge_key: n.key }).eq('member_id', p.member_id); } catch (e) {}
+        sent++;
+      }
+    }
+    return res.json({ success: true, dry: dry, sent: sent, skipped: skipped, candidates: preview });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// v151: DAILY 5PM ACTIVITY REMINDER (Grant) — at 17:00 in EACH member's local timezone, if they have NOT logged
+// an activity that day, Coach Grant nudges them via PUSH + EMAIL. Once per member per local day. Honours
+// preferences.no_coach_nudges. Cron runs HOURLY; a member only fires on the run where their local hour === 17.
+// members.timezone (default Asia/Dubai) drives the local time; members.last_daily_reminder_on dedups per local day.
+// ════════════════════════════════════════════════════════════════════════════
+function memberLocalParts(tz) {
+  try {
+    var fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'Asia/Dubai', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit' });
+    var p = {}; fmt.formatToParts(new Date()).forEach(function (x) { p[x.type] = x.value; });
+    return { date: p.year + '-' + p.month + '-' + p.day, hour: parseInt(p.hour, 10) };
+  } catch (e) { return null; }
+}
+function tzOffsetMs(tz) {
+  try {
+    var now = new Date();
+    var utc = new Date(now.toLocaleString('en-US', { timeZone: 'UTC' }));
+    var loc = new Date(now.toLocaleString('en-US', { timeZone: tz || 'Asia/Dubai' }));
+    return loc.getTime() - utc.getTime();   // + for zones east of UTC (Dubai = +4h)
+  } catch (e) { return 4 * 3600 * 1000; }
+}
+app.get('/api/cron/daily-activity-reminder', async (req, res) => {
+  if (!(await cronAuthed(req))) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    var only = (req.query.only || '').trim();
+    var dry = req.query.dry === '1' || req.query.dry === 'true';
+    var force = req.query.force === '1';   // ignore the 17:00 gate for a safe test
+    var q = supabase.from('members').select('id, email, full_name, timezone, preferences, role, status, last_daily_reminder_on').eq('role', 'member').eq('status', 'active');
+    if (only && only.indexOf('@') === -1) q = q.eq('id', only);
+    var { data: mems } = await q;
+    var sent = 0, skipped = 0; var preview = [];
+    for (var i = 0; i < (mems || []).length; i++) {
+      var m = mems[i];
+      if (only && only.indexOf('@') > -1 && m.email !== only) { skipped++; continue; }
+      var prefs = m.preferences || {};
+      if (prefs.no_coach_nudges === true) { skipped++; continue; }
+      var tz = m.timezone || 'Asia/Dubai';
+      var lp = memberLocalParts(tz); if (!lp) { skipped++; continue; }
+      if (!force && lp.hour !== 17) { skipped++; continue; }                               // only at their local 5pm
+      if (m.last_daily_reminder_on && String(m.last_daily_reminder_on).slice(0, 10) === lp.date) { skipped++; continue; } // already sent their-local-today
+      var localMidnightUtc = new Date(new Date(lp.date + 'T00:00:00Z').getTime() - tzOffsetMs(tz)).toISOString();
+      var loggedToday = false;
+      try { var a = await supabase.from('activity_logs').select('id', { count: 'exact', head: true }).eq('member_id', m.id).gte('logged_at', localMidnightUtc); if (a && typeof a.count === 'number' && a.count > 0) loggedToday = true; } catch (e) {}
+      if (loggedToday) { skipped++; continue; }                                            // they've trained today — no nudge
+      var first = String((m.full_name || '').split(' ')[0] || 'there').replace(/[<>]/g, '');
+      preview.push({ id: m.id, tz: tz, local_hour: lp.hour, email: m.email });
+      if (!dry) {
+        try { await notifyMember(m.id, { title: 'A nudge from Coach Grant', body: 'Hey ' + first + ' — checking in to make sure you get your daily activity in. Even 20 minutes counts.', icon: 'directions_run', link: '/ffp-member-dashboard.html' }); } catch (e) {}
+        if (m.email) { try {
+          await mailer.sendMail({ from: MAIL_FROM, to: m.email, subject: 'A quick nudge from Coach Grant',
+            html: ffpLifecycleEmail({ kicker: 'Coach Grant', title: 'Hey ' + first + ', get your activity in today.', sub: 'It’s Coach Grant — just checking in.',
+              body: '<p style="margin:0 0 14px;">Just checking in to make sure you get in your daily activity. Even 20 minutes counts — a walk, a session, anything that keeps your streak and your momentum going.</p><p style="margin:0;">Log it in your Passport when you’re done and I’ll see it.</p>',
+              ctaText: 'Log today’s activity', ctaHref: 'https://ffppassport.com/ffp-member-dashboard.html' }) });
+        } catch (e) {} }
+        try { await supabase.from('members').update({ last_daily_reminder_on: lp.date }).eq('id', m.id); } catch (e) {}
         sent++;
       }
     }
