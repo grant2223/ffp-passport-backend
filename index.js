@@ -1,4 +1,8 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v154
+// FFP Passport — Express Server (Vercel, CommonJS) — v155
+// v155 (2026-07-02): COACH CARD DATA + ONBOARDING. /api/coach/snapshot now returns snapshot.onboarded + motivations_catalog
+//      (for the rich in-app card + the onboarding quick-pick). NEW POST /api/coach/onboard {motivations, goals} saves the
+//      member's WHY + goals and sets members.coach_onboarded_at. Frontend ffp-coach-loader renders the rich active-life card
+//      (streak, 5 pillars, hook, CTA) + the first-run Coach Grant onboarding (intro + motivations grid + goals).
 // v154 (2026-07-02): RICH ACTIVE-LIFE EMAIL + GROW-THE-COMMUNITY hook. renderCoachReminderEmail(snap,hook) = email-safe
 //      (table + div-bar) render of the approved design: streak hero, weekly minutes chart coloured by pillar, 5-pillar
 //      breadth, live July-race row, smart CTA. Snapshot now also has connections + nearby_meetups; activeLifeHook adds
@@ -5165,8 +5169,8 @@ async function computeActiveLifeSnapshot(memberId, tz) {
   tz = tz || 'Asia/Dubai';
   const snap = { first_name: 'there', streak: 0, logged_today: false, motivations: [], goals: [], week: {}, pillars: {}, race: null, nearby: null };
   let mem = null;
-  try { const { data } = await supabase.from('members').select('given_names, full_name, city, motivations, goals').eq('id', memberId).maybeSingle(); mem = data; } catch (e) {}
-  if (mem) { snap.first_name = String(mem.given_names || mem.full_name || 'there').split(' ')[0]; snap.motivations = Array.isArray(mem.motivations) ? mem.motivations : []; snap.goals = Array.isArray(mem.goals) ? mem.goals : []; }
+  try { const { data } = await supabase.from('members').select('given_names, full_name, city, motivations, goals, coach_onboarded_at').eq('id', memberId).maybeSingle(); mem = data; } catch (e) {}
+  if (mem) { snap.first_name = String(mem.given_names || mem.full_name || 'there').split(' ')[0]; snap.motivations = Array.isArray(mem.motivations) ? mem.motivations : []; snap.goals = Array.isArray(mem.goals) ? mem.goals : []; snap.onboarded = !!mem.coach_onboarded_at; }
   try { const { data } = await supabase.rpc('member_activity_streak', { p_me: memberId }); if (typeof data === 'number') snap.streak = data; } catch (e) {}
 
   const off = tzOffsetMs(tz);
@@ -5272,12 +5276,13 @@ function renderCoachReminderEmail(snap, hook) {
       + '<td align="right" style="padding:12px 14px;font-size:12px;color:#8fc7e8;font-weight:700;">' + (s.race.gap_to_above > 0 ? (s.race.gap_to_above + ' off ' + escapeHtml(s.race.above_name || 'the spot above')) : 'Leading your pack') + '</td>'
       + '</tr></table></td></tr>';
   }
+  var coachChip = '<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:14px;"><tr><td><div style="width:30px;height:30px;border-radius:50%;background:#0d2b45;text-align:center;line-height:30px;font-style:italic;font-weight:900;color:#ffffff;font-size:14px;">G</div></td><td style="padding-left:9px;font-size:11px;font-weight:900;letter-spacing:1.6px;color:#8fc7e8;text-transform:uppercase;">Coach Grant</td></tr></table>';
   var streakPill = (s.streak >= 1) ? ('<div style="display:inline-block;background:rgba(255,138,42,.15);border:1px solid rgba(255,138,42,.5);padding:5px 12px;border-radius:100px;margin-bottom:12px;"><span style="font-size:11px;font-weight:900;letter-spacing:1.5px;color:#ffc08a;">' + s.streak + '-DAY STREAK</span></div><br>') : '';
   var vs = (w.vs_last_week != null) ? (' &middot; <span style="color:' + (w.vs_last_week >= 0 ? '#4ecb8f' : '#e0a94a') + ';font-weight:800;">' + (w.vs_last_week >= 0 ? '+' : '') + w.vs_last_week + ' vs last week</span>') : '';
   return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">'
     + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#0a1826;border-radius:16px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
     + '<tr><td style="padding:16px 22px;"><span style="font-size:13px;font-weight:900;letter-spacing:2px;color:#ffffff;">FFP <span style="color:#2ba8e0;">PASSPORT</span></span></td></tr>'
-    + '<tr><td bgcolor="#0f3a58" style="background:#0f3a58;background-image:linear-gradient(135deg,#1f8fce,#0a1826);padding:26px 26px 28px;">' + streakPill
+    + '<tr><td bgcolor="#0f3a58" style="background:#0f3a58;background-image:linear-gradient(135deg,#1f8fce,#0a1826);padding:24px 26px 28px;">' + coachChip + streakPill
     + '<div style="font-size:30px;font-weight:900;color:#ffffff;line-height:1.02;">' + escapeHtml(h.headline || ('Move today, ' + name + '.')) + '</div>'
     + '<div style="font-size:14.5px;color:#d6ecfa;margin-top:11px;font-weight:600;">' + escapeHtml(h.line || '') + '</div></td></tr>'
     + '<tr><td style="padding:20px 26px 4px;"><div style="font-size:10.5px;font-weight:900;letter-spacing:1.6px;color:#5f7f96;">THIS WEEK <span style="color:#3f5c72;">&middot; ACTIVE MINUTES</span></div>'
@@ -5519,7 +5524,23 @@ app.post('/api/coach/snapshot', async (req, res) => {
     var tz = 'Asia/Dubai';
     try { const { data } = await supabase.from('members').select('timezone').eq('id', v.memberId).maybeSingle(); if (data && data.timezone) tz = data.timezone; } catch (e) {}
     const snap = await computeActiveLifeSnapshot(v.memberId, tz);
-    return res.json({ snapshot: snap, hook: activeLifeHook(snap) });
+    return res.json({ snapshot: snap, hook: activeLifeHook(snap), motivations_catalog: FFP_MOTIVATIONS });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// v155: Coach Grant ONBOARDING — save the member's motivations + goals and mark the intro complete (coach_onboarded_at).
+app.post('/api/coach/onboard', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    var b = req.body || {};
+    var valid = FFP_MOTIVATIONS.map(function (m) { return m.key; });
+    var motivations = (Array.isArray(b.motivations) ? b.motivations : []).filter(function (k) { return valid.indexOf(k) > -1; }).slice(0, 8);
+    var goals = (Array.isArray(b.goals) ? b.goals : []).map(function (g) { return (typeof g === 'string') ? { label: String(g).slice(0, 90) } : (g && g.label ? { label: String(g.label).slice(0, 90) } : null); }).filter(Boolean).slice(0, 5);
+    var patch = { motivations: motivations, goals: goals };
+    if (b.complete !== false) patch.coach_onboarded_at = new Date().toISOString();
+    try { await supabase.from('members').update(patch).eq('id', v.memberId); } catch (e) {}
+    return res.json({ success: true, motivations: motivations, goals: goals });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
@@ -5680,9 +5701,9 @@ app.get('/api/cron/daily-activity-reminder', async (req, res) => {
       var hLine = (hook && hook.line) ? hook.line : ('Even 20 minutes counts — keep your momentum going.');
       preview.push({ id: m.id, tz: tz, local_hour: lp.hour, email: m.email, hook: hook && hook.key, headline: hHead });
       if (!dry) {
-        try { await notifyMember(m.id, { title: hHead, body: hLine, icon: 'directions_run', link: '/ffp-member-dashboard.html' }); } catch (e) {}
+        try { await notifyMember(m.id, { title: 'Coach Grant', body: hHead + ' ' + hLine, icon: 'directions_run', link: '/ffp-member-dashboard.html' }); } catch (e) {}
         if (m.email && snap && hook) { try {
-          await mailer.sendMail({ from: MAIL_FROM, to: m.email, subject: hHead, html: renderCoachReminderEmail(snap, hook) });
+          await mailer.sendMail({ from: MAIL_FROM, to: m.email, subject: 'A note from Coach Grant', html: renderCoachReminderEmail(snap, hook) });
         } catch (e) {} }
         try { await supabase.from('members').update({ last_daily_reminder_on: lp.date }).eq('id', m.id); } catch (e) {}
         sent++;
