@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v147
+// FFP Passport — Express Server (Vercel, CommonJS) — v149
+// v149 (2026-07-02): PER-CONTEXT SENDER — added MAIL_FROM_BOOKING ("Find Fit People" <noreply@findfitpeople.com>) +
+//      mailFromFor(brand). /api/notify/member now picks the sender by brand ('booking' → Find Fit People, else FFP
+//      Passport), so the two noreply addresses stay cleanly branded. Marketplace passes brand:'booking'. (~L1076.)
+// v148 (2026-07-02): EMAIL SENDER SPLIT — Passport mail now from "FFP Passport" (was "Find Fit People"); marketplace
+//      keeps "Find Fit People" in its own build. One-line MAIL_FROM default change (see ~L1071). Caveat noted there re /api/notify/member.
 // v147 (2026-07-01): AUTH ROOT-CAUSE FIX (Rio confirm-email bug). NEW POST /api/auth/prepare-signin {email}: sign-in
 //      preflight — returns {exists:false} for unknown emails (front → "Become a member"), and for a real member
 //      ensures a Supabase auth user exists PRE-CONFIRMED (admin.createUser email_confirm:true → NO Supabase email).
@@ -1064,11 +1069,25 @@ const mailer = nodemailer.createTransport({
     pass: process.env.SMTP_PASS,
   }
 });
-// v129: ALL outbound email comes from "Find Fit People" (single source). The display name is standardised now.
-// To move the ADDRESS to noreply@findfitpeople.com, first authorise that domain in the SMTP provider
-// (add its SPF + DKIM DNS records for findfitpeople.com), THEN set Vercel env MAIL_FROM to
-// '"Find Fit People" <noreply@findfitpeople.com>' — no code change, no risk of breaking delivery before DNS is live.
-const MAIL_FROM = process.env.MAIL_FROM || '"Find Fit People" <noreply@ffppassport.com>';
+// v148 (2026-07-02): SENDER split per Grant — FFP PASSPORT emails now come from "FFP Passport" (this backend is
+// the Passport backend). The findfitpeople.com MARKETPLACE keeps "Find Fit People" as its sender (handled in the
+// marketplace's own build). CAVEAT: /api/notify/member (which the marketplace also calls) uses this same MAIL_FROM,
+// so those member notifications now read "FFP Passport" too; if marketplace booking mail must say "Find Fit People",
+// brand it per-context (pass a from-name into that endpoint) or send it via the marketplace's own mailer.
+// To move the ADDRESS to noreply@findfitpeople.com later, authorise that domain's SPF+DKIM in the SMTP provider,
+// then set Vercel env MAIL_FROM to '"FFP Passport" <noreply@findfitpeople.com>' — no code change.
+const MAIL_FROM = process.env.MAIL_FROM || '"FFP Passport" <noreply@ffppassport.com>';
+// v149 (2026-07-02): per-CONTEXT sender. Passport mail = MAIL_FROM ("FFP Passport" <noreply@ffppassport.com>).
+// Booking/marketplace mail (findfitpeople.com) = MAIL_FROM_BOOKING ("Find Fit People" <noreply@findfitpeople.com>).
+// A shared endpoint (e.g. /api/notify/member) picks the right sender via mailFromFor(brand) — callers pass
+// brand:'booking' for marketplace mail; everything else defaults to the Passport sender. So the two noreply
+// addresses stay cleanly branded.  (SPF/DKIM for findfitpeople.com must be authorised in the SMTP provider for
+// noreply@findfitpeople.com to deliver — see BIMI/DMARC notes; until then override via env MAIL_FROM_BOOKING.)
+const MAIL_FROM_BOOKING = process.env.MAIL_FROM_BOOKING || '"Find Fit People" <noreply@findfitpeople.com>';
+function mailFromFor(brand) {
+  var b = (brand || '').toString().toLowerCase();
+  return (b === 'booking' || b === 'findfitpeople' || b === 'find fit people' || b === 'marketplace') ? MAIL_FROM_BOOKING : MAIL_FROM;
+}
 function generateCode() {
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const hash = crypto.createHash('sha256').update(code).digest('hex');
@@ -2723,7 +2742,9 @@ app.post('/api/notify/member', async (req, res) => {
     if (!mem || !mem.email) return res.status(404).json({ error: 'member or email not found' });
     var firstName = String((mem.full_name || '').split(' ')[0] || 'there').replace(/[<>]/g, '');
     var html = brandEmail(heading || subject, '<p style="margin:0 0 14px;">Hi ' + firstName + ',</p>' + bodyHtml);
-    await mailer.sendMail({ from: MAIL_FROM, to: mem.email, subject: subject, html: html });
+    // v149: pick sender by context. Marketplace passes brand:'booking' → "Find Fit People" <noreply@findfitpeople.com>;
+    // Passport surfaces omit it → "FFP Passport" <noreply@ffppassport.com>.
+    await mailer.sendMail({ from: mailFromFor(b.brand), to: mem.email, subject: subject, html: html });
     try { var _pb = bodyHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140); await notifyMember(toMemberId, { title: subject, body: _pb, icon: 'notifications', link: '/ffp-member-dashboard.html' }); } catch (e) {}
     return res.json({ success: true });
   } catch (e) { return res.status(500).json({ error: e.message }); }
