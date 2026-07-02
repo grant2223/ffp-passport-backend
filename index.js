@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v151
+// FFP Passport — Express Server (Vercel, CommonJS) — v152
+// v152 (2026-07-02): FFP ACTIVE-LIFE COACHING BRAIN. NEW shared FFP_ETHOS const (5 pillars + coaching mindset + tone) +
+//      FFP_MOTIVATIONS catalog + motivationLabels() — injected into Coach Grant (card line, summary, chat) AND the
+//      pro/partner agent, so every AI surface thinks the same active-lifestyle way. NEW members columns motivations/goals/
+//      coach_onboarded_at (migration member_motivations_goals_coach_onboarding). Coach chat now pulls motivations+goals.
+//      NEW /api/member/timezone (real browser tz for the 5pm reminder). NEXT: onboarding flow, snapshot engine, rich email/card.
 // v151 (2026-07-02): (a) COACH refresh window 3h→5min (Grant: keep Coach Grant current all day; app polls every 5 min).
 //      (b) NEW GET /api/cron/daily-activity-reminder (HOURLY cron in vercel.json): at 17:00 in each member's local tz,
 //      if they have NOT logged an activity that day, Coach Grant nudges via PUSH + EMAIL, once/local-day, honours
@@ -1096,6 +1101,38 @@ function mailFromFor(brand) {
   var b = (brand || '').toString().toLowerCase();
   return (b === 'booking' || b === 'findfitpeople' || b === 'find fit people' || b === 'marketplace') ? MAIL_FROM_BOOKING : MAIL_FROM;
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// FFP ACTIVE-LIFESTYLE COACHING BRAIN (v152) — ONE shared knowledge base + mindset, injected into every AI surface:
+// Coach Grant (card line, summary, chat, nudges, onboarding) AND the pro/partner agents. Edit HERE only.
+// ════════════════════════════════════════════════════════════════════════════
+const FFP_ETHOS = [
+  'FFP (Find Fit People) is an ACTIVE-LIFESTYLE community — not a gym app. An active life spans FIVE pillars: FITNESS (gym, strength, HIIT, CrossFit, martial arts), SPORTS (running, cycling, swimming, padel, tennis, football, racket + team sports), WELLNESS (yoga, pilates, mobility, meditation, breathwork), ADVENTURE (hiking, climbing, surfing, kayaking, the outdoors, travel) and RECOVERY (sauna, ice bath, massage, rest). Movement is also SOCIAL — meet-ups, friends, events, shared experiences — and holistic — sleep, food, headspace, family time.',
+  'Coach like a great human coach, never a report card: MOTIVATE, do not narrate stats. Celebrate consistency AND variety across the pillars. Lead with whatever matters most to THIS person right now — a streak to protect, a dropping week, a pillar they are missing, a winnable spot in the quest/points race, or an adventure or meet-up near them. Name the BENEFIT, then give ONE specific, easy next step that ideally moves several of their goals at once.',
+  'Always coach toward THEIR reasons for being here — their motivations and goals (why they joined: e.g. getting fit, meeting people and making friends, travel and adventure, de-stressing, active family time, getting strong, moving better, losing weight, confidence, simply feeling good). Reference them by name. Connect them to the COMMUNITY (meet-ups, friends), the QUEST/points race, and nearby EXPERIENCES and events — an active life is lived WITH people, not just solo workouts.',
+  'Voice: warm, encouraging, PUNCHY, minimal words — active people hate waffle. Never shaming, never clinical. If their streak is 3+ or they logged today, celebrate it and NEVER say their momentum is slipping or that they have been away. You are not a doctor — for pain, injury or medical concerns, gently point them to a professional. Never discuss another member\'s health. No emojis unless they use them first.'
+].join(' ');
+
+// The member "why" catalog — powers Coach Grant onboarding quick-pick + personalises every future nudge. key/label/icon.
+const FFP_MOTIVATIONS = [
+  { key: 'get_fit',          label: 'Get fit',               icon: 'favorite' },
+  { key: 'lose_weight',      label: 'Lose weight',           icon: 'monitor_weight' },
+  { key: 'get_strong',       label: 'Get strong',            icon: 'fitness_center' },
+  { key: 'mobility',         label: 'Move better',           icon: 'self_improvement' },
+  { key: 'meet_people',      label: 'Meet people & friends', icon: 'group' },
+  { key: 'new_experiences',  label: 'Try new experiences',   icon: 'explore' },
+  { key: 'travel_adventure', label: 'Travel & adventure',    icon: 'terrain' },
+  { key: 'destress',         label: 'De-stress',             icon: 'spa' },
+  { key: 'family_time',      label: 'Active family time',    icon: 'family_restroom' },
+  { key: 'feel_good',        label: 'Feel good & happy',     icon: 'mood' },
+  { key: 'better_lifestyle', label: 'A better way of life',  icon: 'auto_awesome' },
+  { key: 'compete',          label: 'Compete & win',         icon: 'emoji_events' }
+];
+function motivationLabels(keys) {
+  var by = {}; FFP_MOTIVATIONS.forEach(function (m) { by[m.key] = m.label; });
+  return (Array.isArray(keys) ? keys : []).map(function (k) { return by[k] || k; });
+}
+
 function generateCode() {
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const hash = crypto.createHash('sha256').update(code).digest('hex');
@@ -4050,7 +4087,7 @@ const PRO_PANELS = ['overview', 'scheduling', 'checkin', 'clients', 'payments', 
 
 function agentSystem(role, ctx) {
   var isPro = role === 'pro';
-  var common = 'You are Grant from FFP — a warm, concise in-app business coach inside the FFP ' + (isPro ? 'Professional (coach)' : 'Partner (facility)') + ' dashboard on FFP Passport, an active-lifestyle platform in the UAE. You help ' + (isPro ? 'professionals grow their coaching business and set it up well' : 'partners improve their business and promote their services') + '. ' +
+  var common = FFP_ETHOS + ' You are Grant, a warm, concise in-app business coach inside the FFP ' + (isPro ? 'Professional (coach)' : 'Partner (facility)') + ' dashboard on FFP Passport, an active-lifestyle platform in the UAE. You help ' + (isPro ? 'professionals grow their coaching business and set it up well' : 'partners improve their business and promote their services') + '. ' +
     'Help the user set up their account and run day-to-day tasks. Be specific and brief: one short paragraph or a few short steps, never a wall of text. ' +
     'Always use the on-screen LABELS the user sees — never internal/database words. Use the navigate tool to open the exact screen when the next step lives there. ';
   var structure, actions, setup;
@@ -5212,7 +5249,7 @@ async function computeCoachProfile(memberId) {
   let summary = '';
   try {
     if (ANTHROPIC_KEY) {
-      const sys = 'You are Grant, FFP\'s active-lifestyle coach. From these JSON facts about ONE member, write 2-4 short sentences (max ~55 words, no emojis) capturing what you KNOW about how they train — their favourite activities (facts.favourites), how often (weekly_cadence) and their weekday-vs-weekend rhythm (weekend_share), typical session length (typical_session_min), current and best streak (streak / longest_streak), momentum, and recovery/sleep if present. Specific and factual; this is your private memory to personalise future coaching and be a positive influence. Speak about them in third person ("they").';
+      const sys = FFP_ETHOS + ' From these JSON facts about ONE member, write 2-4 short sentences (max ~55 words, no emojis) capturing what you KNOW about how they train — their favourite activities (facts.favourites), how often (weekly_cadence) and their weekday-vs-weekend rhythm (weekend_share), typical session length (typical_session_min), current and best streak (streak / longest_streak), momentum, and recovery/sleep if present. Specific and factual; this is your private memory to personalise future coaching and be a positive influence. Speak about them in third person ("they").';
       const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 150, system: sys, messages: [{ role: 'user', content: JSON.stringify(facts) }] }) });
       const j = await r.json(); if (r.ok) summary = ((j.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
     }
@@ -5221,7 +5258,7 @@ async function computeCoachProfile(memberId) {
   let coach_line = '';
   try {
     if (ANTHROPIC_KEY) {
-      const sysL = 'You are Grant, FFP\'s active-lifestyle coach, speaking DIRECTLY to this member (second person, "you"). From the JSON facts, write ONE warm, specific, actionable line (max ~30 words, no emojis) that reflects where they are RIGHT NOW and draws on what you KNOW about their habits (facts.favourites, their weekday/weekend rhythm from weekend_share, typical session length, current + best streak) so it feels personal, not generic. OPEN with a natural touch that fits facts.part_of_day (' + (facts.part_of_day || 'today') + ') so it reads as fresh and of-the-moment. IMPORTANT: this line is regenerated several times a day, so VARY the angle and wording each time — sometimes celebrate the streak, sometimes suggest a meet-up or bringing a friend, sometimes recovery/rest, sometimes a specific favourite activity — never a stock repeated phrase. Be a genuinely POSITIVE influence: reinforce their identity as an active person, celebrate progress, and make the next step feel easy and worth it. CRITICAL: if facts.streak is 3 or more, or facts.logged_today is true, ACKNOWLEDGE and protect that consistency — NEVER tell them their momentum is slipping or that they have been away. Nudge ONE concrete next step. Encouraging, never clinical, never about anyone else.';
+      const sysL = FFP_ETHOS + ' Speaking DIRECTLY to this member (second person, "you"): from the JSON facts, write ONE warm, specific, actionable line (max ~30 words, no emojis) that reflects where they are RIGHT NOW and draws on what you KNOW about their habits (facts.favourites, their weekday/weekend rhythm from weekend_share, typical session length, current + best streak) so it feels personal, not generic. OPEN with a natural touch that fits facts.part_of_day (' + (facts.part_of_day || 'today') + ') so it reads as fresh and of-the-moment. IMPORTANT: this line is regenerated several times a day, so VARY the angle and wording each time — sometimes celebrate the streak, sometimes suggest a meet-up or bringing a friend, sometimes recovery/rest, sometimes a specific favourite activity — never a stock repeated phrase. Be a genuinely POSITIVE influence: reinforce their identity as an active person, celebrate progress, and make the next step feel easy and worth it. CRITICAL: if facts.streak is 3 or more, or facts.logged_today is true, ACKNOWLEDGE and protect that consistency — NEVER tell them their momentum is slipping or that they have been away. Nudge ONE concrete next step. Encouraging, never clinical, never about anyone else.';
       const rl = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 120, temperature: 1, system: sysL, messages: [{ role: 'user', content: JSON.stringify(facts) }] }) });
       const jl = await rl.json(); if (rl.ok) coach_line = ((jl.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
     }
@@ -5285,18 +5322,16 @@ app.post('/api/coach/chat', async (req, res) => {
     if (!prof || !prof.facts) { try { prof = await computeCoachProfile(v.memberId); } catch (e) {} }
     let recent = [];
     try { const { data } = await supabase.from('activity_logs').select('activity, logged_at, distance_km, duration_min, city').eq('member_id', v.memberId).order('logged_at', { ascending: false }).limit(8); recent = data || []; } catch (e) {}
-    let firstName = 'there';
-    try { const { data } = await supabase.from('members').select('given_names, full_name').eq('id', v.memberId).maybeSingle(); if (data) firstName = String(data.given_names || data.full_name || 'there').split(' ')[0]; } catch (e) {}
+    let firstName = 'there'; let mRow = null;
+    try { const { data } = await supabase.from('members').select('given_names, full_name, motivations, goals').eq('id', v.memberId).maybeSingle(); mRow = data; if (data) firstName = String(data.given_names || data.full_name || 'there').split(' ')[0]; } catch (e) {}
     let hist = [];
     try { const { data } = await supabase.from('member_coach_messages').select('role, content').eq('member_id', v.memberId).order('created_at', { ascending: false }).limit(10); hist = (data || []).reverse(); } catch (e) {}
-    const sys = 'You are Grant, the personal active-lifestyle coach inside Find Fit People (FFP). You are talking with ' + firstName + '. '
+    const sys = FFP_ETHOS + ' You are Grant, and you are chatting with ' + firstName + ' in Talk-to-Coach. '
+      + 'Their motivations & goals (coach toward these): ' + JSON.stringify({ motivations: motivationLabels(mRow && mRow.motivations), goals: (mRow && mRow.goals) || [] }) + '. '
       + 'What you remember about them: ' + ((prof && prof.summary) ? prof.summary : '(still getting to know them)') + ' '
       + 'Their current facts: ' + JSON.stringify((prof && prof.facts) || {}) + '. '
       + 'Their recent activities: ' + JSON.stringify(recent) + '. '
-      + 'Coach them on movement, consistency, motivation, meet-ups and building an active social life. Be warm, specific and encouraging, reference what you know about them, and keep replies short (2-4 sentences) and conversational. '
-      + 'If facts.streak is 3+ or facts.logged_today is true, celebrate that consistency and NEVER tell them their momentum is slipping or that they have been away. '
-      + 'Point them to concrete next steps: log an activity, join or host a meet-up, invite a friend, or take an easy day when recovery is low. '
-      + 'You are NOT a doctor — for pain, injury or medical concerns, gently suggest they see a professional. No emojis unless they use them first. Never discuss another member\'s health.';
+      + 'Keep replies short (2-4 sentences), conversational, and pointed at ONE next step tied to their goals.';
     let messages = hist.map(function (m) { return { role: (m.role === 'coach' ? 'assistant' : 'user'), content: m.content }; });
     messages.push({ role: 'user', content: msg });
     while (messages.length && messages[0].role === 'assistant') messages.shift();   // Anthropic requires the first message to be 'user'
@@ -5399,6 +5434,20 @@ app.get('/api/cron/coach-nudges', async (req, res) => {
       }
     }
     return res.json({ success: true, dry: dry, sent: sent, skipped: skipped, candidates: preview });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// v152: capture the member's REAL timezone from their browser (Intl.resolvedOptions().timeZone) so the 5pm
+// reminder fires at THEIR actual local 5pm — not a default. The member app POSTs this on load. Idempotent.
+app.post('/api/member/timezone', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    var tz = ((req.body && req.body.tz) || '').toString().trim();
+    if (!tz || tz.length > 64) return res.status(400).json({ error: 'bad tz' });
+    try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); } catch (e) { return res.status(400).json({ error: 'unknown tz' }); }  // real IANA zone or reject
+    try { await supabase.from('members').update({ timezone: tz }).eq('id', v.memberId); } catch (e) {}
+    return res.json({ success: true, timezone: tz });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
