@@ -1,4 +1,9 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v153
+// FFP Passport — Express Server (Vercel, CommonJS) — v154
+// v154 (2026-07-02): RICH ACTIVE-LIFE EMAIL + GROW-THE-COMMUNITY hook. renderCoachReminderEmail(snap,hook) = email-safe
+//      (table + div-bar) render of the approved design: streak hero, weekly minutes chart coloured by pillar, 5-pillar
+//      breadth, live July-race row, smart CTA. Snapshot now also has connections + nearby_meetups; activeLifeHook adds
+//      SPARSE-AREA branches → invite a friend / host a meet-up / share (Grant: when meet-ups/connections are few, grow the
+//      community). The 5pm cron now sends this rich email + a hook-driven push (same message on both). ?dry=1 previews the hook.
 // v153 (2026-07-02): ACTIVE-LIFE SNAPSHOT ENGINE. NEW computeActiveLifeSnapshot(memberId,tz) — the one data brain:
 //      weekly minutes/day by PILLAR (fitness/sports/wellness/adventure/recovery via taxonomy + keyword fallback),
 //      pillar breadth (of 5), streak, live points-race standing (quest_leaderboard), goals+motivations, one nearby
@@ -5200,9 +5205,13 @@ async function computeActiveLifeSnapshot(memberId, tz) {
     }
   } catch (e) {}
 
+  // Connections (accepted) + how much is happening near them — powers the "grow the community" nudge when it's sparse.
+  snap.connections = 0; snap.nearby_meetups = 0;
+  try { const { count } = await supabase.from('member_connections').select('id', { count: 'exact', head: true }).eq('status', 'accepted').or('requester_id.eq.' + memberId + ',addressee_id.eq.' + memberId); snap.connections = count || 0; } catch (e) {}
   try {
     if (mem && mem.city) {
-      const { data: mu } = await supabase.from('meetups').select('title, sport, meets_at').eq('city', mem.city).eq('status', 'open').gt('meets_at', new Date().toISOString()).order('meets_at', { ascending: true }).limit(1);
+      const { data: mu, count: muCount } = await supabase.from('meetups').select('title, sport, meets_at', { count: 'exact' }).eq('city', mem.city).eq('status', 'open').gt('meets_at', new Date().toISOString()).order('meets_at', { ascending: true }).limit(1);
+      snap.nearby_meetups = muCount || 0;
       if (mu && mu.length) snap.nearby = { kind: 'meetup', title: mu[0].title, sport: mu[0].sport || null };
       if (!snap.nearby) { const { data: ex } = await supabase.from('experiences').select('title').eq('city', mem.city).eq('status', 'live').limit(1); if (ex && ex.length) snap.nearby = { kind: 'experience', title: ex[0].title }; }
     }
@@ -5215,13 +5224,71 @@ async function computeActiveLifeSnapshot(memberId, tz) {
 // (ideally via a nearby thing) > a quiet week > simple move-today > already-moved encouragement.
 function activeLifeHook(snap) {
   var s = snap || {}, name = s.first_name || 'there', w = s.week || {}, p = s.pillars || {}, missing = p.missing || [];
-  if (s.streak >= 3 && !s.logged_today) return { key: 'streak', headline: "Don't stop now, " + name + ".", line: "You're on a " + s.streak + "-day streak — one activity today keeps it alive.", cta: 'Log today' };
-  if (s.race && s.race.gap_to_above > 0 && s.race.gap_to_above <= 15) return { key: 'race', headline: "You're " + s.race.gap_to_above + " points off " + (s.race.above_name || 'the spot above') + ".", line: 'One good session today and you climb the ' + (s.race.quest || 'race') + '.', cta: 'Log today' };
-  if (missing.length && s.nearby) return { key: 'pillar_nearby', headline: 'Round out your week, ' + name + '.', line: "You're light on " + missing[0] + ". " + (s.nearby.kind === 'meetup' ? ("There's a meet-up near you: " + s.nearby.title) : ('Try: ' + s.nearby.title)) + '.', cta: s.nearby.kind === 'meetup' ? 'See meet-ups' : 'Find an adventure' };
-  if (missing.length) return { key: 'pillar', headline: 'One pillar to go, ' + name + '.', line: 'Add some ' + missing[0] + ' today to round out your active week.', cta: 'Log today' };
-  if (w.vs_last_week != null && w.vs_last_week < -20) return { key: 'quiet', headline: "Let's get moving, " + name + '.', line: "This week's quieter than last — a short session today turns it around.", cta: 'Log today' };
-  if (!s.logged_today) return { key: 'move', headline: 'Move today, ' + name + '.', line: 'Even 20 minutes counts — a walk, a game, a stretch. Keep the momentum going.', cta: 'Log today' };
-  return { key: 'done', headline: 'Nice work today, ' + name + '.', line: "You've moved today — that's the habit. Line up tomorrow, or bring a friend along.", cta: 'See meet-ups' };
+  var sparse = (s.nearby_meetups || 0) === 0;       // nothing to join near them
+  var few = (s.connections || 0) < 3;
+  if (s.streak >= 3 && !s.logged_today) return { key: 'streak', headline: "Don't stop now, " + name + ".", line: "You're on a " + s.streak + "-day streak — one activity today keeps it alive.", cta: 'Log today', action: 'log' };
+  if (s.race && s.race.gap_to_above > 0 && s.race.gap_to_above <= 15) return { key: 'race', headline: "You're " + s.race.gap_to_above + " points off " + (s.race.above_name || 'the spot above') + ".", line: 'One good session today and you climb the ' + (s.race.quest || 'race') + '.', cta: 'Log today', action: 'log' };
+  // GROW THE COMMUNITY — when little is happening near them, turn it into a build-your-crew nudge (invite / host / share).
+  if (sparse && few) return { key: 'grow_invite', headline: 'Active is better together, ' + name + '.', line: "It's quiet near you — invite a friend to FFP or share your Passport, and build your crew.", cta: 'Invite a friend', action: 'invite' };
+  if (sparse) return { key: 'grow_host', headline: 'Be the one to start it, ' + name + '.', line: 'No meet-ups near you yet — host one and your ' + (s.connections || 0) + ' connections can join. You set the pace.', cta: 'Host a meet-up', action: 'host' };
+  if (s.nearby && s.nearby.kind === 'meetup') return { key: 'join', headline: 'Move with people today, ' + name + '.', line: "There's a meet-up near you: " + s.nearby.title + (missing.length ? '. A great way to add ' + missing[0] + ' to your week.' : '. Jump in.'), cta: 'See meet-ups', action: 'meetups' };
+  if (missing.length && s.nearby) return { key: 'pillar_nearby', headline: 'Round out your week, ' + name + '.', line: "You're light on " + missing[0] + '. Try: ' + s.nearby.title + '.', cta: 'Discover', action: 'discover' };
+  if (missing.length) return { key: 'pillar', headline: 'One pillar to go, ' + name + '.', line: 'Add some ' + missing[0] + ' today to round out your active week.', cta: 'Log today', action: 'log' };
+  if (w.vs_last_week != null && w.vs_last_week < -20) return { key: 'quiet', headline: "Let's get moving, " + name + '.', line: "This week's quieter than last — a short session today turns it around.", cta: 'Log today', action: 'log' };
+  if (!s.logged_today) return { key: 'move', headline: 'Move today, ' + name + '.', line: 'Even 20 minutes counts — a walk, a game, a stretch. Keep the momentum going.', cta: 'Log today', action: 'log' };
+  return { key: 'done', headline: 'Nice work today, ' + name + '.', line: "You've moved today — that's the habit. Line up tomorrow, or bring a friend along.", cta: 'Invite a friend', action: 'invite' };
+}
+function pillarColor(p) { return ({ fitness: '#2ba8e0', sports: '#e5883a', wellness: '#7d59d0', adventure: '#4ecb8f', recovery: '#e0a94a' })[p] || '#33546f'; }
+// EMAIL-SAFE render of the active-life reminder (tables + inline styles + div-height bars — Gmail/Outlook friendly).
+function renderCoachReminderEmail(snap, hook) {
+  var s = snap || {}, h = hook || {}, name = s.first_name || 'there';
+  var w = s.week || {}, days = w.days || [], counts = (s.pillars && s.pillars.counts) || {};
+  var DASH = 'https://ffppassport.com/ffp-member-dashboard.html';
+  var ctaHref = h.action === 'meetups' || h.action === 'host' ? DASH + '#meetups' : (h.action === 'invite' ? DASH + '#profile' : (h.action === 'discover' ? 'https://findfitpeople.com' : DASH));
+  var maxMin = 1; days.forEach(function (d) { if (d.min > maxMin) maxMin = d.min; });
+  var bars = '';
+  days.forEach(function (d) {
+    var hpx = d.min > 0 ? Math.max(4, Math.round(d.min / maxMin * 62)) : 3;
+    var col = d.min > 0 ? pillarColor(d.pillar) : '#22344a';
+    bars += '<td valign="bottom" align="center" width="14%" style="padding:0 2px;">'
+      + '<div style="font-size:10px;color:#7fa6c0;font-weight:700;height:14px;">' + (d.min > 0 ? d.min : '') + '</div>'
+      + '<div style="width:58%;margin:0 auto;height:' + hpx + 'px;background:' + col + ';border-radius:4px 4px 0 0;font-size:0;line-height:0;">&nbsp;</div>'
+      + '<div style="font-size:10px;color:#5f7f96;font-weight:700;margin-top:5px;">' + escapeHtml(d.label || '') + '</div></td>';
+  });
+  var PILL = [['fitness', 'Fitness'], ['sports', 'Sports'], ['wellness', 'Wellness'], ['adventure', 'Adventure'], ['recovery', 'Recovery']];
+  var tiles = '';
+  PILL.forEach(function (pp) {
+    var n = counts[pp[0]] || 0, on = n > 0;
+    tiles += '<td width="20%" align="center" style="padding:3px;"><div style="background:' + (on ? '#10273d' : '#0d1f30') + ';border:1px solid ' + (on ? 'rgba(43,168,224,.22)' : '#22344a') + ';border-radius:10px;padding:11px 2px;">'
+      + '<div style="font-size:18px;font-weight:900;color:' + (on ? pillarColor(pp[0]) : '#3f5c72') + ';">' + n + '</div>'
+      + '<div style="font-size:9px;font-weight:800;letter-spacing:.3px;color:' + (on ? '#cfe1ef' : '#5f7f96') + ';text-transform:uppercase;margin-top:2px;">' + pp[1] + '</div></div></td>';
+  });
+  var raceBlock = '';
+  if (s.race && s.race.rank) {
+    raceBlock = '<tr><td style="padding:6px 26px 0;"><div style="font-size:10.5px;font-weight:900;letter-spacing:1.6px;color:#5f7f96;margin-bottom:8px;">JULY RACE</div>'
+      + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#10273d;border-radius:10px;"><tr>'
+      + '<td style="padding:12px 14px;"><span style="display:inline-block;width:24px;font-size:13px;font-weight:900;color:#06263a;background:#2ba8e0;border-radius:6px;text-align:center;line-height:22px;">' + s.race.rank + '</span> '
+      + '<span style="font-size:14px;font-weight:900;color:#fff;">&nbsp; You &middot; ' + s.race.points + ' pts</span></td>'
+      + '<td align="right" style="padding:12px 14px;font-size:12px;color:#8fc7e8;font-weight:700;">' + (s.race.gap_to_above > 0 ? (s.race.gap_to_above + ' off ' + escapeHtml(s.race.above_name || 'the spot above')) : 'Leading your pack') + '</td>'
+      + '</tr></table></td></tr>';
+  }
+  var streakPill = (s.streak >= 1) ? ('<div style="display:inline-block;background:rgba(255,138,42,.15);border:1px solid rgba(255,138,42,.5);padding:5px 12px;border-radius:100px;margin-bottom:12px;"><span style="font-size:11px;font-weight:900;letter-spacing:1.5px;color:#ffc08a;">' + s.streak + '-DAY STREAK</span></div><br>') : '';
+  var vs = (w.vs_last_week != null) ? (' &middot; <span style="color:' + (w.vs_last_week >= 0 ? '#4ecb8f' : '#e0a94a') + ';font-weight:800;">' + (w.vs_last_week >= 0 ? '+' : '') + w.vs_last_week + ' vs last week</span>') : '';
+  return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">'
+    + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#0a1826;border-radius:16px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
+    + '<tr><td style="padding:16px 22px;"><span style="font-size:13px;font-weight:900;letter-spacing:2px;color:#ffffff;">FFP <span style="color:#2ba8e0;">PASSPORT</span></span></td></tr>'
+    + '<tr><td bgcolor="#0f3a58" style="background:#0f3a58;background-image:linear-gradient(135deg,#1f8fce,#0a1826);padding:26px 26px 28px;">' + streakPill
+    + '<div style="font-size:30px;font-weight:900;color:#ffffff;line-height:1.02;">' + escapeHtml(h.headline || ('Move today, ' + name + '.')) + '</div>'
+    + '<div style="font-size:14.5px;color:#d6ecfa;margin-top:11px;font-weight:600;">' + escapeHtml(h.line || '') + '</div></td></tr>'
+    + '<tr><td style="padding:20px 26px 4px;"><div style="font-size:10.5px;font-weight:900;letter-spacing:1.6px;color:#5f7f96;">THIS WEEK <span style="color:#3f5c72;">&middot; ACTIVE MINUTES</span></div>'
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px;"><tr>' + bars + '</tr></table>'
+    + '<div style="font-size:12px;color:#8fb0c8;font-weight:700;margin-top:8px;">' + (w.total_min || 0) + ' min &middot; ' + (w.sessions || 0) + ' sessions' + vs + '</div></td></tr>'
+    + '<tr><td style="padding:14px 23px 4px;"><div style="font-size:10.5px;font-weight:900;letter-spacing:1.6px;color:#5f7f96;margin:0 3px 8px;">YOUR ACTIVE LIFE &middot; ' + ((s.pillars && s.pillars.touched_count) || 0) + ' OF 5 PILLARS</div>'
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>' + tiles + '</tr></table></td></tr>'
+    + raceBlock
+    + '<tr><td style="padding:20px 26px 24px;" align="center"><a href="' + ctaHref + '" style="display:inline-block;background:#FFCC00;color:#082335;font-weight:900;font-size:15px;letter-spacing:.3px;text-decoration:none;padding:15px 40px;border-radius:12px;">' + escapeHtml(h.cta || 'Log today') + ' &rarr;</a></td></tr>'
+    + '<tr><td bgcolor="#081420" style="background:#081420;padding:15px 22px;" align="center"><div style="font-size:11.5px;color:#5f7f96;">FFP Passport &middot; ffppassport.com</div></td></tr>'
+    + '</table></td></tr></table>';
 }
 
 async function computeCoachProfile(memberId) {
@@ -5606,14 +5673,16 @@ app.get('/api/cron/daily-activity-reminder', async (req, res) => {
       try { var a = await supabase.from('activity_logs').select('id', { count: 'exact', head: true }).eq('member_id', m.id).gte('logged_at', localMidnightUtc); if (a && typeof a.count === 'number' && a.count > 0) loggedToday = true; } catch (e) {}
       if (loggedToday) { skipped++; continue; }                                            // they've trained today — no nudge
       var first = String((m.full_name || '').split(' ')[0] || 'there').replace(/[<>]/g, '');
-      preview.push({ id: m.id, tz: tz, local_hour: lp.hour, email: m.email });
+      // Build the active-life snapshot + the single best hook — drives BOTH the push and the rich email.
+      var snap = null, hook = null;
+      try { snap = await computeActiveLifeSnapshot(m.id, tz); hook = activeLifeHook(snap); } catch (e) {}
+      var hHead = (hook && hook.headline) ? hook.headline : ('Move today, ' + first + '.');
+      var hLine = (hook && hook.line) ? hook.line : ('Even 20 minutes counts — keep your momentum going.');
+      preview.push({ id: m.id, tz: tz, local_hour: lp.hour, email: m.email, hook: hook && hook.key, headline: hHead });
       if (!dry) {
-        try { await notifyMember(m.id, { title: 'A nudge from Coach Grant', body: 'Hey ' + first + ' — checking in to make sure you get your daily activity in. Even 20 minutes counts.', icon: 'directions_run', link: '/ffp-member-dashboard.html' }); } catch (e) {}
-        if (m.email) { try {
-          await mailer.sendMail({ from: MAIL_FROM, to: m.email, subject: 'A quick nudge from Coach Grant',
-            html: ffpLifecycleEmail({ kicker: 'Coach Grant', title: 'Hey ' + first + ', get your activity in today.', sub: 'It’s Coach Grant — just checking in.',
-              body: '<p style="margin:0 0 14px;">Just checking in to make sure you get in your daily activity. Even 20 minutes counts — a walk, a session, anything that keeps your streak and your momentum going.</p><p style="margin:0;">Log it in your Passport when you’re done and I’ll see it.</p>',
-              ctaText: 'Log today’s activity', ctaHref: 'https://ffppassport.com/ffp-member-dashboard.html' }) });
+        try { await notifyMember(m.id, { title: hHead, body: hLine, icon: 'directions_run', link: '/ffp-member-dashboard.html' }); } catch (e) {}
+        if (m.email && snap && hook) { try {
+          await mailer.sendMail({ from: MAIL_FROM, to: m.email, subject: hHead, html: renderCoachReminderEmail(snap, hook) });
         } catch (e) {} }
         try { await supabase.from('members').update({ last_daily_reminder_on: lp.date }).eq('id', m.id); } catch (e) {}
         sent++;
