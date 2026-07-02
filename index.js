@@ -1,4 +1,10 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v146
+// FFP Passport — Express Server (Vercel, CommonJS) — v147
+// v147 (2026-07-01): AUTH ROOT-CAUSE FIX (Rio confirm-email bug). NEW POST /api/auth/prepare-signin {email}: sign-in
+//      preflight — returns {exists:false} for unknown emails (front → "Become a member"), and for a real member
+//      ensures a Supabase auth user exists PRE-CONFIRMED (admin.createUser email_confirm:true → NO Supabase email).
+//      login.html sign-in now calls it, then signInWithOtp({shouldCreateUser:FALSE}). Result: sign-in never mints an
+//      orphan auth user and Supabase never sends its dead "confirm signup" link. (Members are the identity; auth users
+//      are synced just-in-time.) Requires supabase = SERVICE_ROLE client (it is, L510).
 // v146 (2026-07-01) [b] COACH LEARNS HABITS + POSITIVE INFLUENCE. computeCoachProfile now pulls 120 days and derives
 //      real habits into facts: favourites (top-3), variety, typical_session_min, weekend_share (weekday-regular vs
 //      weekend-warrior), longest_streak. The memory `summary`, the `coach_line` prompt and coachLineFallback now use
@@ -1428,6 +1434,28 @@ app.post('/api/auth/refresh', async (req, res) => {
 // members.user_id link (or by email, linking on first use, or create), then mint the SAME short
 // app-JWT (sub=members.id) the rest of the app already uses — so the entire RLS layer is unchanged.
 // Runs in PARALLEL with /api/auth/signin (access_code) until the legacy path is retired.
+// SIGN-IN PREFLIGHT (native OTP). Only a KNOWN member may be sent a code, and their Supabase auth user is
+// created server-side PRE-CONFIRMED (email_confirm:true → Supabase sends NO email). This is what lets the
+// front use signInWithOtp({shouldCreateUser:FALSE}) — so a non-member can NEVER create an orphan auth user or
+// receive Supabase's dead "confirm signup" link on the sign-in funnel. Members created via the backend signup
+// (no auth user yet) get theirs made here just-in-time on first native sign-in. Non-members → {exists:false}
+// → the front routes them to "Become a member". (Root-cause fix for the Rio Nunga confirm-email bug.)
+app.post('/api/auth/prepare-signin', async (req, res) => {
+  try {
+    const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'bad_email' });
+    const { data: m } = await supabase.from('members').select('id, user_id, status').eq('email', email).maybeSingle();
+    if (!m) return res.json({ exists: false });                       // unknown → front shows "Become a member"
+    if (m.status && m.status !== 'active') return res.status(403).json({ error: 'suspended' });
+    // Ensure a Supabase auth user exists for this member, PRE-CONFIRMED so Supabase sends no email.
+    try {
+      const { data: created } = await supabase.auth.admin.createUser({ email: email, email_confirm: true });
+      const uid = created && created.user && created.user.id;
+      if (uid && !m.user_id) { try { await supabase.from('members').update({ user_id: uid }).eq('id', m.id).is('user_id', null); } catch (e) {} }
+    } catch (e) { /* already registered → member already has an auth user; nothing to do */ }
+    return res.json({ exists: true });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
 app.post('/api/auth/exchange', async (req, res) => {
   try {
     // ── One-time cross-origin HANDOFF code (booking-site signup → dashboard origin). Stateless 60s
