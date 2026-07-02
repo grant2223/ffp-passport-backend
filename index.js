@@ -1,4 +1,14 @@
-// FFP Passport — Express Server (Vercel, CommonJS) — v156
+// FFP Passport — Express Server (Vercel, CommonJS) — v157
+// v157 (2026-07-02): COACH EMAIL REDESIGN (Grant sign-off). renderCoachReminderEmail rebuilt: hero is a NUDGE title
+//      ("Haven't moved today, {name}?") + stake sub — the coach's WORDS are no longer the title; they now sit in
+//      their own signed "From Coach Grant" bordered section. REMOVED the "G" avatar chip and the streak pill. Copy
+//      always drives the ONE action (log today); onboard no longer hijacks the reminder. Data (week chart, 5 pillars,
+//      July race) unchanged. NOTE: needs more visuals — logged as follow-up.
+//      TIMEZONE-FOR-ANYONE: new tzFromLatLng() (Google Time Zone API, same GOOGLE_PLACES_KEY) — onboarding now sets a
+//      member's `timezone` DEFAULT from the coordinates of the city they pick; their real device tz overwrites it on
+//      first app open (/api/member/timezone). Graceful (null → keep default). Needs Google "Time Zone API" enabled on
+//      the Places project; if off, it silently falls back to device-on-open. So the 5pm reminder lands at each new
+//      member's true local 5pm without any manual tz mapping.
 // v156 (2026-07-02): (a) GET / now returns {version} = BACKEND_VERSION so the LIVE deployed backend version is
 //      VERIFIABLE (RULE 0.6 — no more guessing whether v155 shipped). (b) activeLifeHook: when a member hasn't
 //      onboarded (coach_onboarded_at null), the coach card + 5pm reminder LEAD with the "Set my goals" intro invite
@@ -538,7 +548,7 @@ const Stripe = require('stripe');
 const app = express();
 // SINGLE SOURCE OF TRUTH for the deployed backend version. Returned by GET / so the LIVE version is verifiable
 // (RULE 0.6). Bump on EVERY backend change; must match the top-of-file header comment.
-const BACKEND_VERSION = 'v156';
+const BACKEND_VERSION = 'v157';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -785,6 +795,21 @@ app.get('/api/onboard/session-email', async (req, res) => {
   }
 });
 
+// Derive an IANA timezone from the coordinates the city-picker captured (Google Time Zone API, same key as Places).
+// This is the DEFAULT set when a member picks their city; their real DEVICE tz overwrites it on first app open
+// (/api/member/timezone). Fully graceful — returns null on any failure so the caller just keeps the existing default.
+async function tzFromLatLng(lat, lng) {
+  try {
+    const key = process.env.GOOGLE_PLACES_KEY || '';
+    if (!key || lat == null || lng == null || lat === '' || lng === '') return null;
+    const ts = Math.floor(Date.now() / 1000);
+    const url = 'https://maps.googleapis.com/maps/api/timezone/json?location=' + Number(lat) + ',' + Number(lng) + '&timestamp=' + ts + '&key=' + encodeURIComponent(key);
+    const r = await fetch(url);
+    const j = await r.json();
+    return (j && j.status === 'OK' && j.timeZoneId) ? j.timeZoneId : null;
+  } catch (e) { return null; }
+}
+
 app.post('/api/onboard/from-stripe', async (req, res) => {
   try {
     const {
@@ -847,6 +872,9 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
     // profile-complete). Either way, this is the moment they become a real,
     // usable member — and the moment the welcome email should fire.
     const firstTimeOnboarding = !existing || !existing.profile_complete;
+    // Default the member's timezone to the zone of the city they just picked (from its coordinates). Their real
+    // device tz takes over on first app open. Only set it when we actually resolve one — never null out a good tz.
+    const derivedTz = await tzFromLatLng(lat, lng);
     let memberId;
     let isNew = false;
     let accessCode = null;
@@ -870,6 +898,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           lng: (lng != null && lng !== '') ? Number(lng) : null,
           place_id: place_id || null,
           location_label: location_label || null,
+          timezone: derivedTz || undefined,                                                // v157: default tz from picked city; undefined = keep existing
           gender: gender || null,
           skills: (Array.isArray(skills) && skills.length) ? skills : null,
           photo_url: photo_url || null,
@@ -910,6 +939,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           lng: (lng != null && lng !== '') ? Number(lng) : null,
           place_id: place_id || null,
           location_label: location_label || null,
+          timezone: derivedTz || undefined,                                                // v157: default tz from picked city (device tz overrides on first open)
           gender: gender || null,
           skills: (Array.isArray(skills) && skills.length) ? skills : null,
           photo_url: photo_url || null,
@@ -5285,22 +5315,40 @@ function renderCoachReminderEmail(snap, hook) {
       + '<td align="right" style="padding:12px 14px;font-size:12px;color:#8fc7e8;font-weight:700;">' + (s.race.gap_to_above > 0 ? (s.race.gap_to_above + ' off ' + escapeHtml(s.race.above_name || 'the spot above')) : 'Leading your pack') + '</td>'
       + '</tr></table></td></tr>';
   }
-  var coachChip = '<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:14px;"><tr><td><div style="width:30px;height:30px;border-radius:50%;background:#0d2b45;text-align:center;line-height:30px;font-style:italic;font-weight:900;color:#ffffff;font-size:14px;">G</div></td><td style="padding-left:9px;font-size:11px;font-weight:900;letter-spacing:1.6px;color:#8fc7e8;text-transform:uppercase;">Coach Grant</td></tr></table>';
-  var streakPill = (s.streak >= 1) ? ('<div style="display:inline-block;background:rgba(255,138,42,.15);border:1px solid rgba(255,138,42,.5);padding:5px 12px;border-radius:100px;margin-bottom:12px;"><span style="font-size:11px;font-weight:900;letter-spacing:1.5px;color:#ffc08a;">' + s.streak + '-DAY STREAK</span></div><br>') : '';
   var vs = (w.vs_last_week != null) ? (' &middot; <span style="color:' + (w.vs_last_week >= 0 ? '#4ecb8f' : '#e0a94a') + ';font-weight:800;">' + (w.vs_last_week >= 0 ? '+' : '') + w.vs_last_week + ' vs last week</span>') : '';
+  // HERO = a NUDGE to log today (the email only fires when they haven't by 5pm). The coach's WORDS never go in the
+  // title — they live in their own signed section below. onboard never hijacks the reminder (title/copy derive from snap).
+  var streak = s.streak || 0;
+  var title = "Haven&rsquo;t moved today, " + escapeHtml(name) + "?";
+  var sub = streak >= 2 ? ("It&rsquo;s 5pm &mdash; your " + streak + "-day streak is still open.")
+                        : "It&rsquo;s 5pm &mdash; a quick session keeps your week going.";
+  // Coach Grant's message — the motivator, in his voice, its own bordered section, signed.
+  var stake;
+  if (streak >= 3 && s.race && s.race.rank && !(s.race.gap_to_above > 0)) stake = "You&rsquo;re on a " + streak + "-day streak and top of the " + escapeHtml(s.race.quest || 'race') + " &mdash; don&rsquo;t let today be the one that slips.";
+  else if (streak >= 3 && s.race && s.race.rank) stake = "You&rsquo;re on a " + streak + "-day streak and holding #" + s.race.rank + " in the " + escapeHtml(s.race.quest || 'race') + " &mdash; keep it rolling today.";
+  else if (streak >= 3) stake = "You&rsquo;re on a " + streak + "-day streak &mdash; one activity today keeps it alive.";
+  else if (s.race && s.race.gap_to_above > 0) stake = "You&rsquo;re only " + s.race.gap_to_above + " points off " + escapeHtml(s.race.above_name || 'the spot above') + " in the " + escapeHtml(s.race.quest || 'race') + " &mdash; today&rsquo;s session counts.";
+  else stake = "A short session today keeps your momentum going.";
+  var coachMsg = stake + " It doesn&rsquo;t have to be big: a walk, a stretch, a quick game all count.<br><br>Get something in and log it before the day&rsquo;s out, and it all keeps rolling. I&rsquo;ll see it come through.";
+  var coachBlock = '<tr><td style="padding:22px 26px 6px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0d1f30;border-left:3px solid #2ba8e0;"><tr><td style="padding:16px 18px;">'
+    + '<div style="font-size:10.5px;font-weight:900;letter-spacing:1.6px;color:#8fc7e8;text-transform:uppercase;margin-bottom:9px;">From Coach Grant</div>'
+    + '<div style="font-size:14px;line-height:1.65;color:#d6e5f2;">' + coachMsg + '</div>'
+    + '<div style="font-size:13px;color:#8fb0c8;font-weight:800;margin-top:12px;">&mdash; Coach Grant</div>'
+    + '</td></tr></table></td></tr>';
   return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">'
     + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#0a1826;border-radius:16px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
     + '<tr><td style="padding:16px 22px;"><span style="font-size:13px;font-weight:900;letter-spacing:2px;color:#ffffff;">FFP <span style="color:#2ba8e0;">PASSPORT</span></span></td></tr>'
-    + '<tr><td bgcolor="#0f3a58" style="background:#0f3a58;background-image:linear-gradient(135deg,#1f8fce,#0a1826);padding:24px 26px 28px;">' + coachChip + streakPill
-    + '<div style="font-size:30px;font-weight:900;color:#ffffff;line-height:1.02;">' + escapeHtml(h.headline || ('Move today, ' + name + '.')) + '</div>'
-    + '<div style="font-size:14.5px;color:#d6ecfa;margin-top:11px;font-weight:600;">' + escapeHtml(h.line || '') + '</div></td></tr>'
-    + '<tr><td style="padding:20px 26px 4px;"><div style="font-size:10.5px;font-weight:900;letter-spacing:1.6px;color:#5f7f96;">THIS WEEK <span style="color:#3f5c72;">&middot; ACTIVE MINUTES</span></div>'
+    + '<tr><td bgcolor="#0f3a58" style="background:#0f3a58;background-image:linear-gradient(135deg,#1f8fce,#0a1826);padding:26px 26px 28px;">'
+    + '<div style="font-size:31px;font-weight:900;color:#ffffff;line-height:1.04;">' + title + '</div>'
+    + '<div style="font-size:14px;color:#bfe2f5;margin-top:10px;font-weight:700;letter-spacing:.3px;">' + sub + '</div></td></tr>'
+    + '<tr><td style="padding:22px 26px 4px;"><div style="font-size:10.5px;font-weight:900;letter-spacing:1.6px;color:#5f7f96;">THIS WEEK <span style="color:#3f5c72;">&middot; ACTIVE MINUTES</span></div>'
     + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px;"><tr>' + bars + '</tr></table>'
     + '<div style="font-size:12px;color:#8fb0c8;font-weight:700;margin-top:8px;">' + (w.total_min || 0) + ' min &middot; ' + (w.sessions || 0) + ' sessions' + vs + '</div></td></tr>'
-    + '<tr><td style="padding:14px 23px 4px;"><div style="font-size:10.5px;font-weight:900;letter-spacing:1.6px;color:#5f7f96;margin:0 3px 8px;">YOUR ACTIVE LIFE &middot; ' + ((s.pillars && s.pillars.touched_count) || 0) + ' OF 5 PILLARS</div>'
+    + '<tr><td style="padding:16px 23px 4px;"><div style="font-size:10.5px;font-weight:900;letter-spacing:1.6px;color:#5f7f96;margin:0 3px 8px;">YOUR ACTIVE LIFE &middot; ' + ((s.pillars && s.pillars.touched_count) || 0) + ' OF 5 PILLARS</div>'
     + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>' + tiles + '</tr></table></td></tr>'
     + raceBlock
-    + '<tr><td style="padding:20px 26px 24px;" align="center"><a href="' + ctaHref + '" style="display:inline-block;background:#FFCC00;color:#082335;font-weight:900;font-size:15px;letter-spacing:.3px;text-decoration:none;padding:15px 40px;border-radius:12px;">' + escapeHtml(h.cta || 'Log today') + ' &rarr;</a></td></tr>'
+    + coachBlock
+    + '<tr><td style="padding:20px 26px 24px;" align="center"><a href="' + ctaHref + '" style="display:inline-block;background:#FFCC00;color:#082335;font-weight:900;font-size:15px;letter-spacing:.3px;text-decoration:none;padding:15px 40px;border-radius:12px;">Log today&rsquo;s activity &rarr;</a></td></tr>'
     + '<tr><td bgcolor="#081420" style="background:#081420;padding:15px 22px;" align="center"><div style="font-size:11.5px;color:#5f7f96;">FFP Passport &middot; ffppassport.com</div></td></tr>'
     + '</table></td></tr></table>';
 }
