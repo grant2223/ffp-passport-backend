@@ -548,7 +548,7 @@ const Stripe = require('stripe');
 const app = express();
 // SINGLE SOURCE OF TRUTH for the deployed backend version. Returned by GET / so the LIVE version is verifiable
 // (RULE 0.6). Bump on EVERY backend change; must match the top-of-file header comment.
-const BACKEND_VERSION = 'v157';
+const BACKEND_VERSION = 'v158';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -659,7 +659,7 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
           passport_no,
           paid: true,
           membership: 'passport',                                                          // v78: paid → passport so the gate recognises them
-          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-year term ($99/yr)
+          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-yr access window; Passport is a SUBSCRIPTION ($149/yr or $20/mo, 7-day trial) — Stripe is the pricing source of truth (see assets/ffp-constants.js)
           status: 'active', // v8: required for signin check `member.status !== 'active'`
           stripe_session_id: session.id,
           stripe_customer_id: session.customer || null
@@ -904,7 +904,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           photo_url: photo_url || null,
           paid: true,
           membership: 'passport',                                                          // v78: paid → passport so the gate recognises them
-          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-year term ($99/yr)
+          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-yr access window; Passport is a SUBSCRIPTION ($149/yr or $20/mo, 7-day trial) — Stripe is the pricing source of truth (see assets/ffp-constants.js)
           stripe_session_id: session_id,
           stripe_customer_id: customerId,
           profile_complete: true
@@ -949,7 +949,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           role: 'member',
           paid: true,
           membership: 'passport',                                                          // v78: paid → passport so the gate recognises them
-          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-year term ($99/yr)
+          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-yr access window; Passport is a SUBSCRIPTION ($149/yr or $20/mo, 7-day trial) — Stripe is the pricing source of truth (see assets/ffp-constants.js)
           status: 'active', // v8: required for signin check `member.status !== 'active'`
           stripe_session_id: session_id,
           stripe_customer_id: customerId,
@@ -1212,7 +1212,7 @@ async function sendCodeEmail(email, name, code, type) {
         To sign in: enter your email + this 6-digit code at ffppassport.com<br/>This code does not expire until you reset it.
       </p>
       <div style="margin-top:32px;padding-top:24px;border-top:1px solid rgba(43,168,224,.1);font-size:11px;color:#6a90a8;">
-        FFP Passport · UAE 2026 · ffppassport.com
+        FFP Passport ·ffppassport.com
       </div>
     </div>
   `;
@@ -1295,9 +1295,8 @@ async function sendWelcomeEmail(email, firstName, city) {
 
       <div style="background:#0d2b45;background-image:linear-gradient(135deg,#12659a,#0d2b45);padding:22px 26px;text-align:center;">
         <div style="font-size:19px;font-weight:900;color:#ffffff;letter-spacing:-.3px;">Find Fit People.</div>
-        <div style="font-size:12.5px;color:#bcd6e8;margin-top:5px;">It's not just our name &mdash; it's what we do, together.</div>
       </div>
-      <div style="background:#e3ebf2;padding:16px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; UAE 2026 &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div>
+      <div style="background:#e3ebf2;padding:16px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div>
 
     </td></tr></table></td></tr></table>
   `;
@@ -1323,8 +1322,8 @@ function ffpLifecycleEmail(o) {
     + '</div>'
     + '<div style="background:#ffffff;padding:24px 26px;font-size:14px;color:#33475b;line-height:1.7;">' + o.body + '</div>'
     + cta
-    + '<div style="background:#0d2b45;background-image:linear-gradient(135deg,#12659a,#0d2b45);padding:22px 26px;text-align:center;"><div style="font-size:19px;font-weight:900;color:#ffffff;letter-spacing:-.3px;">Find Fit People.</div><div style="font-size:12.5px;color:#bcd6e8;margin-top:5px;">It&rsquo;s not just our name &mdash; it&rsquo;s what we do, together.</div></div>'
-    + '<div style="background:#e3ebf2;padding:16px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; UAE 2026 &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div>'
+    + '<div style="background:#0d2b45;background-image:linear-gradient(135deg,#12659a,#0d2b45);padding:22px 26px;text-align:center;"><div style="font-size:19px;font-weight:900;color:#ffffff;letter-spacing:-.3px;">Find Fit People.</div></div>'
+    + '<div style="background:#e3ebf2;padding:16px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div>'
     + '</td></tr></table></td></tr></table>';
 }
 async function sendProfileReminderEmail(email, firstName) {
@@ -1359,7 +1358,7 @@ function brandEmail(kicker, bodyHtml) {
   +'<tr><td style="padding:30px 32px 0;text-align:center;"><img src="https://ffppassport.com/assets/ffp-logo.png" alt="FFP Passport" width="132" style="display:inline-block;border:0;"></td></tr>'
   +'<tr><td style="padding:14px 32px 0;text-align:center;"><div style="height:3px;width:46px;background:#2ba8e0;border-radius:2px;margin:0 auto;"></div>'+(kicker?'<div style="font-size:10px;color:#8196a6;letter-spacing:2.5px;text-transform:uppercase;margin-top:14px;">'+kicker+'</div>':'')+'</td></tr>'
   +'<tr><td style="padding:22px 32px 8px;">'+bodyHtml+'</td></tr>'
-  +'<tr><td style="padding:18px 32px 28px;"><div style="border-top:1px solid #eef2f6;padding-top:18px;font-size:11px;color:#8196a6;line-height:1.7;">FFP Passport · UAE 2026 · <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div></td></tr>'
+  +'<tr><td style="padding:18px 32px 28px;"><div style="border-top:1px solid #eef2f6;padding-top:18px;font-size:11px;color:#8196a6;line-height:1.7;">FFP Passport ·<a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div></td></tr>'
   +'</table></td></tr></table>';
 }
 async function sendAdminNewSignupEmail(m) {
@@ -3303,6 +3302,57 @@ app.get('/api/places/details', async (req, res) => {
       }, { onConflict: 'place_id' });
     } catch (e) {}
     return res.json(out);
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// Reverse-geocode a dropped pin / one-tap GPS point via Google (classic Geocoding API — SAME key as
+// Places + Timezone). v158: the map picker's drag + GPS paths used to reverse-geocode via OpenStreetMap
+// (Nominatim) / BigDataCloud, which returned street names as the venue and accepted a SUBURB as the city
+// ("Al Quoz Industrial 3" instead of "Dubai"), fragmenting the world map. Now all three capture paths
+// (search / drag / GPS) resolve through Google, returning the same {components:{country,country_code,
+// region,city,area}} shape as /api/places/details — clean venue name + the TRUE city, every time.
+app.get('/api/places/reverse', async (req, res) => {
+  try {
+    if (!GPLACES_KEY) return res.status(503).json({ error: 'places_not_configured' });
+    const lat = parseFloat(req.query.lat), lng = parseFloat(req.query.lng);
+    if (isNaN(lat) || isNaN(lng)) return res.status(400).json({ error: 'lat/lng required' });
+    const url = 'https://maps.googleapis.com/maps/api/geocode/json?latlng=' + lat + ',' + lng + '&key=' + encodeURIComponent(GPLACES_KEY);
+    const r = await fetch(url);
+    const j = await r.json();
+    if (!j || j.status !== 'OK' || !Array.isArray(j.results) || !j.results.length) {
+      return res.status(502).json({ error: (j && (j.error_message || j.status)) || 'geocode_error' });
+    }
+    const results = j.results;
+    // classic geocoding: each result carries address_components:[{types,long_name,short_name}].
+    // Scan ALL results (first hit wins) so city/country are filled even when the top result is a bare street.
+    const grab = function (type, useShort) {
+      for (var i = 0; i < results.length; i++) {
+        var cs = results[i].address_components || [];
+        for (var k = 0; k < cs.length; k++) { if ((cs[k].types || []).indexOf(type) >= 0) return (useShort ? cs[k].short_name : cs[k].long_name) || ''; }
+      }
+      return '';
+    };
+    const components = {
+      country:      grab('country', false),
+      country_code: grab('country', true),
+      region:       grab('administrative_area_level_1', false),
+      city:         grab('locality', false) || grab('postal_town', false) || grab('administrative_area_level_2', false),
+      area:         grab('sublocality_level_1', false) || grab('sublocality', false) || grab('neighborhood', false)
+    };
+    // Best human label for the pin: a real POI/establishment if Google returned one, else neighbourhood/route + city.
+    var name = '';
+    for (var i = 0; i < results.length; i++) {
+      var t = results[i].types || [];
+      if (t.indexOf('point_of_interest') >= 0 || t.indexOf('establishment') >= 0 || t.indexOf('premise') >= 0) {
+        name = (results[i].formatted_address || '').split(',')[0]; break;
+      }
+    }
+    if (!name) {
+      var spot = components.area || grab('route', false);
+      name = [spot, components.city].filter(Boolean).filter(function (v, i, a) { return a.indexOf(v) === i; }).join(', ');
+    }
+    if (!name) name = components.city || (lat.toFixed(4) + ', ' + lng.toFixed(4));
+    return res.json({ lat: lat, lng: lng, name: name, maps_url: 'https://www.google.com/maps?q=' + lat + ',' + lng, components: components });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
@@ -5983,8 +6033,8 @@ function renderSundaySummary(name, d){
   + nudgesHtml
   + statusFlat
   +'<tr><td style="padding:28px 30px 24px;text-align:center;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;background:#FFCC00;color:#082335;text-decoration:none;font-size:15px;font-weight:900;padding:14px 34px;border-radius:12px;letter-spacing:.2px;">Open your Passport</a></td></tr>'
-  +'<tr><td style="padding:0;"><div style="background-color:#0d2b45;background-image:linear-gradient(135deg,#12659a,#0d2b45);padding:22px 26px;text-align:center;"><div style="font-size:19px;font-weight:900;color:#ffffff;letter-spacing:-.3px;">Find Fit People.</div><div style="font-size:12.5px;color:#bcd6e8;margin-top:5px;">It&rsquo;s not just our name &mdash; it&rsquo;s what we do, together.</div></div></td></tr>'
-  +'<tr><td style="padding:0;"><div style="background:#e3ebf2;padding:16px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; UAE 2026 &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div></td></tr>'
+  +'<tr><td style="padding:0;"><div style="background-color:#0d2b45;background-image:linear-gradient(135deg,#12659a,#0d2b45);padding:22px 26px;text-align:center;"><div style="font-size:19px;font-weight:900;color:#ffffff;letter-spacing:-.3px;">Find Fit People.</div></div></td></tr>'
+  +'<tr><td style="padding:0;"><div style="background:#e3ebf2;padding:16px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div></td></tr>'
   +'</table></td></tr></table>';
 }
 // Cron endpoint (Vercel Cron sends Authorization: Bearer ${CRON_SECRET}). Also accepts ?secret= for manual test runs.
@@ -6245,11 +6295,11 @@ function ffpWrapupEmail(o) {
   // ---------- WHITE band: Find Fit People signoff (blue type, no dark slab) ----------
   var signBand = '<div style="background:#ffffff;padding:2px 26px 26px;text-align:center;">'
     + '<div style="font-size:21px;font-weight:900;color:#2ba8e0;letter-spacing:-.3px;">Find Fit People.</div>'
-    + '<div style="font-size:12.5px;color:#5a7186;margin-top:6px;line-height:1.5;">It’s not just our name — it’s what we do, together.</div></div>';
+    + '</div>';
   // ---------- LIGHT band: feedback ----------
   var fbBand = '<div style="background:#eef4f9;padding:22px 26px;text-align:center;"><div style="font-size:13.5px;color:#3a5169;line-height:1.55;"><b style="color:#0d2b45;">Help Coach Grant help you.</b> What do you love, what’s missing, what should we build next?</div><a href="' + app + '?feedback=1" style="display:inline-block;margin-top:12px;background:#ffffff;color:#2ba8e0;border:1px solid #2ba8e0;font-weight:800;font-size:13.5px;text-decoration:none;padding:10px 22px;border-radius:10px;">Share your feedback</a></div>';
   // ---------- footer band (light) ----------
-  var footBand = '<div style="background:#e3ebf2;padding:18px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; UAE 2026 &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div>';
+  var footBand = '<div style="background:#e3ebf2;padding:18px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div>';
   // ---------- LIGHT band: Coach Grant (top accent rule, no card) ----------
   var coachBand = '<div style="background:#eef4f9;"><div style="height:4px;background-color:#2ba8e0;background-image:linear-gradient(90deg,#2ba8e0,#7ed0f5);"></div><div style="padding:22px 26px;">'
     + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="46" style="vertical-align:middle;"><div style="width:46px;height:46px;border-radius:50%;background:#173a5a;color:#ffffff;text-align:center;line-height:46px;font-weight:900;font-size:16px;">CG</div></td><td style="padding-left:12px;vertical-align:middle;"><div style="font-size:15px;font-weight:900;color:#0d2b45;">Coach Grant</div><div style="font-size:11px;color:#5a7186;">Your FFP coach &middot; a note for ' + nxt + '</div></td></tr></table>'
