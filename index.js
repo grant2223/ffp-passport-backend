@@ -548,7 +548,7 @@ const Stripe = require('stripe');
 const app = express();
 // SINGLE SOURCE OF TRUTH for the deployed backend version. Returned by GET / so the LIVE version is verifiable
 // (RULE 0.6). Bump on EVERY backend change; must match the top-of-file header comment.
-const BACKEND_VERSION = 'v158';
+const BACKEND_VERSION = 'v159';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -4704,6 +4704,27 @@ app.get('/api/passport/:passportNo', async (req, res) => {
     } catch (e) {}
 
     return res.json({ success: true, member: member, stats: stats, meetups: meetups });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// v159: PRO INVITE LINK — a coach's referral link to invite clients onto the FFP Passport (the join is credited
+// to the coach → their kickback, via the existing ?ref= referral loop). Resolves the coach's member row by email;
+// generates + persists a referral_code if they don't have one yet. The Pro app's Clients panel copies this link.
+app.get('/api/pro/invite', async (req, res) => {
+  try {
+    const email = String(req.query.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ error: 'email required' });
+    const { data: m, error } = await supabase.from('members')
+      .select('id, referral_code, full_name, given_names')
+      .ilike('email', email).maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!m) return res.status(404).json({ error: 'no_member' });
+    let code = m.referral_code;
+    if (!code) {
+      code = genReferralCode(m.given_names || m.full_name || 'FFP');
+      try { await supabase.from('members').update({ referral_code: code }).eq('id', m.id); } catch (e) {}
+    }
+    return res.json({ code: code, url: 'https://ffppassport.com/join?ref=' + encodeURIComponent(code) });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
