@@ -548,7 +548,7 @@ const Stripe = require('stripe');
 const app = express();
 // SINGLE SOURCE OF TRUTH for the deployed backend version. Returned by GET / so the LIVE version is verifiable
 // (RULE 0.6). Bump on EVERY backend change; must match the top-of-file header comment.
-const BACKEND_VERSION = 'v159';
+const BACKEND_VERSION = 'v160';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -1134,6 +1134,35 @@ const mailer = nodemailer.createTransport({
     pass: process.env.SMTP_PASS,
   }
 });
+// v160: DELIVERABILITY — wrap sendMail ONCE so every outbound email gets (a) a plain-text alternative derived from
+// the HTML when the caller didn't supply one (text-only-capable = better inbox placement, fewer spam flags), and
+// (b) a List-Unsubscribe header (mailto + the member's email-preferences page). Applies to all ~20 call sites with
+// no per-site change. Non-destructive: preserves nodemailer's (msg, cb)->Promise contract.
+(function () {
+  var _send = mailer.sendMail.bind(mailer);
+  function htmlToText(html) {
+    return String(html || '')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<head[\s\S]*?<\/head>/gi, ' ')
+      .replace(/<\/(p|div|tr|h[1-6]|li|table)>/gi, '\n').replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<a [^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, '$2 ($1)')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&mdash;/gi, '—')
+      .replace(/&rsquo;/gi, '’').replace(/&ldquo;|&rdquo;/gi, '"').replace(/&[a-z]+;/gi, ' ')
+      .replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  mailer.sendMail = function (msg, cb) {
+    try {
+      if (msg && typeof msg === 'object' && !Array.isArray(msg)) {
+        if (!msg.text && msg.html) msg.text = htmlToText(msg.html);
+        msg.headers = msg.headers || {};
+        if (!msg.headers['List-Unsubscribe']) {
+          msg.headers['List-Unsubscribe'] = '<mailto:unsubscribe@findfitpeople.com?subject=unsubscribe>, <https://ffppassport.com/ffp-member-dashboard.html#profile>';
+        }
+      }
+    } catch (e) {}
+    return _send(msg, cb);
+  };
+})();
 // v148 (2026-07-02): SENDER split per Grant — FFP PASSPORT emails now come from "FFP Passport" (this backend is
 // the Passport backend). The findfitpeople.com MARKETPLACE keeps "Find Fit People" as its sender (handled in the
 // marketplace's own build). CAVEAT: /api/notify/member (which the marketplace also calls) uses this same MAIL_FROM,
