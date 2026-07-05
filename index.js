@@ -551,7 +551,10 @@ const app = express();
 // v162 (2026-07-05): COACH AUTOMATIONS v1 — GET /api/cron/coach-automations (daily 08:00 UTC, CRON_SECRET-gated)
 //      calls pro_run_due_checkins(today) which finds due pro_checkin_schedules, reuses pro_assign_form to assign the
 //      check-in form + notify the client (bell/push/email), and rolls next_due forward by cadence. Registered in vercel.json.
-const BACKEND_VERSION = 'v162';
+// v163 (2026-07-05): GROW pulse → AI. /api/agent/chat now fetches the pro's pro_grow_pulse (resolve professional by member_id)
+//      and injects the LIVE business read into agentSystem so the FFP Coach mentors from REAL numbers — names the #1 blocker,
+//      probes, holds accountable, ends with one next action. agentSystem(role,ctx,pulse) gains the pulse arg.
+const BACKEND_VERSION = 'v163';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -4219,7 +4222,7 @@ const AGENT_MODEL = process.env.AGENT_MODEL || 'claude-sonnet-4-6';
 const PARTNER_PANELS = ['overview', 'checkins', 'members', 'plans', 'scheduling', 'appointments', 'staff', 'billing', 'announcements', 'classes', 'events', 'experiences', 'quests', 'challenges', 'deals', 'profile', 'settings'];
 const PRO_PANELS = ['overview', 'scheduling', 'checkin', 'clients', 'payments', 'profile', 'services', 'packages', 'comms'];
 
-function agentSystem(role, ctx) {
+function agentSystem(role, ctx, pulse) {
   var isPro = role === 'pro';
   var common = FFP_ETHOS + ' You are Grant, a warm, concise in-app business coach inside the FFP ' + (isPro ? 'Professional (coach)' : 'Partner (facility)') + ' dashboard on FFP Passport, an active-lifestyle platform in the UAE. You help ' + (isPro ? 'professionals grow their coaching business and set it up well' : 'partners improve their business and promote their services') + '. ' +
     'Help the user set up their account and run day-to-day tasks. Be specific and brief: one short paragraph or a few short steps, never a wall of text. ' +
@@ -4243,7 +4246,11 @@ function agentSystem(role, ctx) {
       'Gather only what you truly need (sensible defaults are fine — do not interrogate), then call the matching tool to PROPOSE it. For anything else, guide them and use navigate. ';
     setup = 'To get fully set up: complete your Profile, add Staff, create your Sessions and set availability, create your Packages, connect Stripe in Payments — and optionally promote Experiences / Events / Trips in Engagement. ';
   }
-  return common + structure + actions + setup +
+  var pulseTxt = '';
+  if (isPro && pulse && pulse.ok) {
+    pulseTxt = ' You are also this coach’s BUSINESS MENTOR — direct, warm, no fluff, like a sharp consultant who has coached a thousand trainers. Below is their LIVE business read, computed from their REAL actions. USE IT: reference their actual numbers, name their single biggest blocker, ask sharp probing questions to understand the real situation (do not just accept vague answers — dig), hold them accountable to what they commit to, and ALWAYS finish with one specific next action. Never invent numbers you were not given. Their FFP Passport activity (own training posts) is their brand proof — push them to lead by example and post it. LIVE BUSINESS READ: ' + JSON.stringify(pulse).slice(0, 900) + '. ';
+  }
+  return common + structure + actions + setup + pulseTxt +
     'When the user is new, briefly explain how the dashboard is organised, then coach them to the next best step. ' +
     'Current account context (use it; do not invent data you were not given): ' + JSON.stringify(ctx || {}).slice(0, 1200) + '.';
 }
@@ -4272,7 +4279,14 @@ app.post('/api/agent/chat', async (req, res) => {
     const role = (b.role === 'pro') ? 'pro' : 'partner';
     const inMsgs = Array.isArray(b.messages) ? b.messages.slice(-16) : [];
     if (!inMsgs.length) return res.status(400).json({ error: 'messages required' });
-    const sys = agentSystem(role, b.context || {});
+    var proPulse = null;
+    if (role === 'pro' && b.member_id) {
+      try {
+        const { data: prow } = await supabase.from('professionals').select('id').eq('member_id', b.member_id).maybeSingle();
+        if (prow && prow.id) { const { data: pz } = await supabase.rpc('pro_grow_pulse', { p_pro: prow.id }); proPulse = pz || null; }
+      } catch (e) { console.error('[agent] pulse', e && e.message); }
+    }
+    const sys = agentSystem(role, b.context || {}, proPulse);
     const panelEnum = (role === 'pro') ? PRO_PANELS : PARTNER_PANELS;
     var tools = [{
       name: 'navigate',
