@@ -548,7 +548,7 @@ const Stripe = require('stripe');
 const app = express();
 // SINGLE SOURCE OF TRUTH for the deployed backend version. Returned by GET / so the LIVE version is verifiable
 // (RULE 0.6). Bump on EVERY backend change; must match the top-of-file header comment.
-const BACKEND_VERSION = 'v160';
+const BACKEND_VERSION = 'v161';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -1618,7 +1618,7 @@ app.post('/api/auth/exchange', async (req, res) => {
         jwt: mintSupabaseJwt(hm),
         refresh: mintRefreshToken(hm),
         member: hmSafe,
-        redirect: '/ffp-provider-dashboard.html'
+        redirect: PROVIDER_DASH_URL
       });
     }
 
@@ -2054,7 +2054,7 @@ function verifyAdminAccessJwt(authHeaderOrToken) {
 // no pre-registered redirect URI needed — only STRIPE_SECRET_KEY (already set) + Connect enabled.
 //   PROVIDER_DASH_URL (optional)  = where to bounce the facility back after onboarding
 //   BACKEND_BASE_URL (optional)   = this backend's public origin (for return/refresh links)
-const PROVIDER_DASH_URL = process.env.PROVIDER_DASH_URL || (SITE_URL + '/ffp-provider-dashboard.html');
+const PROVIDER_DASH_URL = process.env.PROVIDER_DASH_URL || 'https://partner.findfitpeople.com/';
 const BACKEND_BASE = (process.env.BACKEND_BASE_URL || 'https://ffp-passport-backend.vercel.app').replace(/\/$/, '');
 
 // Signed, time-boxed token tying the hosted-onboarding round-trip to one provider id (HMAC, server-only).
@@ -4547,7 +4547,7 @@ app.post('/api/provider/signup', async (req, res) => {
       jwt: mintSupabaseJwt(sessionMember),      // short Supabase JWT for RLS (null until env set; refresh re-mints on dashboard boot)
       refresh: mintRefreshToken(sessionMember), // long-lived refresh → /api/auth/refresh
       member: memberSafe,
-      redirect: '/ffp-provider-dashboard.html'
+      redirect: PROVIDER_DASH_URL
     });
   } catch (error) {
     console.error('[provider/signup] error:', error);
