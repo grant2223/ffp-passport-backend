@@ -554,7 +554,10 @@ const app = express();
 // v163 (2026-07-05): GROW pulse → AI. /api/agent/chat now fetches the pro's pro_grow_pulse (resolve professional by member_id)
 //      and injects the LIVE business read into agentSystem so the FFP Coach mentors from REAL numbers — names the #1 blocker,
 //      probes, holds accountable, ends with one next action. agentSystem(role,ctx,pulse) gains the pulse arg.
-const BACKEND_VERSION = 'v163';
+// v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
+//      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
+//      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
+const BACKEND_VERSION = 'v164';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -4369,6 +4372,32 @@ function actionSummary(role, action, a) {
   if (action === 'add_staff') return 'Add staff: ' + (a.full_name || '') + (a.role ? (' (' + a.role + ')') : '');
   return action;
 }
+
+// GROW course — synthesise a coach's step answers into an outcome (Step 1 'strengths' = their proof → audience, or a development plan).
+app.post('/api/pro/grow/synthesize', async (req, res) => {
+  try {
+    if (!ANTHROPIC_KEY) return res.status(503).json({ error: 'ai_not_configured' });
+    const b = req.body || {};
+    const step = String(b.step || 'strengths');
+    const answers = b.answers || {};
+    const sys = 'You are a sharp, warm business mentor for fitness and sports coaches. A coach has answered questions about what they are good at. Some may never have coached anyone — judge them on their KNOWLEDGE + EXPERIENCE (that is their proof), not on client results. Read their answers and return ONLY a JSON object, no prose, with keys: '
+      + '"strengths" (array of up to 3 short strength phrases), '
+      + '"proof" (one sentence on the knowledge/experience that backs them), '
+      + '"has_proof" (true or false — is there enough real knowledge/experience to stand on today), '
+      + '"audience_line" (a sharp one line: I help [specific person] go from [problem] to [result], through [their strength]), '
+      + '"development_plan" (if has_proof is false, an array of 2-4 specific steps to build the knowledge/experience toward world-class; otherwise an empty array), '
+      + '"note" (one encouraging sentence). '
+      + 'Be specific, use their own words where you can, no fluff. If proof is thin, set has_proof=false and give a real development plan instead of faking authority.';
+    const userMsg = 'Step: ' + step + '\nTheir answers (in detail):\n' + Object.keys(answers).map(function (k) { return '• ' + k + ': ' + String(answers[k] || '').slice(0, 1800); }).join('\n');
+    const resp = await anthropicMessages(sys, [{ role: 'user', content: userMsg }], null, 1024);
+    if (resp.error) return res.status(502).json({ error: 'ai_error' });
+    var text = (resp.content || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join('').trim();
+    var out = null;
+    try { var s = text.indexOf('{'), e = text.lastIndexOf('}'); if (s >= 0 && e > s) out = JSON.parse(text.slice(s, e + 1)); } catch (er) {}
+    if (!out) return res.status(502).json({ error: 'parse_error' });
+    res.json({ ok: true, outcome: out });
+  } catch (e) { console.error('[grow synth]', e); res.status(500).json({ error: e.message }); }
+});
 
 app.post('/api/agent/execute', async (req, res) => {
   try {
