@@ -548,7 +548,10 @@ const Stripe = require('stripe');
 const app = express();
 // SINGLE SOURCE OF TRUTH for the deployed backend version. Returned by GET / so the LIVE version is verifiable
 // (RULE 0.6). Bump on EVERY backend change; must match the top-of-file header comment.
-const BACKEND_VERSION = 'v161';
+// v162 (2026-07-05): COACH AUTOMATIONS v1 — GET /api/cron/coach-automations (daily 08:00 UTC, CRON_SECRET-gated)
+//      calls pro_run_due_checkins(today) which finds due pro_checkin_schedules, reuses pro_assign_form to assign the
+//      check-in form + notify the client (bell/push/email), and rolls next_due forward by cadence. Registered in vercel.json.
+const BACKEND_VERSION = 'v162';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -6497,6 +6500,21 @@ app.get('/api/cron/lifecycle', async (req, res) => {
 // v141: STREAK NUDGE — evening push (bell + phone) to members who haven't logged today, so they keep the
 // daily streak. Streak-holders get "keep your N-day streak"; new members (<14 days) get "Day X of your first 14".
 // notifyMember only (NO email). cronAuthed; ?only=<email|id> to test.
+// Coach Automations — daily: assign due recurring check-ins. pro_run_due_checkins reuses pro_assign_form (assign form +
+// notify the client via bell/push/email) and advances each schedule's next_due by its cadence. Secret-gated like other crons.
+app.get('/api/cron/coach-automations', async (req, res) => {
+  if (!(await cronAuthed(req))) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    var today = new Date().toISOString().slice(0, 10);
+    var { data, error } = await supabase.rpc('pro_run_due_checkins', { p_today: today });
+    if (error) throw error;
+    res.json({ ok: true, ran: data });
+  } catch (e) {
+    console.error('[coach-automations]', e);
+    res.status(500).json({ error: 'coach_automations_failed', detail: String((e && e.message) || e) });
+  }
+});
+
 app.get('/api/cron/streak-nudge', async (req, res) => {
   if (!(await cronAuthed(req))) return res.status(401).json({ error: 'unauthorized' });
   try {
