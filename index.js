@@ -4381,6 +4381,15 @@ app.post('/api/pro/grow/synthesize', async (req, res) => {
     const step = String(b.step || 'strengths');
     const answers = b.answers || {};
     var sys;
+    var GOALS = {
+      offer: 'their signature offer or package for their ideal client',
+      delivery_plan: 'how they will deliver coaching and get results between sessions',
+      operations: 'how they run their day-to-day business operations and admin',
+      funnel: 'their plan to get new clients — referrals, social media, advertising, networking',
+      sessions: 'how they run world-class sessions and communicate with clients',
+      retention: 'how they keep clients progressing, re-signing, and referring',
+      upskill: 'how they will keep current and keep upskilling as a coach'
+    };
     if (step === 'ideal_client') {
       sys = 'You are a sharp, warm business mentor for fitness and sports coaches. A coach has answered questions to define the ideal client they want to work with. Read their answers and return ONLY a JSON object, no prose, with keys: '
         + '"profile" (one or two sentences describing their ideal client — who they are and their situation), '
@@ -4391,6 +4400,13 @@ app.post('/api/pro/grow/synthesize', async (req, res) => {
         + '"one_liner" (a sharp one line the coach can use everywhere: I help [this client] with [problem] so they [outcome]), '
         + '"note" (one encouraging sentence). '
         + 'Be specific, use their own words, no fluff.';
+    } else if (GOALS[step]) {
+      sys = 'You are a sharp, warm business mentor for fitness and sports coaches. A coach has answered questions about ' + GOALS[step] + '. Read their answers and return ONLY a JSON object, no prose, with keys: '
+        + '"title" (a 2-4 word label for this plan), '
+        + '"summary" (one clear, usable sentence that captures their plan in their own words), '
+        + '"points" (an array of 3-5 objects, each {"label": a short label, "value": one specific practical sentence}), '
+        + '"note" (one encouraging sentence). '
+        + 'Be specific and practical, use their own words, no fluff.';
     } else {
       sys = 'You are a sharp, warm business mentor for fitness and sports coaches. A coach has answered questions about what they are good at. Some may never have coached anyone — judge them on their KNOWLEDGE + EXPERIENCE (that is their proof), not on client results. Read their answers and return ONLY a JSON object, no prose, with keys: '
         + '"strengths" (array of up to 3 short strength phrases), '
