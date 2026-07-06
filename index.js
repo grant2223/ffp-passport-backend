@@ -557,7 +557,7 @@ const app = express();
 // v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
 //      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
 //      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
-const BACKEND_VERSION = 'v164';
+const BACKEND_VERSION = 'v165';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -4380,14 +4380,27 @@ app.post('/api/pro/grow/synthesize', async (req, res) => {
     const b = req.body || {};
     const step = String(b.step || 'strengths');
     const answers = b.answers || {};
-    const sys = 'You are a sharp, warm business mentor for fitness and sports coaches. A coach has answered questions about what they are good at. Some may never have coached anyone — judge them on their KNOWLEDGE + EXPERIENCE (that is their proof), not on client results. Read their answers and return ONLY a JSON object, no prose, with keys: '
-      + '"strengths" (array of up to 3 short strength phrases), '
-      + '"proof" (one sentence on the knowledge/experience that backs them), '
-      + '"has_proof" (true or false — is there enough real knowledge/experience to stand on today), '
-      + '"audience_line" (a sharp one line: I help [specific person] go from [problem] to [result], through [their strength]), '
-      + '"development_plan" (if has_proof is false, an array of 2-4 specific steps to build the knowledge/experience toward world-class; otherwise an empty array), '
-      + '"note" (one encouraging sentence). '
-      + 'Be specific, use their own words where you can, no fluff. If proof is thin, set has_proof=false and give a real development plan instead of faking authority.';
+    var sys;
+    if (step === 'ideal_client') {
+      sys = 'You are a sharp, warm business mentor for fitness and sports coaches. A coach has answered questions to define the ideal client they want to work with. Read their answers and return ONLY a JSON object, no prose, with keys: '
+        + '"profile" (one or two sentences describing their ideal client — who they are and their situation), '
+        + '"problem" (the main problem this client has that the coach can solve), '
+        + '"outcome" (what winning looks like for this client), '
+        + '"where" (where the coach can realistically find these people — specific and practical), '
+        + '"edge" (why THIS coach is the right one for them, in the coach\'s own words), '
+        + '"one_liner" (a sharp one line the coach can use everywhere: I help [this client] with [problem] so they [outcome]), '
+        + '"note" (one encouraging sentence). '
+        + 'Be specific, use their own words, no fluff.';
+    } else {
+      sys = 'You are a sharp, warm business mentor for fitness and sports coaches. A coach has answered questions about what they are good at. Some may never have coached anyone — judge them on their KNOWLEDGE + EXPERIENCE (that is their proof), not on client results. Read their answers and return ONLY a JSON object, no prose, with keys: '
+        + '"strengths" (array of up to 3 short strength phrases), '
+        + '"proof" (one sentence on the knowledge/experience that backs them), '
+        + '"has_proof" (true or false — is there enough real knowledge/experience to stand on today), '
+        + '"audience_line" (a sharp one line: I help [specific person] go from [problem] to [result], through [their strength]), '
+        + '"development_plan" (if has_proof is false, an array of 2-4 specific steps to build the knowledge/experience toward world-class; otherwise an empty array), '
+        + '"note" (one encouraging sentence). '
+        + 'Be specific, use their own words where you can, no fluff. If proof is thin, set has_proof=false and give a real development plan instead of faking authority.';
+    }
     const userMsg = 'Step: ' + step + '\nTheir answers (in detail):\n' + Object.keys(answers).map(function (k) { return '• ' + k + ': ' + String(answers[k] || '').slice(0, 1800); }).join('\n');
     const resp = await anthropicMessages(sys, [{ role: 'user', content: userMsg }], null, 1024);
     if (resp.error) return res.status(502).json({ error: 'ai_error' });
