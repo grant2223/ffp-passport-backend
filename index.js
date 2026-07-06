@@ -4382,31 +4382,35 @@ app.post('/api/pro/grow/synthesize', async (req, res) => {
     const answers = b.answers || {};
     var sys;
     var GOALS = {
-      offer: 'their signature offer or package for their ideal client',
-      delivery_plan: 'how they will deliver coaching and get results between sessions',
-      operations: 'how they run their day-to-day business operations and admin',
-      funnel: 'their plan to get new clients — referrals, social media, advertising, networking',
-      sessions: 'how they run world-class sessions and communicate with clients',
-      retention: 'how they keep clients progressing, re-signing, and referring',
+      offer: 'designing their offer — the exact programme/package they sell to their ideal client',
+      delivery_plan: 'how they show up and coach — their coaching style, standards and presence',
       upskill: 'how they will keep current and keep upskilling as a coach'
     };
+    var HINTS = {
+      offer: 'Points must cover: Result, Method, Where & equipment, Format (session length / frequency / duration), Assessment, Nutrition, What else is included, and Price.',
+      delivery_plan: 'Points must cover: Coaching style, How they show up (energy and standards), How they present themselves, and the client experience.',
+      upskill: 'Points must cover: What to improve, What to learn next, Who to learn from, How to stay current, and How to make time.'
+    };
     if (step === 'ideal_client') {
-      sys = 'You are a sharp, warm business mentor for fitness and sports coaches. A coach has answered questions to define the ideal client they want to work with. Read their answers and return ONLY a JSON object, no prose, with keys: '
-        + '"profile" (one or two sentences describing their ideal client — who they are and their situation), '
-        + '"problem" (the main problem this client has that the coach can solve), '
-        + '"outcome" (what winning looks like for this client), '
-        + '"where" (where the coach can realistically find these people — specific and practical), '
-        + '"edge" (why THIS coach is the right one for them, in the coach\'s own words), '
-        + '"one_liner" (a sharp one line the coach can use everywhere: I help [this client] with [problem] so they [outcome]), '
+      sys = 'You are a sharp, warm business mentor for fitness and sports coaches. A coach has answered questions to build a client AVATAR — a vivid picture of the one ideal client they should focus on, anchored to the coach\'s strengths. Read their answers and return ONLY a JSON object, no prose, with keys: '
+        + '"name" (a short memorable persona name with age, e.g. "Busy-Dad Dave, 42"), '
+        + '"summary" (one or two sentences painting who this person is and their situation), '
+        + '"age" (their age or age range), '
+        + '"gender" (their gender), '
+        + '"location" (where they live), '
+        + '"work" (what they do for work), '
+        + '"traits" (what they are like as a person), '
+        + '"pain_point" (the specific pain point the coach can lean into), '
+        + '"one_liner" (a sharp line: I help [this person] with [their pain] so they [result]), '
         + '"note" (one encouraging sentence). '
-        + 'Be specific, use their own words, no fluff.';
+        + 'Be specific and vivid, use their own words, no fluff.';
     } else if (GOALS[step]) {
       sys = 'You are a sharp, warm business mentor for fitness and sports coaches. A coach has answered questions about ' + GOALS[step] + '. Read their answers and return ONLY a JSON object, no prose, with keys: '
         + '"title" (a 2-4 word label for this plan), '
         + '"summary" (one clear, usable sentence that captures their plan in their own words), '
-        + '"points" (an array of 3-5 objects, each {"label": a short label, "value": one specific practical sentence}), '
+        + '"points" (an array of 3-6 objects, each {"label": a short label, "value": one specific practical sentence}), '
         + '"note" (one encouraging sentence). '
-        + 'Be specific and practical, use their own words, no fluff.';
+        + 'Be specific and practical, use their own words, no fluff. ' + (HINTS[step] || '');
     } else {
       sys = 'You are a sharp, warm business mentor for fitness and sports coaches. A coach has answered questions about what they are good at. Some may never have coached anyone — judge them on their KNOWLEDGE + EXPERIENCE (that is their proof), not on client results. Read their answers and return ONLY a JSON object, no prose, with keys: '
         + '"strengths" (array of up to 3 short strength phrases), '
