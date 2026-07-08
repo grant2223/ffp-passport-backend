@@ -3204,6 +3204,32 @@ async function notifyMember(memberId, n) {
   try { await sendPushToMember(memberId, { title: n.title, body: n.body || '', url: n.link || '/ffp-member-dashboard.html', icon: '/assets/icons/ffp-icon-192.png' }); } catch (e) {}
 }
 
+// Notify a team's athletes that a coach posted a new training session (called best-effort by the Pro app after pro_team_session_save).
+app.post('/api/team/session/notify', async (req, res) => {
+  try {
+    const b = req.body || {};
+    let tId = b.team_id || null, session = null;
+    if (b.session_id) {
+      const { data: s } = await supabase.from('pro_team_sessions').select('id,team_id,title,location,city,starts_at').eq('id', b.session_id).maybeSingle();
+      if (s) { session = s; tId = s.team_id; }
+    }
+    if (!tId) return res.status(404).json({ error: 'team not found' });
+    const { data: team } = await supabase.from('pro_teams').select('name').eq('id', tId).maybeSingle();
+    const teamName = (team && team.name) || 'your team';
+    let whenStr = '';
+    if (session && session.starts_at) { try { whenStr = new Date(session.starts_at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }); } catch (e) {} }
+    const title = (session && session.title) || 'Training session';
+    const body = teamName + (whenStr ? (' · ' + whenStr) : '') + ((session && session.location) ? (' · ' + session.location) : '');
+    const { data: roster } = await supabase.from('pro_team_members').select('member_id,status').eq('team_id', tId);
+    const ids = (roster || []).filter(function (r) { return r.member_id && r.status !== 'removed'; }).map(function (r) { return r.member_id; });
+    let sent = 0;
+    for (const mid of ids) {
+      try { await notifyMember(mid, { title: 'New training · ' + title, body: body, icon: 'event', link: '/ffp-member-dashboard.html' }); sent++; } catch (e) {}
+    }
+    return res.json({ success: true, notified: sent });
+  } catch (e) { console.error('[team session notify]', e.message); return res.status(500).json({ error: e.message }); }
+});
+
 // Member subscribes (after granting permission in the browser). Upsert by endpoint; send a welcome push.
 app.post('/api/push/subscribe', async (req, res) => {
   try {
