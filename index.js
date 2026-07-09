@@ -1464,16 +1464,19 @@ async function sendPaymentFailedEmail(toEmail, name) {
    +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">Update my card</a></td></tr></table>';
   await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: 'Your FFP Passport payment didn’t go through', html: brandEmail('Payment', body) });
 }
+// 24-HOUR heads-up (once) that the trial converts tomorrow — with a clear cancel-before-charge path.
+// Cancel link deep-links into the Passport (?action=cancel) → reason → last-chance 14-day offer → cancel at period end.
 async function sendTrialEndingEmail(toEmail, name, planLabel, amountLabel, endLabel) {
   if (!toEmail) return;
-  var detail = amountLabel
-    ? ('After that, your membership continues at <strong style="color:#0f2c47;">'+escapeHtml(amountLabel)+'</strong>'+(planLabel?(' ('+escapeHtml(planLabel)+')'):'')+' — nothing to do, it carries on automatically.')
-    : 'After that, your membership continues automatically.';
-  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:6px;letter-spacing:-0.3px;">Your free trial ends in 3 days</div>'
-   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 16px;">Hi'+(name?(' '+escapeHtml(name)):'')+', hope you’ve been making the most of your FFP Passport.'+(endLabel?(' Your 7-day free trial ends on <strong style="color:#0f2c47;">'+escapeHtml(endLabel)+'</strong>.'):'')+'</p>'
-   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 18px;">'+detail+' Want to make a change? You can manage or cancel anytime before then.</p>'
-   +'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0;"><tr><td style="background:#FFCC00;border-radius:10px;"><a href="https://ffppassport.com/ffp-member-dashboard.html" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:800;color:#0f2c47;text-decoration:none;">Open my Passport</a></td></tr></table>';
-  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: 'Your FFP Passport free trial ends in 3 days', html: brandEmail('Your trial', body) });
+  var cancelUrl = 'https://ffppassport.com/ffp-member-dashboard.html?action=cancel';
+  var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:12px;letter-spacing:-0.3px;">Your free trial ends tomorrow</div>'
+   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 16px;">Hi'+(name?(' '+escapeHtml(name)):'')+', just a heads up that your 7-day trial ends'+(endLabel?(' on <strong style="color:#0f2c47;">'+escapeHtml(endLabel)+'</strong>'):'')+' and you will fully become a part of the active lifestyle community.</p>'
+   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 16px;">If you have changed your mind, you can cancel before you’re charged — no hassle, and you’ll keep access until your trial ends.</p>'
+   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 20px;">We want to support you best we can — so any feedback you have to improve the experience would be well received via your Passport.</p>'
+   +'<p style="margin:0 0 22px;"><a href="'+cancelUrl+'" style="font-size:14px;font-weight:800;color:#93a4b3;text-decoration:none;">Cancel my trial &rsaquo;</a></p>'
+   +'<p style="font-size:14px;color:#0f2c47;line-height:1.5;margin:0;font-weight:700;">Your Active Lifestyle Community</p>'
+   +'<p style="font-size:14px;color:#5b7186;line-height:1.5;margin:2px 0 0;">FFP Team</p>';
+  await mailer.sendMail({ from: MAIL_FROM, to: toEmail, subject: 'Your FFP Passport free trial ends tomorrow', html: brandEmail('Your trial', body) });
 }
 
 app.get('/', (req, res) => {
@@ -1818,8 +1821,11 @@ async function onInvoicePaymentFailed(invoice) {
   if (row) { email = row.email || email; name = row.given_names || (row.full_name ? String(row.full_name).split(' ')[0] : null); }
   if (email) { try { await sendPaymentFailedEmail(email, name); } catch (e) { console.warn('[payment_failed email]', e.message); } }
 }
-// 3 days before a trial converts → friendly heads-up with the date + what they'll be charged.
+// RETIRED (2026-07-09): the trial heads-up is now a single 24-HOUR email sent by /api/cron/lifecycle
+// (once each, tracked in lifecycle_sent.trial_ending). Stripe's trial_will_end fires ~3 days out — wrong
+// timing — so this webhook handler no longer sends. Kept as a no-op so the registered webhook route stays valid.
 async function onTrialWillEnd(sub) {
+  return; // no-op — replaced by the 24h trial-ending pass in /api/cron/lifecycle
   if (!sub) return;
   const plan = (sub.metadata && sub.metadata.plan) || null;
   let row = null;
@@ -6610,7 +6616,7 @@ app.get('/api/cron/lifecycle', async (req, res) => {
     else { qy = qy.eq('role', 'member').eq('status', 'active'); }
     var { data: members, error } = await qy;
     if (error) throw error;
-    var out = { profile_reminder: 0, winback: 0, skipped: 0 };
+    var out = { profile_reminder: 0, winback: 0, trial_ending: 0, skipped: 0 };
     for (var i = 0; i < (members || []).length; i++) {
       var m = members[i];
       if (!m.email) { out.skipped++; continue; }
@@ -6621,6 +6627,7 @@ app.get('/api/cron/lifecycle', async (req, res) => {
           if (preview === 'profile') { await sendProfileReminderEmail(m.email, first); out.profile_reminder++; }
           else if (preview === 'winback') { await sendWinbackEmail(m.email, first, 9); out.winback++; }
           else if (preview === 'welcome') { await sendWelcomeEmail(m.email, first, m.city || ''); out.profile_reminder++; }   // resend the updated welcome
+          else if (preview === 'trial') { await sendTrialEndingEmail(m.email, first, null, null, new Date(now + 86400000).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })); out.trial_ending++; }
         } catch (e) { out.skipped++; }
         continue;
       }
@@ -6643,7 +6650,38 @@ app.get('/api/cron/lifecycle', async (req, res) => {
       }
       if (changed) { try { await supabase.from('members').update({ lifecycle_sent: flags }).eq('id', m.id); } catch (e) {} }
     }
-    res.json({ success: true, profile_reminder: out.profile_reminder, winback: out.winback, skipped: out.skipped, total: (members || []).length });
+    // v143: TRIAL-ENDING (24h) — one-time heads-up before the first charge. Reads Stripe's trialing subscriptions
+    // (trial_end is Stripe's truth; there's no local trial column) and emails members whose trial ends within the
+    // next ~32h, once each (tracked in lifecycle_sent.trial_ending). Skipped in ?only= scoped/test runs.
+    if (!only) {
+      try {
+        var horizon = now + 32 * 3600 * 1000;
+        var subs = await stripe.subscriptions.list({ status: 'trialing', limit: 100 });
+        for (var si = 0; si < ((subs && subs.data) || []).length; si++) {
+          var sub = subs.data[si];
+          if (!sub.trial_end) continue;
+          var te = sub.trial_end * 1000;
+          if (te < now || te > horizon) continue;              // only trials ending within the window
+          var mrow = null;
+          var mid = (sub.metadata && sub.metadata.member_id) || null;
+          if (mid) { var r1 = await supabase.from('members').select('id, email, given_names, full_name, lifecycle_sent').eq('id', mid).maybeSingle(); mrow = r1.data; }
+          if (!mrow) { var r2 = await supabase.from('members').select('id, email, given_names, full_name, lifecycle_sent').eq('stripe_subscription_id', sub.id).maybeSingle(); mrow = r2.data; }
+          if (!mrow && sub.customer) { var r3 = await supabase.from('members').select('id, email, given_names, full_name, lifecycle_sent').eq('stripe_customer_id', sub.customer).maybeSingle(); mrow = r3.data; }
+          if (!mrow || !mrow.email) continue;
+          var tf = mrow.lifecycle_sent || {};
+          if (tf.trial_ending) continue;                       // once only
+          var tName = String(mrow.given_names || mrow.full_name || 'there').split(' ')[0];
+          var tEnd = new Date(te).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+          try {
+            await sendTrialEndingEmail(mrow.email, tName, null, null, tEnd);
+            tf.trial_ending = new Date().toISOString();
+            await supabase.from('members').update({ lifecycle_sent: tf }).eq('id', mrow.id);
+            out.trial_ending++;
+          } catch (e) { out.skipped++; }
+        }
+      } catch (e) { console.warn('[lifecycle trial-ending]', e.message); }
+    }
+    res.json({ success: true, profile_reminder: out.profile_reminder, winback: out.winback, trial_ending: out.trial_ending, skipped: out.skipped, total: (members || []).length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
