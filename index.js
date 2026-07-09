@@ -1934,6 +1934,54 @@ app.post('/api/billing/checkout', async (req, res) => {
     return res.status(500).json({ error: e.message });
   }
 });
+
+// ── Membership: self-serve CANCEL (keeps access to period end) + a 14-DAY save offer ──
+async function _memberForBilling(member_id) {
+  if (!member_id) return null;
+  const { data: m } = await supabase.from('members')
+    .select('id,email,given_names,full_name,plan,stripe_subscription_id,passport_expires_at')
+    .eq('id', member_id).maybeSingle();
+  return m || null;
+}
+
+// Save offer — give them 14 more days before the next charge (adds a trial window to the sub).
+app.post('/api/billing/extend', async (req, res) => {
+  try {
+    const member_id = (req.body || {}).member_id;
+    const m = await _memberForBilling(member_id);
+    if (!m || !m.stripe_subscription_id) return res.status(404).json({ error: 'no active subscription' });
+    const untilTs = Math.floor(Date.now() / 1000) + 14 * 24 * 60 * 60;
+    await stripe.subscriptions.update(m.stripe_subscription_id, { trial_end: untilTs, proration_behavior: 'none' });
+    const iso = new Date(untilTs * 1000).toISOString();
+    try { await supabase.from('members').update({ passport_expires_at: iso }).eq('id', member_id); } catch (e) {}
+    try { await supabase.from('membership_cancellations').insert({ member_id: member_id, took_extension: true, reason: 'extension_14d' }); } catch (e) {}
+    return res.json({ ok: true, until: iso });
+  } catch (e) { console.error('[billing/extend]', e.message); return res.status(500).json({ error: e.message }); }
+});
+
+// Cancel — at period end (member keeps what they paid for; no future charge). Records feedback + emails confirmation.
+app.post('/api/billing/cancel', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const m = await _memberForBilling(b.member_id);
+    if (!m) return res.status(404).json({ error: 'member not found' });
+    let access_until = m.passport_expires_at;
+    if (m.stripe_subscription_id) {
+      const sub = await stripe.subscriptions.update(m.stripe_subscription_id, { cancel_at_period_end: true });
+      if (sub && sub.current_period_end) access_until = new Date(sub.current_period_end * 1000).toISOString();
+    }
+    try { await supabase.from('membership_cancellations').insert({ member_id: b.member_id, reason: (b.reason || null), feedback: (b.feedback || null), took_extension: false }); } catch (e) {}
+    try {
+      const first = escapeHtml(String(m.given_names || m.full_name || 'there').split(' ')[0]);
+      const when = access_until ? new Date(access_until).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : null;
+      const body = '<div style="font-size:15px;color:#33475b;line-height:1.7;">Hi ' + first + ',<br><br>This confirms your FFP Passport membership is cancelled — you won\'t be charged again.' +
+        (when ? ' You\'ll keep full access until <b>' + when + '</b>, then your Passport moves to the free tier.' : '') +
+        '<br><br>Your activity, connections and history stay on your account, so you can pick up right where you left off if you come back — just resubscribe from the app.<br><br>If this was a mistake or there\'s something we could have done better, just reply and let us know — we read every message.<br><br>Thanks for giving FFP a go.<br>— The Find Fit People team</div>';
+      if (m.email) await mailer.sendMail({ from: MAIL_FROM, to: m.email, subject: 'Your FFP Passport membership is cancelled', html: brandEmail('Membership cancelled', body) });
+    } catch (e) { console.warn('[billing/cancel email]', e.message); }
+    return res.json({ ok: true, access_until: access_until });
+  } catch (e) { console.error('[billing/cancel]', e.message); return res.status(500).json({ error: e.message }); }
+});
 const VERIFY_SECRET = process.env.SUPABASE_SERVICE_KEY || 'ffp-fallback-secret';
 
 function b64url(s) {
