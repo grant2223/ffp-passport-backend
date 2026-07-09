@@ -557,7 +557,7 @@ const app = express();
 // v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
 //      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
 //      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
-const BACKEND_VERSION = 'v165';
+const BACKEND_VERSION = 'v166';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -4903,10 +4903,18 @@ app.get('/api/pro/invite', async (req, res) => {
     const email = String(req.query.email || '').trim().toLowerCase();
     if (!email) return res.status(400).json({ error: 'email required' });
     const { data: m, error } = await supabase.from('members')
-      .select('id, referral_code, full_name, given_names')
+      .select('id, referral_code, full_name, given_names, paid, passport_expires_at, stripe_subscription_id, membership')
       .ilike('email', email).maybeSingle();
     if (error) return res.status(500).json({ error: error.message });
     if (!m) return res.status(404).json({ error: 'no_member' });
+    // Referral REWARDS require the coach to hold an ACTIVE FFP Passport themselves (mirrors pro_passport_active).
+    // Without one, we still hand back a generic join link so their client can sign up — but it does NOT credit the coach.
+    const passportActive = (m.passport_expires_at && new Date(m.passport_expires_at) > new Date())
+      || (m.paid === true && !m.passport_expires_at)
+      || (!!m.stripe_subscription_id && m.paid === true && String(m.membership || '') !== 'free');
+    if (!passportActive) {
+      return res.json({ passport_required: true, url: 'https://ffppassport.com/join', join_url: 'https://ffppassport.com/join' });
+    }
     let code = m.referral_code;
     if (!code) {
       code = genReferralCode(m.given_names || m.full_name || 'FFP');
