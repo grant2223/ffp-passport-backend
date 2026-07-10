@@ -557,7 +557,7 @@ const app = express();
 // v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
 //      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
 //      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
-const BACKEND_VERSION = 'v166';
+const BACKEND_VERSION = 'v167';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -1707,6 +1707,53 @@ app.post('/api/auth/reset', async (req, res) => {
     await supabase.from('members').update({ access_code: hash }).eq('id', member.id);
     await sendCodeEmail(email, member.full_name, code, 'reset');
     res.json({ success: true, exists: true, message: 'New code sent. Your old code no longer works.' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FREE FFP PRO SELF-SIGNUP  [v167 · 2026-07-10]
+// Coaches/professionals use FFP Pro for FREE — this is their front door
+// (ffpprofessional.com/signup). Dedicated + paywall-FREE by design: it does NOT
+// touch ALLOW_FREE_SIGNUP (which gates the paid-member /api/auth/signup) so the
+// member paywall and the free-pro door can never collide.
+//
+// MODEL: a coach's FFP account is ONE members row keyed by email. Signing up to
+// Pro is free (no Passport subscription — passport_expires_at stays null). If they
+// later want referral earnings they subscribe to the paid Passport with the SAME
+// email, which just layers the subscription onto this same row (see billing webhook).
+//
+// Behaviour (reliable + idempotent):
+//   • email is NEW      → create a free members row (role=member, status=active) + email a code.
+//   • email ALREADY exists (Passport member or prior account) → reuse that row, refresh the
+//     access_code, email a code. Same email = same account, never a duplicate.
+// The client then verifies the code via /api/auth/signin and calls professional_link
+// to create the professional record (status=active). No payment, no admin approval.
+app.post('/api/pro/signup', async (req, res) => {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const full_name = String(req.body.full_name || '').trim() || null;
+    if (!email) return res.status(400).json({ error: 'Email required' });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Please enter a valid email address.' });
+    const { code, hash } = generateCode();
+    // Existing account for this email? (paid Passport member, prior free account, etc.) — reuse it.
+    const { data: existing } = await supabase
+      .from('members').select('id, full_name').eq('email', email).maybeSingle();
+    if (existing) {
+      await supabase.from('members').update({ access_code: hash }).eq('id', existing.id);
+      await sendCodeEmail(email, existing.full_name || full_name, code, 'signin');
+      return res.json({ success: true, existing: true, message: 'Code sent — check your email.' });
+    }
+    // Brand-new: create a FREE member account (NO Passport subscription).
+    const passport_no = `FFP-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9999 + 1)).padStart(4, '0')}`;
+    const { data: member, error } = await supabase
+      .from('members')
+      .insert({ email, full_name, access_code: hash, role: 'member', passport_no, status: 'active' })
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    await sendCodeEmail(email, full_name, code, 'signup');
+    res.json({ success: true, existing: false, member_id: member.id, message: 'Account created — check your email for your code.' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
