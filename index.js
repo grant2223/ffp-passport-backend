@@ -1,7 +1,7 @@
 // FFP Passport — Express Server (Vercel, CommonJS) — v157
 // v157 (2026-07-02): COACH EMAIL REDESIGN (Grant sign-off). renderCoachReminderEmail rebuilt: hero is a NUDGE title
 //      ("Haven't moved today, {name}?") + stake sub — the coach's WORDS are no longer the title; they now sit in
-//      their own signed "From Coach Grant" bordered section. REMOVED the "G" avatar chip and the streak pill. Copy
+//      their own signed "From Coach AL" bordered section. REMOVED the "G" avatar chip and the streak pill. Copy
 //      always drives the ONE action (log today); onboard no longer hijacks the reminder. Data (week chart, 5 pillars,
 //      July race) unchanged. NOTE: needs more visuals — logged as follow-up.
 //      TIMEZONE-FOR-ANYONE: new tzFromLatLng() (Google Time Zone API, same GOOGLE_PLACES_KEY) — onboarding now sets a
@@ -16,7 +16,7 @@
 // v155 (2026-07-02): COACH CARD DATA + ONBOARDING. /api/coach/snapshot now returns snapshot.onboarded + motivations_catalog
 //      (for the rich in-app card + the onboarding quick-pick). NEW POST /api/coach/onboard {motivations, goals} saves the
 //      member's WHY + goals and sets members.coach_onboarded_at. Frontend ffp-coach-loader renders the rich active-life card
-//      (streak, 5 pillars, hook, CTA) + the first-run Coach Grant onboarding (intro + motivations grid + goals).
+//      (streak, 5 pillars, hook, CTA) + the first-run Coach AL onboarding (intro + motivations grid + goals).
 // v154 (2026-07-02): RICH ACTIVE-LIFE EMAIL + GROW-THE-COMMUNITY hook. renderCoachReminderEmail(snap,hook) = email-safe
 //      (table + div-bar) render of the approved design: streak hero, weekly minutes chart coloured by pillar, 5-pillar
 //      breadth, live July-race row, smart CTA. Snapshot now also has connections + nearby_meetups; activeLifeHook adds
@@ -29,13 +29,13 @@
 //      NEW POST /api/coach/snapshot {refresh}. ANTI-DOUBLING: retired coach-nudges + streak-nudge crons (5pm reminder
 //      is the single daily Coach push; streak REWARDS are a trigger, unaffected). NEXT: rich email + card render + onboarding.
 // v152 (2026-07-02): FFP ACTIVE-LIFE COACHING BRAIN. NEW shared FFP_ETHOS const (5 pillars + coaching mindset + tone) +
-//      FFP_MOTIVATIONS catalog + motivationLabels() — injected into Coach Grant (card line, summary, chat) AND the
+//      FFP_MOTIVATIONS catalog + motivationLabels() — injected into Coach AL (card line, summary, chat) AND the
 //      pro/partner agent, so every AI surface thinks the same active-lifestyle way. NEW members columns motivations/goals/
 //      coach_onboarded_at (migration member_motivations_goals_coach_onboarding). Coach chat now pulls motivations+goals.
 //      NEW /api/member/timezone (real browser tz for the 5pm reminder). NEXT: onboarding flow, snapshot engine, rich email/card.
-// v151 (2026-07-02): (a) COACH refresh window 3h→5min (Grant: keep Coach Grant current all day; app polls every 5 min).
+// v151 (2026-07-02): (a) COACH refresh window 3h→5min (Grant: keep Coach AL current all day; app polls every 5 min).
 //      (b) NEW GET /api/cron/daily-activity-reminder (HOURLY cron in vercel.json): at 17:00 in each member's local tz,
-//      if they have NOT logged an activity that day, Coach Grant nudges via PUSH + EMAIL, once/local-day, honours
+//      if they have NOT logged an activity that day, Coach AL nudges via PUSH + EMAIL, once/local-day, honours
 //      no_coach_nudges. Uses new members.timezone (default Asia/Dubai) + members.last_daily_reminder_on. ?dry=1 / ?only= / ?force=1 for testing.
 // v150 (2026-07-02): COACH LINE FRESHNESS — the coach card was frozen all day (cached 24h, only recomputed on a new
 //      log). Now: refresh window 24h→3h so it updates through the day; computeCoachProfile adds part_of_day/local_hour
@@ -103,7 +103,7 @@
 //      Powers the Admin → Emails panel: "Send test to me" (?only=<admin email>&force=1) + "Send to everyone"
 //      (?force=1) with NO secret. Manual browser ?secret= URLs no longer needed.
 // v136 (2026-07-01): MONTHLY WRAP-UP redesign — world-class, email-safe full-width doc (ffpWrapupEmail): brand hero
-//      + storage photo, Coach Grant (connect/commend/recommend), QuickChart activity doughnut, WHAT-YOU-DID bars,
+//      + storage photo, Coach AL (connect/commend/recommend), QuickChart activity doughnut, WHAT-YOU-DID bars,
 //      CONNECT+ENGAGE, YOU-vs-CONNECTIONS leaderboard, FIT-PEOPLE-FOR-YOU matches, month-vs-month, HOW-YOU-COMPARE
 //      cohort (all + gender/age, gated >=5). New data RPC member_monthly_wrapup_v2 (adds active_days/prev_minutes/
 //      compare/connections/matches). Quiet-member branch relit to light theme. "Find Fit People" motif woven through.
@@ -557,7 +557,7 @@ const app = express();
 // v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
 //      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
 //      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
-const BACKEND_VERSION = 'v167';
+const BACKEND_VERSION = 'v168';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -1194,16 +1194,17 @@ function mailFromFor(brand) {
 
 // ════════════════════════════════════════════════════════════════════════════
 // FFP ACTIVE-LIFESTYLE COACHING BRAIN (v152) — ONE shared knowledge base + mindset, injected into every AI surface:
-// Coach Grant (card line, summary, chat, nudges, onboarding) AND the pro/partner agents. Edit HERE only.
+// Coach AL (card line, summary, chat, nudges, onboarding) AND the pro/partner agents. Edit HERE only.
 // ════════════════════════════════════════════════════════════════════════════
 const FFP_ETHOS = [
   'FFP (Find Fit People) is an ACTIVE-LIFESTYLE community — not a gym app. An active life spans FIVE pillars: FITNESS (gym, strength, HIIT, CrossFit, martial arts), SPORTS (running, cycling, swimming, padel, tennis, football, racket + team sports), WELLNESS (yoga, pilates, mobility, meditation, breathwork), ADVENTURE (hiking, climbing, surfing, kayaking, the outdoors, travel) and RECOVERY (sauna, ice bath, massage, rest). Movement is also SOCIAL — meet-ups, friends, events, shared experiences — and holistic — sleep, food, headspace, family time.',
   'Coach like a great human coach, never a report card: MOTIVATE, do not narrate stats. Celebrate consistency AND variety across the pillars. Lead with whatever matters most to THIS person right now — a streak to protect, a dropping week, a pillar they are missing, a winnable spot in the quest/points race, or an adventure or meet-up near them. Name the BENEFIT, then give ONE specific, easy next step that ideally moves several of their goals at once.',
   'Always coach toward THEIR reasons for being here — their motivations and goals (why they joined: e.g. getting fit, meeting people and making friends, travel and adventure, de-stressing, active family time, getting strong, moving better, losing weight, confidence, simply feeling good). Reference them by name. Connect them to the COMMUNITY (meet-ups, friends), the QUEST/points race, and nearby EXPERIENCES and events — an active life is lived WITH people, not just solo workouts.',
-  'Voice: warm, encouraging, PUNCHY, minimal words — active people hate waffle. Never shaming, never clinical. If their streak is 3+ or they logged today, celebrate it and NEVER say their momentum is slipping or that they have been away. You are not a doctor — for pain, injury or medical concerns, gently point them to a professional. Never discuss another member\'s health. No emojis unless they use them first.'
+  'Voice: warm, encouraging, PUNCHY, minimal words — active people hate waffle. Never shaming, never clinical. If their streak is 3+ or they logged today, celebrate it and NEVER say their momentum is slipping or that they have been away. You are not a doctor — for pain, injury or medical concerns, gently point them to a professional. Never discuss another member\'s health. No emojis unless they use them first.',
+  'Coach like you KNOW them: always use their first name, and reference something SPECIFIC and real — a session they logged, the sport or place they favour, their current streak, a pillar they have been neglecting, or their standing in the quest — never a generic line that could go to anyone. Give exactly ONE concrete action they can take TODAY, sized to their week, and where it fits point them at a real meet-up, class, event or person near them so movement is social, not solo. Sound like a coach in their corner who remembers last time; when it helps, end with a short question or a small challenge to earn a reply. One idea per message — never a list.'
 ].join(' ');
 
-// The member "why" catalog — powers Coach Grant onboarding quick-pick + personalises every future nudge. key/label/icon.
+// The member "why" catalog — powers Coach AL onboarding quick-pick + personalises every future nudge. key/label/icon.
 const FFP_MOTIVATIONS = [
   { key: 'get_fit',          label: 'Get fit',               icon: 'favorite' },
   { key: 'lose_weight',      label: 'Lose weight',           icon: 'monitor_weight' },
@@ -5582,7 +5583,7 @@ function activeLifeHook(snap) {
   var sparse = (s.nearby_meetups || 0) === 0;       // nothing to join near them
   var few = (s.connections || 0) < 3;
   // NOT ONBOARDED → lead with the intro/goals invite (re-engages existing members: get to know them first).
-  if (s.onboarded === false) return { key: 'onboard', headline: 'Coach Grant here, ' + name + '.', line: "Tell me what an active life means to you and I'll tailor everything — your nudges, meet-ups and goals. Takes 2 minutes.", cta: 'Set my goals', action: 'onboard' };
+  if (s.onboarded === false) return { key: 'onboard', headline: 'Coach AL here, ' + name + '.', line: "Tell me what an active life means to you and I'll tailor everything — your nudges, meet-ups and goals. Takes 2 minutes.", cta: 'Set my goals', action: 'onboard' };
   if (s.streak >= 3 && !s.logged_today) return { key: 'streak', headline: "Don't stop now, " + name + ".", line: "You're on a " + s.streak + "-day streak — one activity today keeps it alive.", cta: 'Log today', action: 'log' };
   if (s.race && s.race.gap_to_above > 0 && s.race.gap_to_above <= 15) return { key: 'race', headline: "You're " + s.race.gap_to_above + " points off " + (s.race.above_name || 'the spot above') + ".", line: 'One good session today and you climb the ' + (s.race.quest || 'race') + '.', cta: 'Log today', action: 'log' };
   // GROW THE COMMUNITY — when little is happening near them, turn it into a build-your-crew nudge (invite / host / share).
@@ -5636,7 +5637,7 @@ function renderCoachReminderEmail(snap, hook) {
   var title = "Haven&rsquo;t moved today, " + escapeHtml(name) + "?";
   var sub = streak >= 2 ? ("It&rsquo;s 5pm &mdash; your " + streak + "-day streak is still open.")
                         : "It&rsquo;s 5pm &mdash; a quick session keeps your week going.";
-  // Coach Grant's message — the motivator, in his voice, its own bordered section, signed.
+  // Coach AL's message — the motivator, in his voice, its own bordered section, signed.
   var stake;
   if (streak >= 3 && s.race && s.race.rank && !(s.race.gap_to_above > 0)) stake = "You&rsquo;re on a " + streak + "-day streak and top of the " + escapeHtml(s.race.quest || 'race') + " &mdash; don&rsquo;t let today be the one that slips.";
   else if (streak >= 3 && s.race && s.race.rank) stake = "You&rsquo;re on a " + streak + "-day streak and holding #" + s.race.rank + " in the " + escapeHtml(s.race.quest || 'race') + " &mdash; keep it rolling today.";
@@ -5645,9 +5646,9 @@ function renderCoachReminderEmail(snap, hook) {
   else stake = "A short session today keeps your momentum going.";
   var coachMsg = stake + " It doesn&rsquo;t have to be big: a walk, a stretch, a quick game all count.<br><br>Get something in and log it before the day&rsquo;s out, and it all keeps rolling. I&rsquo;ll see it come through.";
   var coachBlock = '<tr><td style="padding:22px 26px 6px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0d1f30;border-left:3px solid #2ba8e0;"><tr><td style="padding:16px 18px;">'
-    + '<div style="font-size:10.5px;font-weight:900;letter-spacing:1.6px;color:#8fc7e8;text-transform:uppercase;margin-bottom:9px;">From Coach Grant</div>'
+    + '<div style="font-size:10.5px;font-weight:900;letter-spacing:1.6px;color:#8fc7e8;text-transform:uppercase;margin-bottom:9px;">From Coach AL</div>'
     + '<div style="font-size:14px;line-height:1.65;color:#d6e5f2;">' + coachMsg + '</div>'
-    + '<div style="font-size:13px;color:#8fb0c8;font-weight:800;margin-top:12px;">&mdash; Coach Grant</div>'
+    + '<div style="font-size:13px;color:#8fb0c8;font-weight:800;margin-top:12px;">&mdash; Coach AL</div>'
     + '</td></tr></table></td></tr>';
   return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#dfe6ed;"><tr><td align="center" style="padding:18px 10px;">'
     + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#0a1826;border-radius:16px;overflow:hidden;font-family:Montserrat,Arial,sans-serif;">'
@@ -5830,7 +5831,7 @@ function coachLineFallback(f) {
   return opts[(f.local_hour || 0) % opts.length];
 }
 
-// On-demand profile (member app posts {refresh}). v151: refresh window 3h → 5 MINUTES (Grant) so Coach Grant stays
+// On-demand profile (member app posts {refresh}). v151: refresh window 3h → 5 MINUTES (Grant) so Coach AL stays
 // current with the member throughout the day — the app polls every 5 min and the line recomputes at most that often.
 // Serves cache within the 5-min window (fast); recomputes when older than 5 min OR the member has trained since.
 app.post('/api/coach/profile', async (req, res) => {
@@ -5899,7 +5900,7 @@ app.post('/api/coach/snapshot', async (req, res) => {
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
-// v155: Coach Grant ONBOARDING — save the member's motivations + goals and mark the intro complete (coach_onboarded_at).
+// v155: Coach AL ONBOARDING — save the member's motivations + goals and mark the intro complete (coach_onboarded_at).
 app.post('/api/coach/onboard', async (req, res) => {
   try {
     const v = verifyRefreshToken((req.body && req.body.refresh) || '');
@@ -6022,7 +6023,7 @@ app.post('/api/member/timezone', async (req, res) => {
 
 // ════════════════════════════════════════════════════════════════════════════
 // v151: DAILY 5PM ACTIVITY REMINDER (Grant) — at 17:00 in EACH member's local timezone, if they have NOT logged
-// an activity that day, Coach Grant nudges them via PUSH + EMAIL. Once per member per local day. Honours
+// an activity that day, Coach AL nudges them via PUSH + EMAIL. Once per member per local day. Honours
 // preferences.no_coach_nudges. Cron runs HOURLY; a member only fires on the run where their local hour === 17.
 // members.timezone (default Asia/Dubai) drives the local time; members.last_daily_reminder_on dedups per local day.
 // ════════════════════════════════════════════════════════════════════════════
@@ -6072,9 +6073,9 @@ app.get('/api/cron/daily-activity-reminder', async (req, res) => {
       var hLine = (hook && hook.line) ? hook.line : ('Even 20 minutes counts — keep your momentum going.');
       preview.push({ id: m.id, tz: tz, local_hour: lp.hour, email: m.email, hook: hook && hook.key, headline: hHead });
       if (!dry) {
-        try { await notifyMember(m.id, { title: 'Coach Grant', body: hHead + ' ' + hLine, icon: 'directions_run', link: '/ffp-member-dashboard.html' }); } catch (e) {}
+        try { await notifyMember(m.id, { title: 'Coach AL', body: hHead + ' ' + hLine, icon: 'directions_run', link: '/ffp-member-dashboard.html' }); } catch (e) {}
         if (m.email && snap && hook) { try {
-          await mailer.sendMail({ from: MAIL_FROM, to: m.email, subject: 'A note from Coach Grant', html: renderCoachReminderEmail(snap, hook) });
+          await mailer.sendMail({ from: MAIL_FROM, to: m.email, subject: 'A note from Coach AL', html: renderCoachReminderEmail(snap, hook) });
         } catch (e) {} }
         try { await supabase.from('members').update({ last_daily_reminder_on: lp.date }).eq('id', m.id); } catch (e) {}
         sent++;
@@ -6403,7 +6404,7 @@ app.get('/api/cron/sunday-summary', async (req, res) => {
 
 // --- v136: world-class monthly wrap-up email builder (self-contained full-width doc, email-safe:
 //     tables for all horizontal layout, div-width bars, QuickChart doughnut for the pie — Gmail strips SVG).
-//     Coach Grant (Connect/Commend/Recommend), activity pie, Connect+Engage, You-vs-Connections,
+//     Coach AL (Connect/Commend/Recommend), activity pie, Connect+Engage, You-vs-Connections,
 //     Fit-People-for-you matches, June-vs-May, How-you-compare cohort. "Find Fit People" motif woven through.
 function ffpWrapupEmail(o) {
   var d = o.d || {}, esc = o.esc, fmtT = o.fmtT, first = o.first, mon = o.monName, nxt = o.nextName;
@@ -6419,7 +6420,7 @@ function ffpWrapupEmail(o) {
   var chart = { type: 'doughnut', data: { labels: pLab, datasets: [{ data: pDat, backgroundColor: pCol, borderWidth: 0 }] }, options: { cutout: '62%', plugins: { legend: { display: false } } } };
   var pieUrl = 'https://quickchart.io/chart?v=4&w=260&h=260&bkg=%23ffffff&c=' + encodeURIComponent(JSON.stringify(chart));
   var legend = pLab.map(function (l, i) { return '<tr><td style="padding:3px 0;font-size:13px;color:#33475b;"><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:' + pCol[i] + ';"></span>&nbsp;&nbsp;' + esc(l) + '</td><td style="padding:3px 0;font-size:13px;color:#5a7186;text-align:right;">' + Math.round(pDat[i] / pTot * 100) + '%</td></tr>'; }).join('');
-  // ---------- Coach Grant: connect / commend / recommend ----------
+  // ---------- Coach AL: connect / commend / recommend ----------
   var shone = [];
   if (top.length) { var t0 = top[0]; shone.push('<b>Your ' + esc(t0.activity) + ' was the engine.</b> ' + t0.count + ' session' + (t0.count === 1 ? '' : 's') + (t0.km > 0 ? (', ' + t0.km + ' km') : '') + ' this month.'); }
   if ((d.active_days || 0) >= 8) shone.push('<b>You showed up ' + d.active_days + ' of ' + days + ' days.</b> Consistency like that beats any single big session.');
@@ -6436,7 +6437,7 @@ function ffpWrapupEmail(o) {
   var coach = '<div style="margin:20px 20px 6px;background:#ffffff;border:1px solid #e4ecf3;border-left:5px solid #2ba8e0;border-radius:14px;padding:18px;">'
     + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
     + '<td width="46" style="vertical-align:middle;"><div style="width:46px;height:46px;border-radius:50%;background:#173a5a;color:#ffffff;text-align:center;line-height:46px;font-weight:900;font-size:16px;">CG</div></td>'
-    + '<td style="padding-left:12px;vertical-align:middle;"><div style="font-size:15px;font-weight:900;color:#0d2b45;">Coach Grant</div><div style="font-size:11px;color:#5a7186;">Your FFP coach &middot; a note for ' + nxt + '</div></td>'
+    + '<td style="padding-left:12px;vertical-align:middle;"><div style="font-size:15px;font-weight:900;color:#0d2b45;">Coach AL</div><div style="font-size:11px;color:#5a7186;">Your FFP coach &middot; a note for ' + nxt + '</div></td>'
     + '</tr></table>'
     + '<div style="font-size:14px;line-height:1.6;color:#33475b;margin-top:14px;">' + esc(first) + ' — I’ve watched your ' + mon + ' unfold and it’s a real shift. You went from ticking over to showing up almost every day, and the best part? You didn’t do it alone.</div>'
     + (shone.length ? ('<div style="font-size:11px;font-weight:800;color:#1a9d5a;text-transform:uppercase;letter-spacing:.5px;margin:15px 0 8px;">&#10003; Where you shone</div>' + liList(shone)) : '')
@@ -6561,12 +6562,12 @@ function ffpWrapupEmail(o) {
     + '<div style="font-size:21px;font-weight:900;color:#2ba8e0;letter-spacing:-.3px;">Find Fit People.</div>'
     + '</div>';
   // ---------- LIGHT band: feedback ----------
-  var fbBand = '<div style="background:#eef4f9;padding:22px 26px;text-align:center;"><div style="font-size:13.5px;color:#3a5169;line-height:1.55;"><b style="color:#0d2b45;">Help Coach Grant help you.</b> What do you love, what’s missing, what should we build next?</div><a href="' + app + '?feedback=1" style="display:inline-block;margin-top:12px;background:#ffffff;color:#2ba8e0;border:1px solid #2ba8e0;font-weight:800;font-size:13.5px;text-decoration:none;padding:10px 22px;border-radius:10px;">Share your feedback</a></div>';
+  var fbBand = '<div style="background:#eef4f9;padding:22px 26px;text-align:center;"><div style="font-size:13.5px;color:#3a5169;line-height:1.55;"><b style="color:#0d2b45;">Help Coach AL help you.</b> What do you love, what’s missing, what should we build next?</div><a href="' + app + '?feedback=1" style="display:inline-block;margin-top:12px;background:#ffffff;color:#2ba8e0;border:1px solid #2ba8e0;font-weight:800;font-size:13.5px;text-decoration:none;padding:10px 22px;border-radius:10px;">Share your feedback</a></div>';
   // ---------- footer band (light) ----------
   var footBand = '<div style="background:#e3ebf2;padding:18px 26px;text-align:center;font-size:11px;color:#7a8ea0;">Find Fit People &middot; <a href="https://ffppassport.com" style="color:#2ba8e0;text-decoration:none;">ffppassport.com</a></div>';
-  // ---------- LIGHT band: Coach Grant (top accent rule, no card) ----------
+  // ---------- LIGHT band: Coach AL (top accent rule, no card) ----------
   var coachBand = '<div style="background:#eef4f9;"><div style="height:4px;background-color:#2ba8e0;background-image:linear-gradient(90deg,#2ba8e0,#7ed0f5);"></div><div style="padding:22px 26px;">'
-    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="46" style="vertical-align:middle;"><div style="width:46px;height:46px;border-radius:50%;background:#173a5a;color:#ffffff;text-align:center;line-height:46px;font-weight:900;font-size:16px;">CG</div></td><td style="padding-left:12px;vertical-align:middle;"><div style="font-size:15px;font-weight:900;color:#0d2b45;">Coach Grant</div><div style="font-size:11px;color:#5a7186;">Your FFP coach &middot; a note for ' + nxt + '</div></td></tr></table>'
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="46" style="vertical-align:middle;"><div style="width:46px;height:46px;border-radius:50%;background:#173a5a;color:#ffffff;text-align:center;line-height:46px;font-weight:900;font-size:16px;">CG</div></td><td style="padding-left:12px;vertical-align:middle;"><div style="font-size:15px;font-weight:900;color:#0d2b45;">Coach AL</div><div style="font-size:11px;color:#5a7186;">Your FFP coach &middot; a note for ' + nxt + '</div></td></tr></table>'
     + '<div style="font-size:14px;line-height:1.6;color:#33475b;margin-top:14px;">' + esc(first) + ' — I’ve watched your ' + mon + ' unfold and it’s a real shift. You went from ticking over to showing up almost every day, and the best part? You didn’t do it alone.</div>'
     + (shone.length ? ('<div style="font-size:11px;font-weight:800;color:#1a9d5a;text-transform:uppercase;letter-spacing:.5px;margin:15px 0 8px;">&#10003; Where you shone</div>' + liList(shone)) : '')
     + '<div style="font-size:11px;font-weight:800;color:#c17d1a;text-transform:uppercase;letter-spacing:.5px;margin:15px 0 8px;">&#9650; Where we build next</div>' + liList(build)
@@ -6593,7 +6594,7 @@ function ffpWrapupEmail(o) {
     + '<tr><td style="padding:0;">' + inner + '</td></tr></table></td></tr></table>';
 }
 
-// v136: MONTHLY WRAP-UP — emailed on the 1st (UTC). Active members get a world-class stats + Coach Grant email
+// v136: MONTHLY WRAP-UP — emailed on the 1st (UTC). Active members get a world-class stats + Coach AL email
 // (ffpWrapupEmail); quiet members get a warm come-back. (CRON_SECRET; ?only=<id|email> test; ?force=1).
 app.get('/api/cron/monthly-wrapup', async (req, res) => {
   if (!(await cronAuthed(req))) return res.status(401).json({ error: 'unauthorized' });
