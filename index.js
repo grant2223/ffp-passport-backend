@@ -319,11 +319,11 @@
 //      sendPushToMember / sendPushToAll (web-push + VAPID from env; prune dead 404/410 endpoints). Admin
 //      broadcast now also delivers as a phone push to opted-in members. Needs env VAPID_PUBLIC_KEY /
 //      VAPID_PRIVATE_KEY / VAPID_SUBJECT (public key has a baked default). PUSH_READY=false → safe no-op.
-// v82 (2026-06-08): 7-DAY FREE TRIAL. /api/billing/checkout now starts every subscription with
-//      trial_period_days:7 — the card is captured upfront (Stripe Checkout default) and the first real charge
-//      lands on day 7. No other change needed: setMemberFromSubscription already treats status 'trialing' as
+// v82 (2026-06-08): 14-DAY FREE TRIAL. /api/billing/checkout now starts every subscription with
+//      trial_period_days:14 — the card is captured upfront (Stripe Checkout default) and the first real charge
+//      lands on day 14. No other change needed: setMemberFromSubscription already treats status 'trialing' as
 //      active (membership='passport'), passport_expires_at tracks current_period_end (= trial end, so an
-//      un-converted trial auto-expires the gate at day 7), a cancel during trial flips membership→free via
+//      un-converted trial auto-expires the gate at day 14), a cancel during trial flips membership→free via
 //      customer.subscription.deleted, and creditReferralForInvoice already skips the $0 trial invoice
 //      (paidUsd<=0 → no referral until real money flows at conversion).
 // v81 (2026-06-08): REFERRALS — recurring + 60-day Ambassador. A referred signup gets referred_by + 60 days at
@@ -557,7 +557,7 @@ const app = express();
 // v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
 //      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
 //      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
-const BACKEND_VERSION = 'v168';
+const BACKEND_VERSION = 'v169';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -668,7 +668,7 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
           passport_no,
           paid: true,
           membership: 'passport',                                                          // v78: paid → passport so the gate recognises them
-          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-yr access window; Passport is a SUBSCRIPTION ($149/yr or $20/mo, 7-day trial) — Stripe is the pricing source of truth (see assets/ffp-constants.js)
+          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-yr access window; Passport is a SUBSCRIPTION ($149/yr or $20/mo, 14-day trial) — Stripe is the pricing source of truth (see assets/ffp-constants.js)
           status: 'active', // v8: required for signin check `member.status !== 'active'`
           stripe_session_id: session.id,
           stripe_customer_id: session.customer || null
@@ -722,7 +722,7 @@ app.use(express.json({ limit: '50mb' }));
 
 // ────────────────────────────────────────────────────────────
 // ADMIN: re-sync passport_expires_at from Stripe truth. Fixes any member whose date got stuck
-// (e.g. a 7-day trial that converted to paid before the invoice.paid / customer.subscription.*
+// (e.g. a 14-day trial that converted to paid before the invoice.paid / customer.subscription.*
 // webhook events were being delivered). Re-reads each subscribed member's live subscription and
 // writes the real status + period end via setMemberFromSubscription.
 // Guard: send header  x-admin-key: <ADMIN_RESYNC_KEY>  (set ADMIN_RESYNC_KEY in the backend env).
@@ -913,7 +913,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           photo_url: photo_url || null,
           paid: true,
           membership: 'passport',                                                          // v78: paid → passport so the gate recognises them
-          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-yr access window; Passport is a SUBSCRIPTION ($149/yr or $20/mo, 7-day trial) — Stripe is the pricing source of truth (see assets/ffp-constants.js)
+          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-yr access window; Passport is a SUBSCRIPTION ($149/yr or $20/mo, 14-day trial) — Stripe is the pricing source of truth (see assets/ffp-constants.js)
           stripe_session_id: session_id,
           stripe_customer_id: customerId,
           profile_complete: true
@@ -958,7 +958,7 @@ app.post('/api/onboard/from-stripe', async (req, res) => {
           role: 'member',
           paid: true,
           membership: 'passport',                                                          // v78: paid → passport so the gate recognises them
-          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-yr access window; Passport is a SUBSCRIPTION ($149/yr or $20/mo, 7-day trial) — Stripe is the pricing source of truth (see assets/ffp-constants.js)
+          passport_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1-yr access window; Passport is a SUBSCRIPTION ($149/yr or $20/mo, 14-day trial) — Stripe is the pricing source of truth (see assets/ffp-constants.js)
           status: 'active', // v8: required for signin check `member.status !== 'active'`
           stripe_session_id: session_id,
           stripe_customer_id: customerId,
@@ -1471,7 +1471,7 @@ async function sendTrialEndingEmail(toEmail, name, planLabel, amountLabel, endLa
   if (!toEmail) return;
   var cancelUrl = 'https://ffppassport.com/ffp-member-dashboard.html?action=cancel';
   var body = '<div style="font-size:24px;font-weight:800;color:#0f2c47;margin-bottom:12px;letter-spacing:-0.3px;">Your free trial ends tomorrow</div>'
-   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 16px;">Hi'+(name?(' '+escapeHtml(name)):'')+', just a heads up that your 7-day trial ends'+(endLabel?(' on <strong style="color:#0f2c47;">'+escapeHtml(endLabel)+'</strong>'):'')+' and you will fully become a part of the active lifestyle community.</p>'
+   +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 16px;">Hi'+(name?(' '+escapeHtml(name)):'')+', just a heads up that your 14-day trial ends'+(endLabel?(' on <strong style="color:#0f2c47;">'+escapeHtml(endLabel)+'</strong>'):'')+' and you will fully become a part of the active lifestyle community.</p>'
    +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 16px;">If you have changed your mind, you can cancel before you’re charged — no hassle, and you’ll keep access until your trial ends.</p>'
    +'<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 20px;">We want to support you best we can — so any feedback you have to improve the experience would be well received via your Passport.</p>'
    +'<p style="margin:0 0 22px;"><a href="'+cancelUrl+'" style="font-size:14px;font-weight:800;color:#93a4b3;text-decoration:none;">Cancel my trial &rsaquo;</a></p>'
@@ -1784,7 +1784,7 @@ async function setMemberFromSubscription(sub, plan, hintMemberId, hintEmail) {
   if (!sub) return;
   // current_period_end moved from the subscription object to its items in newer Stripe API versions.
   // Read the top-level value, else fall back to the first item, so a SDK/API bump can never silently
-  // null the expiry (which is what stranded converted trials at their 7-day date).
+  // null the expiry (which is what stranded converted trials at their 14-day date).
   const _cpe = sub.current_period_end
     || (sub.items && sub.items.data && sub.items.data[0] && sub.items.data[0].current_period_end)
     || null;
@@ -1966,9 +1966,9 @@ app.post('/api/billing/checkout', async (req, res) => {
       line_items: [{ price, quantity: 1 }],
       customer_email: email || undefined,
       metadata: meta,
-      // 7-day free trial on every plan. Card captured now (Checkout default), first charge on day 7. metadata
+      // 14-day free trial on every plan. Card captured now (Checkout default), first charge on day 14. metadata
       // propagates to the subscription so invoice.paid / subscription.* find the member.
-      subscription_data: { metadata: meta, trial_period_days: 7 },
+      subscription_data: { metadata: meta, trial_period_days: 14 },
       allow_promotion_codes: true
     };
     if (isUpgrade) {
