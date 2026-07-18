@@ -557,7 +557,7 @@ const app = express();
 // v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
 //      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
 //      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
-const BACKEND_VERSION = 'v170';
+const BACKEND_VERSION = 'v171';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -6863,6 +6863,50 @@ app.get('/api/cron/streak-nudge', async (req, res) => {
     }
     res.json({ success: true, sent: sent, skipped: skipped, total: (members || []).length });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── PUSH PIPELINE (task #176) — any notifications row becomes a real phone push ─────────────────
+// Likes and comments are written CLIENT-SIDE straight to the DB (member_like_activity /
+// member_comment_activity both insert a notifications row), so the backend never saw them and no
+// push was ever sent — the bell updated, the phone stayed silent. This drains that queue for EVERY
+// notification type instead of special-casing likes/comments.
+// Idempotent: a row is stamped pushed_at once handled, whether or not the member had a subscription
+// (otherwise a member with no device would be retried forever).
+// Window-capped so a backlog or an outage can never fire hundreds of stale pushes at someone.
+app.get('/api/cron/push-notifications', async (req, res) => {
+  try {
+    const WINDOW_H = 6, BATCH = 200;
+    const since = new Date(Date.now() - WINDOW_H * 60 * 60 * 1000).toISOString();
+    const { data: rows, error } = await supabase.from('notifications')
+      .select('id, member_id, title, body, icon, link')
+      .is('pushed_at', null)
+      .eq('audience', 'member')
+      .not('member_id', 'is', null)
+      .gte('created_at', since)
+      .order('created_at', { ascending: true })
+      .limit(BATCH);
+    if (error) return res.status(500).json({ error: error.message });
+    let pushed = 0, marked = 0;
+    for (const n of (rows || [])) {
+      try {
+        pushed += await sendPushToMember(n.member_id, {
+          title: n.title || 'Find Fit People',
+          body: n.body || '',
+          icon: n.icon || undefined,
+          link: n.link || '/ffp-member-dashboard.html',
+          url: n.link || '/ffp-member-dashboard.html'
+        });
+      } catch (e) { /* a dead endpoint must not stall the queue */ }
+      const upd = await supabase.from('notifications')
+        .update({ pushed_at: new Date().toISOString() }).eq('id', n.id);
+      if (!upd.error) marked++;
+    }
+    // Anything older than the window is stamped so it never queues up behind new notifications.
+    await supabase.from('notifications')
+      .update({ pushed_at: new Date().toISOString() })
+      .is('pushed_at', null).lt('created_at', since);
+    return res.json({ success: true, considered: (rows || []).length, pushed: pushed, marked: marked });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
 module.exports = app;
