@@ -557,7 +557,7 @@ const app = express();
 // v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
 //      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
 //      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
-const BACKEND_VERSION = 'v172';
+const BACKEND_VERSION = 'v173';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -6168,9 +6168,12 @@ app.get('/api/cron/daily-activity-reminder', async (req, res) => {
       var lp = memberLocalParts(tz); if (!lp) { skipped++; continue; }
       if (!force && lp.hour !== 17) { skipped++; continue; }                               // only at their local 5pm
       if (m.last_daily_reminder_on && String(m.last_daily_reminder_on).slice(0, 10) === lp.date) { skipped++; continue; } // already sent their-local-today
-      var localMidnightUtc = new Date(new Date(lp.date + 'T00:00:00Z').getTime() - tzOffsetMs(tz)).toISOString();
+      // "Did they train today?" reads the SINGLE SOURCE OF TRUTH for the day — activity_logs.activity_local_date,
+      // written server-side in the member's own tz by trg_activity_logs_local_date (2026-07-18). Previously this
+      // hand-rolled local midnight from tzOffsetMs and compared raw logged_at, so the nudge could disagree with the
+      // streak engine about what day it is and nag someone who HAD trained. Same class of bug as the streak collapse.
       var loggedToday = false;
-      try { var a = await supabase.from('activity_logs').select('id', { count: 'exact', head: true }).eq('member_id', m.id).gte('logged_at', localMidnightUtc); if (a && typeof a.count === 'number' && a.count > 0) loggedToday = true; } catch (e) {}
+      try { var a = await supabase.from('activity_logs').select('id', { count: 'exact', head: true }).eq('member_id', m.id).eq('activity_local_date', lp.date); if (a && typeof a.count === 'number' && a.count > 0) loggedToday = true; } catch (e) {}
       if (!force && loggedToday) { skipped++; continue; }                                   // they've trained today — no nudge (force=1 bypasses for testing)
       var first = String((m.full_name || '').split(' ')[0] || 'there').replace(/[<>]/g, '');
       // Build the active-life snapshot + the single best hook — drives BOTH the push and the rich email.
