@@ -557,7 +557,7 @@ const app = express();
 // v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
 //      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
 //      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
-const BACKEND_VERSION = 'v169';
+const BACKEND_VERSION = 'v170';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -3822,13 +3822,77 @@ async function whoopUpsertActivity(row, workout) {
       sport_id: (workout.sport_id != null) ? workout.sport_id : null
     }
   };
-  const { data: ex } = await supabase.from('activity_logs').select('id')
-    .eq('member_id', row.member_id).eq('source', 'whoop').eq('external_id', String(workout.id)).maybeSingle();
-  let wres;
-  if (ex && ex.id) wres = await supabase.from('activity_logs').update(fields).eq('id', ex.id);
-  else wres = await supabase.from('activity_logs').insert(fields);
-  if (wres && wres.error) throw new Error('activity_logs ' + (ex ? 'update' : 'insert') + ': ' + wres.error.message);
+  // 1) Already imported this exact WHOOP workout → update in place (idempotent re-sync).
+  //    NO source filter: once a hand-logged row has been enriched it carries this external_id, so
+  //    every later sync keeps updating THAT row instead of spawning a duplicate.
+  const { data: ex } = await supabase.from('activity_logs').select('id, source, metrics')
+    .eq('member_id', row.member_id).eq('external_id', String(workout.id)).maybeSingle();
+  if (ex && ex.id) {
+    const payload = (ex.source === 'whoop') ? fields : whoopMeasuredOnly(fields, ex);
+    const r1 = await supabase.from('activity_logs').update(payload).eq('id', ex.id);
+    if (r1 && r1.error) throw new Error('activity_logs update: ' + r1.error.message);
+    await supabase.from('member_wearables').update({ last_synced_at: new Date().toISOString() }).eq('id', row.id);
+    return;
+  }
+  // 2) Did the member already log this session BY HAND? Enrich it — one session, one card.
+  const match = await whoopFindManualMatch(row.member_id, start, totalSec);
+  if (match) {
+    const r2 = await supabase.from('activity_logs').update(whoopMeasuredOnly(fields, match)).eq('id', match.id);
+    if (r2 && r2.error) throw new Error('activity_logs enrich: ' + r2.error.message);
+    await supabase.from('member_wearables').update({ last_synced_at: new Date().toISOString() }).eq('id', row.id);
+    return;
+  }
+  // 3) Genuinely new session → create the WHOOP activity.
+  const wres = await supabase.from('activity_logs').insert(fields);
+  if (wres && wres.error) throw new Error('activity_logs insert: ' + wres.error.message);
   await supabase.from('member_wearables').update({ last_synced_at: new Date().toISOString() }).eq('id', row.id);
+}
+
+// WHOOP enrichment payload — ONLY what the device actually measures. NEVER overwrites the member's
+// own activity name, photos, notes or venue: their entry stays theirs, the watch just adds the data.
+function whoopMeasuredOnly(fields, existing) {
+  const out = {
+    metrics: Object.assign({}, (existing && existing.metrics) || {}, fields.metrics || {}),
+    verified: true,
+    external_id: fields.external_id
+  };
+  if (fields.avg_heart_rate != null) out.avg_heart_rate = fields.avg_heart_rate;
+  if (fields.calories != null) out.calories = fields.calories;
+  if (fields.distance_km != null) out.distance_km = fields.distance_km;
+  return out;
+}
+
+// Find the session the member already logged by hand that IS this WHOOP workout.
+// RULE derived from the 21 real duplicate pairs in live data (Grant 2026-07-18):
+//   (a) the two intervals OVERLAP and durations are within 35%, OR
+//   (b) they start within 90 min and durations are within 10% (manual start times are approximate —
+//       Grant's 11 Jul pair was 66 min apart with an identical 19-min duration).
+// Both clauses require a duration match, which is what keeps genuinely different back-to-back
+// sessions apart (a 12-min run then a 35-min lift never merges).
+async function whoopFindManualMatch(memberId, start, totalSec) {
+  if (!start || !totalSec) return null;
+  const WIN_MS = 90 * 60 * 1000;
+  const whoopMin = totalSec / 60;
+  const whoopEnd = start.getTime() + totalSec * 1000;
+  const lo = new Date(start.getTime() - WIN_MS).toISOString();
+  const hi = new Date(start.getTime() + WIN_MS).toISOString();
+  const { data } = await supabase.from('activity_logs')
+    .select('id, source, logged_at, duration_min, duration_sec, metrics')
+    .eq('member_id', memberId).gte('logged_at', lo).lte('logged_at', hi);
+  let best = null, bestGap = Infinity;
+  (data || []).forEach(function (c) {
+    if (c.source === 'whoop') return;                       // never match another device row
+    const cMin = (c.duration_min || 0) + ((c.duration_sec || 0) / 60);
+    if (!cMin) return;
+    const diff = Math.abs(cMin - whoopMin) / Math.max(cMin, whoopMin);
+    const cStart = new Date(c.logged_at).getTime();
+    const cEnd = cStart + cMin * 60000;
+    const overlaps = (cStart < whoopEnd) && (start.getTime() < cEnd);
+    if (!((overlaps && diff <= 0.35) || (diff <= 0.10))) return;
+    const gap = Math.abs(cStart - start.getTime());
+    if (gap < bestGap) { best = c; bestGap = gap; }
+  });
+  return best;
 }
 
 // ── Daily metrics (sleep / recovery / strain) → member_wearable_daily, merged per day ──
@@ -4187,9 +4251,22 @@ app.post('/api/wearables/daily', async (req, res) => {
     const v = verifyRefreshToken((req.body && req.body.refresh) || '');
     if (!v) return res.status(401).json({ error: 'auth' });
     const { data } = await supabase.from('member_wearable_daily')
-      .select('day, provider, sleep_hours, sleep_efficiency, sleep_performance, recovery_pct, resting_hr, hrv_ms, strain')
+      .select('day, provider, sleep_hours, sleep_efficiency, sleep_performance, recovery_pct, resting_hr, hrv_ms, strain, updated_at')
       .eq('member_id', v.memberId).order('day', { ascending: false }).limit(30);
-    return res.json({ days: data || [] });
+    // Freshness (Grant 2026-07-18): the Passport must show WHOOP numbers ONLY if they are current
+    // within the hour — otherwise show nothing rather than yesterday's data badged "Today".
+    // Return each row's updated_at + the connection's last sync + the member's timezone so the
+    // client can decide correctly instead of guessing from the device clock.
+    const { data: wr } = await supabase.from('member_wearables')
+      .select('last_synced_at').eq('member_id', v.memberId).maybeSingle();
+    const { data: me } = await supabase.from('members')
+      .select('timezone').eq('id', v.memberId).maybeSingle();
+    return res.json({
+      days: data || [],
+      last_synced_at: (wr && wr.last_synced_at) || null,
+      timezone: (me && me.timezone) || null,
+      server_now: new Date().toISOString()
+    });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
