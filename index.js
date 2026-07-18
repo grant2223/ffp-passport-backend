@@ -557,7 +557,7 @@ const app = express();
 // v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
 //      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
 //      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
-const BACKEND_VERSION = 'v171';
+const BACKEND_VERSION = 'v172';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -5172,7 +5172,19 @@ app.post('/api/activity/notify-tags', async (req, res) => {
       .select('partner_member_id').eq('activity_id', activityId).eq('tagged_by', taggerId).eq('status', 'pending');
     const what = act.activity || 'an activity';
     const where = act.city ? (' · ' + act.city) : '';
-    let pushed = 0;
+    // Grant 2026-07-18: a tag must also EMAIL the person. Push alone was being missed — 9 of 19 tags
+    // sat unconfirmed. Fetch the tagged members once, then push + email each.
+    const tagIds = (tags || []).map(t => t.partner_member_id).filter(Boolean);
+    let people = [];
+    if (tagIds.length) {
+      const { data: pr } = await supabase.from('members')
+        .select('id, email, given_names, full_name').in('id', tagIds);
+      people = pr || [];
+    }
+    const byId = {}; people.forEach(p => { byId[p.id] = p; });
+    const APP_URL = process.env.MEMBER_APP_URL || 'https://ffppassport.com';
+    const confirmLink = APP_URL + '/ffp-member-dashboard.html#activity-tags';
+    let pushed = 0, emailed = 0;
     for (const t of (tags || [])) {
       try {
         await sendPushToMember(t.partner_member_id, {
@@ -5183,8 +5195,26 @@ app.post('/api/activity/notify-tags', async (req, res) => {
         });
         pushed++;
       } catch (e) {}
+      const p = byId[t.partner_member_id];
+      if (p && p.email) {
+        try {
+          const first = escapeHtml((p.given_names || p.full_name || '').split(' ')[0] || 'there');
+          const body = ''
+            + '<p style="font-size:16px;color:#0f2c47;line-height:1.5;margin:0 0 10px;"><strong>' + escapeHtml(who) + '</strong> says you trained together.</p>'
+            + '<p style="font-size:14px;color:#5b7186;line-height:1.6;margin:0 0 18px;">Hi ' + first + ' — they added you to <strong style="color:#0f2c47;">' + escapeHtml(what) + '</strong>' + escapeHtml(where) + '. Confirm it and it shows on your Passport too.</p>'
+            + '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 6px;"><tr><td style="background:#2ba8e0;border-radius:10px;">'
+            + '<a href="' + confirmLink + '" style="display:inline-block;padding:13px 26px;font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;font-family:Montserrat,Arial,sans-serif;">Confirm or decline</a>'
+            + '</td></tr></table>';
+          await mailer.sendMail({
+            from: MAIL_FROM, to: p.email,
+            subject: who + ' added you to ' + what,
+            html: brandEmail('Trained with', body)
+          });
+          emailed++;
+        } catch (e) { /* a bad address must not stall the rest */ }
+      }
     }
-    return res.json({ success: true, pushed });
+    return res.json({ success: true, pushed, emailed });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 app.post('/api/activity/notify', async (req, res) => {
