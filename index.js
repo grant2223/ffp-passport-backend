@@ -557,7 +557,7 @@ const app = express();
 // v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
 //      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
 //      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
-const BACKEND_VERSION = 'v173';
+const BACKEND_VERSION = 'v174';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -5975,7 +5975,7 @@ app.post('/api/coach/chat', async (req, res) => {
     try { const { data } = await supabase.from('members').select('given_names, full_name, motivations, goals').eq('id', v.memberId).maybeSingle(); mRow = data; if (data) firstName = String(data.given_names || data.full_name || 'there').split(' ')[0]; } catch (e) {}
     let hist = [];
     try { const { data } = await supabase.from('member_coach_messages').select('role, content').eq('member_id', v.memberId).order('created_at', { ascending: false }).limit(10); hist = (data || []).reverse(); } catch (e) {}
-    const sys = FFP_ETHOS + ' You are Grant, and you are chatting with ' + firstName + ' in Talk-to-Coach. '
+    const sys = FFP_ETHOS + ' You are Coach AL, ' + firstName + '’s active-lifestyle coach, chatting with them in Talk-to-Coach. '
       + 'Their motivations & goals (coach toward these): ' + JSON.stringify({ motivations: motivationLabels(mRow && mRow.motivations), goals: (mRow && mRow.goals) || [] }) + '. '
       + 'What you remember about them: ' + ((prof && prof.summary) ? prof.summary : '(still getting to know them)') + ' '
       + 'Their current facts: ' + JSON.stringify((prof && prof.facts) || {}) + '. '
@@ -5992,6 +5992,44 @@ app.post('/api/coach/chat', async (req, res) => {
     if (!reply) reply = 'I had a moment there — give me another go in a sec. Meanwhile: what is one small thing you could do today to move?';
     try { await supabase.from('member_coach_messages').insert([{ member_id: v.memberId, role: 'user', content: msg }, { member_id: v.memberId, role: 'coach', content: reply }]); } catch (e) {}
     return res.json({ reply: reply });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+});
+
+// COACH OPENER (Grant 2026-07-18): when the hub opens, Coach AL PROACTIVELY starts a fresh, substantive
+// conversation — greets by name, references ONE current, specific thing from their real data, ends with a
+// genuine question. Generated fresh each open (temperature 1 → varies) and DELIBERATELY NOT PERSISTED, so
+// the thread starts clean every time (no wall of old messages) while /api/coach/chat still keeps memory
+// server-side for contextful replies once they engage.
+app.post('/api/coach/opener', async (req, res) => {
+  try {
+    const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+    if (!v) return res.status(401).json({ error: 'auth' });
+    let prof = null;
+    try { const { data } = await supabase.from('member_coach_profile').select('summary, facts').eq('member_id', v.memberId).maybeSingle(); prof = data; } catch (e) {}
+    if (!prof || !prof.facts) { try { prof = await computeCoachProfile(v.memberId); } catch (e) {} }
+    let recent = [];
+    try { const { data } = await supabase.from('activity_logs').select('activity, logged_at, distance_km, duration_min, city').eq('member_id', v.memberId).order('logged_at', { ascending: false }).limit(8); recent = data || []; } catch (e) {}
+    let firstName = 'there'; let mRow = null;
+    try { const { data } = await supabase.from('members').select('given_names, full_name, motivations, goals').eq('id', v.memberId).maybeSingle(); mRow = data; if (data) firstName = String(data.given_names || data.full_name || 'there').split(' ')[0]; } catch (e) {}
+    const facts = (prof && prof.facts) || {};
+    const fallback = (facts.streak && facts.streak >= 3)
+      ? ('That’s a ' + facts.streak + '-day streak now, ' + firstName + ' — what’s the plan to keep it rolling today?')
+      : ('Hey ' + firstName + ' — what are you moving toward this week? Tell me and I’ll help you get there.');
+    if (!ANTHROPIC_KEY) return res.json({ opener: fallback });
+    const sys = FFP_ETHOS + ' You are Coach AL, ' + firstName + '’s active-lifestyle coach. Proactively START a fresh conversation: '
+      + 'greet ' + firstName + ' by name, reference ONE specific, CURRENT thing from their data (a streak to protect, their most recent session, a pillar they’re neglecting, where they sit in a live quest, or a smart next move), and end with ONE genuine question that invites them to reply. '
+      + '2–3 short sentences. Warm, punchy, specific — never generic, no lists, no headings, no restating stats like a report. If they are on a 3+ day streak or trained today, celebrate it and never imply they’ve slipped.';
+    const ctx = 'What I remember: ' + ((prof && prof.summary) ? prof.summary : '(still getting to know them)')
+      + ' Their facts: ' + JSON.stringify(facts)
+      + '. Their motivations & goals: ' + JSON.stringify({ motivations: motivationLabels(mRow && mRow.motivations), goals: (mRow && mRow.goals) || [] })
+      + '. Their recent activities: ' + JSON.stringify(recent)
+      + '. Write my opening message to them now.';
+    let opener = '';
+    try {
+      const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(20000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 220, temperature: 1, system: sys, messages: [{ role: 'user', content: ctx }] }) });
+      const j = await r.json(); if (r.ok) opener = ((j.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
+    } catch (e) {}
+    return res.json({ opener: opener || fallback });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
