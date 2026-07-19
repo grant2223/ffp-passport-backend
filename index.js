@@ -557,7 +557,7 @@ const app = express();
 // v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
 //      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
 //      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
-const BACKEND_VERSION = 'v175';
+const BACKEND_VERSION = 'v176';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -3616,14 +3616,64 @@ function normalizeWorkout(plan) {
   var arr = function (x) { return Array.isArray(x) ? x : []; };
   var num = function (x, d) { var n = Number(x); return isFinite(n) ? n : d; };
   var str = function (x) { return (x == null) ? '' : String(x).trim(); };
+  var clampInt = function (x, lo, hi) { return Math.max(lo, Math.min(hi, Math.round(x))); };
   return {
     title: str(plan.title) || 'Workout',
     focus: str(plan.focus),
     duration_min: num(plan.duration_min, 0),
-    warmup: arr(plan.warmup).map(function (w) { return { name: str(w.name), duration_sec: num(w.duration_sec, 30), note: str(w.note) }; }).filter(function (w) { return w.name; }),
-    exercises: arr(plan.exercises).map(function (e) { return { name: str(e.name), sets: Math.max(1, Math.round(num(e.sets, 3))), reps: str(e.reps) || '10', rest_sec: num(e.rest_sec, 75), weight: str(e.weight), note: str(e.note) }; }).filter(function (e) { return e.name; }),
-    cooldown: arr(plan.cooldown).map(function (c) { return { name: str(c.name), duration_sec: num(c.duration_sec, 30), note: str(c.note) }; }).filter(function (c) { return c.name; })
+    // Duration guards (Grant 2026-07-18): warm-up moves are SHORT + dynamic (15-30s; a 90s "high-knee run"
+    // is wrong), stretches are longer holds (30-90s). Clamp so a stray model value can't break the rule.
+    warmup: arr(plan.warmup).map(function (w) { return { name: str(w.name), duration_sec: clampInt(num(w.duration_sec, 20), 10, 45), note: str(w.note) }; }).filter(function (w) { return w.name; }),
+    exercises: arr(plan.exercises).map(function (e) { return { name: str(e.name), sets: Math.max(1, Math.round(num(e.sets, 3))), reps: str(e.reps) || '10', rest_sec: clampInt(num(e.rest_sec, 75), 20, 180), weight: str(e.weight), note: str(e.note) }; }).filter(function (e) { return e.name; }),
+    cooldown: arr(plan.cooldown).map(function (c) { return { name: str(c.name), duration_sec: clampInt(num(c.duration_sec, 45), 20, 120), note: str(c.note) }; }).filter(function (c) { return c.name; })
   };
+}
+
+// ── Generators (shared by the panels AND Coach AL so a chat request produces the SAME quality plan) ──
+const WORKOUT_GEN_SYS =
+  'You are an expert strength & conditioning coach creating ONE genuinely good, VARIED workout session for a fitness app. ' +
+  'Return ONLY valid minified JSON (no markdown, no prose) with this exact shape: ' +
+  '{"title":string,"focus":string,"duration_min":number,' +
+  '"warmup":[{"name":string,"duration_sec":number,"note":string}],' +
+  '"exercises":[{"name":string,"sets":number,"reps":string,"rest_sec":number,"weight":string,"note":string}],' +
+  '"cooldown":[{"name":string,"duration_sec":number,"note":string}]}. ' +
+  'QUALITY BAR — the session must be coherent and purposeful, not a generic list: the warm-up must PREPARE the exact muscles/patterns the main work uses, the main exercises must fit the stated focus and flow in a sensible order (compound/heavier first, then accessory/isolation), and the cool-down must target what was worked. Vary movements across sessions — do not default to the same handful. ' +
+  'WARM-UP: 3-5 DYNAMIC, low-intensity mobility/activation moves (e.g. leg swings, arm circles, high knees, world\'s-greatest-stretch, glute bridges) — each duration_sec 15-30 (NEVER 60+; a warm-up move is short and dynamic, not a hold). ' +
+  'MAIN: 3-7 exercises; reps a range like "8-12" or a hold like "30s"; weight a short cue like "bodyweight","moderate","15-20kg"; rest_sec 30-150 appropriate to the effort (heavier/compound = more rest). ' +
+  'COOL-DOWN: 3-4 static stretches/mobility holds — each duration_sec 30-90. ' +
+  'Respect any stated equipment, level, time or injury limits; keep it safe; note is a short coaching cue of 8 words or fewer. Output JSON only.';
+const NUTRITION_GEN_SYS =
+  'You are an expert sports-nutrition coach creating ONE day of meals for a fitness app. ' +
+  'Return ONLY valid minified JSON (no markdown, no prose) with this exact shape: ' +
+  '{"title":string,"summary":string,"daily_kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number,' +
+  '"meals":[{"meal":string,"kcal":number,"items":[string]}],"tips":[string]}. ' +
+  'Rules: 3-5 meals (e.g. Breakfast, Lunch, Dinner, Snacks) whose kcal sum is close to daily_kcal; ' +
+  'each item is a short food + portion like "150g grilled chicken" or "1 cup oats with berries"; ' +
+  'macros must be realistic and roughly consistent with the calories; respect any stated goal, calorie ' +
+  'target, diet, allergy, dislike or training pattern; summary is one or two sentences; 2-4 short practical ' +
+  'tips of 12 words or fewer. Output JSON only.';
+async function _aiJson(sys, prompt) {
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000),
+    body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1600, system: sys, messages: [{ role: 'user', content: prompt }] })
+  });
+  const j = await r.json();
+  if (!r.ok) { console.error('[gen] anthropic:', j && j.error); return null; }
+  var text = ''; try { text = (j.content || []).map(function (b) { return b.text || ''; }).join('').trim(); } catch (e) {}
+  return text;
+}
+async function genWorkoutPlan(prompt) {
+  if (!ANTHROPIC_KEY) return null;
+  var text = await _aiJson(WORKOUT_GEN_SYS, prompt); if (!text) return null;
+  var plan = normalizeWorkout(parseWorkoutJSON(text));
+  return (plan && plan.exercises && plan.exercises.length) ? plan : null;
+}
+async function genNutritionPlan(prompt) {
+  if (!ANTHROPIC_KEY) return null;
+  var text = await _aiJson(NUTRITION_GEN_SYS, prompt); if (!text) return null;
+  var plan = normalizeNutrition(parseWorkoutJSON(text));
+  return (plan && plan.meals && plan.meals.length) ? plan : null;
 }
 
 app.post('/api/workout/generate', async (req, res) => {
@@ -3631,28 +3681,8 @@ app.post('/api/workout/generate', async (req, res) => {
     if (!ANTHROPIC_KEY) return res.status(503).json({ error: 'ai_not_configured' });
     const prompt = String((req.body && req.body.prompt) || '').trim();
     if (prompt.length < 3) return res.status(400).json({ error: 'prompt required' });
-    const sys =
-      'You are an expert strength & conditioning coach creating ONE workout session for a fitness app. ' +
-      'Return ONLY valid minified JSON (no markdown, no prose) with this exact shape: ' +
-      '{"title":string,"focus":string,"duration_min":number,' +
-      '"warmup":[{"name":string,"duration_sec":number,"note":string}],' +
-      '"exercises":[{"name":string,"sets":number,"reps":string,"rest_sec":number,"weight":string,"note":string}],' +
-      '"cooldown":[{"name":string,"duration_sec":number,"note":string}]}. ' +
-      'Rules: 3-7 main exercises; ALWAYS include 2-4 warm-up mobility/activation moves and 2-4 cool-down stretches/mobility; ' +
-      'reps may be a range like "8-12" or a hold like "30s"; weight is a short suggestion like "bodyweight","moderate","15-20kg"; ' +
-      'rest_sec between 30 and 150; respect any stated equipment, level, time or injury limits; keep it safe; ' +
-      'note is a short coaching cue of 8 words or fewer. Output JSON only.';
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000),
-      body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1600, system: sys, messages: [{ role: 'user', content: prompt }] })
-    });
-    const j = await r.json();
-    if (!r.ok) { console.error('[workout] anthropic:', j && j.error); return res.status(502).json({ error: 'ai_error', detail: (j && j.error && j.error.message) || '' }); }
-    var text = '';
-    try { text = (j.content || []).map(function (b) { return b.text || ''; }).join('').trim(); } catch (e) {}
-    var plan = normalizeWorkout(parseWorkoutJSON(text));
-    if (!plan || !plan.exercises.length) return res.status(502).json({ error: 'ai_bad_output' });
+    var plan = await genWorkoutPlan(prompt);
+    if (!plan) return res.status(502).json({ error: 'ai_bad_output' });
     return res.json({ plan });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
@@ -3683,27 +3713,17 @@ app.post('/api/nutrition/plan', async (req, res) => {
     if (!ANTHROPIC_KEY) return res.status(503).json({ error: 'ai_not_configured' });
     const prompt = String((req.body && req.body.prompt) || '').trim();
     if (prompt.length < 3) return res.status(400).json({ error: 'prompt required' });
-    const sys =
-      'You are an expert sports-nutrition coach creating ONE day of meals for a fitness app. ' +
-      'Return ONLY valid minified JSON (no markdown, no prose) with this exact shape: ' +
-      '{"title":string,"summary":string,"daily_kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number,' +
-      '"meals":[{"meal":string,"kcal":number,"items":[string]}],"tips":[string]}. ' +
-      'Rules: 3-5 meals (e.g. Breakfast, Lunch, Dinner, Snacks) whose kcal sum is close to daily_kcal; ' +
-      'each item is a short food + portion like "150g grilled chicken" or "1 cup oats with berries"; ' +
-      'macros must be realistic and roughly consistent with the calories; respect any stated goal, calorie ' +
-      'target, diet, allergy, dislike or training pattern; summary is one or two sentences; 2-4 short practical ' +
-      'tips of 12 words or fewer. Output JSON only.';
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000),
-      body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 1600, system: sys, messages: [{ role: 'user', content: prompt }] })
-    });
-    const j = await r.json();
-    if (!r.ok) { console.error('[nutrition] anthropic:', j && j.error); return res.status(502).json({ error: 'ai_error', detail: (j && j.error && j.error.message) || '' }); }
-    var text = '';
-    try { text = (j.content || []).map(function (b) { return b.text || ''; }).join('').trim(); } catch (e) {}
-    var plan = normalizeNutrition(parseWorkoutJSON(text));
-    if (!plan || !plan.meals.length) return res.status(502).json({ error: 'ai_bad_output' });
+    var plan = await genNutritionPlan(prompt);
+    if (!plan) return res.status(502).json({ error: 'ai_bad_output' });
+    // If a signed-in member built this, persist it so it shows in their Calorie Tracker › Saved plans.
+    try {
+      const v = verifyRefreshToken((req.body && req.body.refresh) || '');
+      if (v) await supabase.from('nutrition_plans').insert({
+        member_id: v.memberId, title: plan.title, summary: plan.summary,
+        daily_kcal: plan.daily_kcal, protein_g: plan.protein_g, carbs_g: plan.carbs_g, fat_g: plan.fat_g,
+        plan: plan, source_prompt: prompt
+      });
+    } catch (e) {}
     return res.json({ plan });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
@@ -5984,18 +6004,49 @@ app.post('/api/coach/chat', async (req, res) => {
       + 'What you remember about them: ' + ((prof && prof.summary) ? prof.summary : '(still getting to know them)') + ' '
       + 'Their current facts: ' + JSON.stringify((prof && prof.facts) || {}) + '. '
       + 'Their recent activities: ' + JSON.stringify(recent) + '. '
-      + 'Keep replies short (2-4 sentences), conversational, and pointed at ONE next step tied to their goals.';
+      + 'Keep replies short (2-4 sentences), conversational, and pointed at ONE next step tied to their goals. '
+      // AGENTIC (Grant 2026-07-18): the coach can actually DO things on the platform, not just talk.
+      + 'YOU CAN TAKE ACTIONS: if the member asks you to build/make/write a workout or a meal/nutrition plan (or clearly wants one), CREATE it for them. '
+      + 'To do so, end your reply with EXACTLY ONE control line on its own, nothing after it: '
+      + '[[FFP_ACTION:workout|<a detailed generation brief>]] for a workout, or [[FFP_ACTION:nutrition|<a detailed generation brief>]] for a meal plan. '
+      + 'The brief must fold in what YOU know about them (their level, favourite activities, typical session length, equipment/goals/limits they mentioned) so the plan is tailored — e.g. "45-min dumbbell lower-body session, intermediate, protect a sore left knee". '
+      + 'In the visible reply, warmly say you have added it to their AI Coach (workout) or Calorie Tracker (nutrition) — do NOT paste the plan itself; the app shows it. Only emit the control line when a plan is genuinely wanted; never for general chat.';
     let messages = hist.map(function (m) { return { role: (m.role === 'coach' ? 'assistant' : 'user'), content: m.content }; });
     messages.push({ role: 'user', content: msg });
     while (messages.length && messages[0].role === 'assistant') messages.shift();   // Anthropic requires the first message to be 'user'
     let reply = '';
     try {
-      const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(30000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 400, system: sys, messages: messages }) });
+      const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(30000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 500, system: sys, messages: messages }) });
       const j = await r.json(); if (r.ok) reply = ((j.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
     } catch (e) {}
     if (!reply) reply = 'I had a moment there — give me another go in a sec. Meanwhile: what is one small thing you could do today to move?';
+    // Parse an optional action the coach chose to take, generate + save the artifact, strip the control line.
+    let artifact = null;
+    try {
+      const m2 = reply.match(/\[\[FFP_ACTION:(workout|nutrition)\|([\s\S]*?)\]\]/i);
+      if (m2) {
+        reply = reply.replace(m2[0], '').trim();
+        const kind = m2[1].toLowerCase();
+        const brief = String(m2[2] || msg).trim().slice(0, 600);
+        if (kind === 'workout') {
+          const plan = await genWorkoutPlan(brief);
+          if (plan) {
+            const ins = await supabase.from('workout_plans').insert({ member_id: v.memberId, title: plan.title, focus: plan.focus, duration_min: plan.duration_min, plan: plan, source_prompt: brief }).select('id').single();
+            artifact = { type: 'workout', id: (ins && ins.data && ins.data.id) || null, title: plan.title, focus: plan.focus, duration_min: plan.duration_min };
+          }
+        } else {
+          const plan = await genNutritionPlan(brief);
+          if (plan) {
+            const ins = await supabase.from('nutrition_plans').insert({ member_id: v.memberId, title: plan.title, summary: plan.summary, daily_kcal: plan.daily_kcal, protein_g: plan.protein_g, carbs_g: plan.carbs_g, fat_g: plan.fat_g, plan: plan, source_prompt: brief }).select('id').single();
+            artifact = { type: 'nutrition', id: (ins && ins.data && ins.data.id) || null, title: plan.title, daily_kcal: plan.daily_kcal };
+          }
+        }
+        if (!artifact) reply = (reply || '') + '\n\n(That one didn’t generate cleanly — ask me to try again.)';
+      }
+    } catch (e) {}
+    if (!reply) reply = 'Done.';
     try { await supabase.from('member_coach_messages').insert([{ member_id: v.memberId, role: 'user', content: msg }, { member_id: v.memberId, role: 'coach', content: reply }]); } catch (e) {}
-    return res.json({ reply: reply });
+    return res.json({ reply: reply, artifact: artifact });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
