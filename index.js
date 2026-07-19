@@ -557,7 +557,7 @@ const app = express();
 // v164 (2026-07-05): GROW course Step 1. POST /api/pro/grow/synthesize — takes the coach's 8 open answers about their
 //      strengths and (via Claude) returns {strengths[], proof, has_proof, audience_line, development_plan[], note}. If proof is
 //      thin, has_proof=false + a development plan instead of faking authority. Backs the guided Step-1 flow (voice-note answers).
-const BACKEND_VERSION = 'v174';
+const BACKEND_VERSION = 'v175';
 // CORS - Handle preflight
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -5898,7 +5898,8 @@ async function computeCoachProfile(memberId) {
   let summary = '';
   try {
     if (ANTHROPIC_KEY) {
-      const sys = FFP_ETHOS + ' From these JSON facts about ONE member, write 2-4 short sentences (max ~55 words, no emojis) capturing what you KNOW about how they train — their favourite activities (facts.favourites), how often (weekly_cadence) and their weekday-vs-weekend rhythm (weekend_share), typical session length (typical_session_min), current and best streak (streak / longest_streak), momentum, and recovery/sleep if present. Specific and factual; this is your private memory to personalise future coaching and be a positive influence. Speak about them in third person ("they").';
+      const sys = FFP_ETHOS + ' From these JSON facts about ONE member, write 2-4 short sentences (max ~55 words, no emojis) capturing what you KNOW about how they train — their favourite activities (facts.favourites), how often (weekly_cadence) and their weekday-vs-weekend rhythm (weekend_share), typical session length (typical_session_min), current and best streak (streak / longest_streak), momentum, and recovery/sleep if present. Specific and factual; this is your private memory to personalise future coaching. '
+        + 'CRITICAL: refer to them ONLY as "this member" or "they/them". Do NOT use, guess, or INVENT a personal name, and do NOT open with a name or a "Name\'s Profile" heading. Do NOT assume gender — use they/them exclusively. Any names elsewhere in FFP data are OTHER people, never this member.';
       const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(25000), body: JSON.stringify({ model: WORKOUT_MODEL, max_tokens: 150, system: sys, messages: [{ role: 'user', content: JSON.stringify(facts) }] }) });
       const j = await r.json(); if (r.ok) summary = ((j.content || []).map(function (b) { return b.text || ''; }).join('')).trim();
     }
@@ -5975,7 +5976,10 @@ app.post('/api/coach/chat', async (req, res) => {
     try { const { data } = await supabase.from('members').select('given_names, full_name, motivations, goals').eq('id', v.memberId).maybeSingle(); mRow = data; if (data) firstName = String(data.given_names || data.full_name || 'there').split(' ')[0]; } catch (e) {}
     let hist = [];
     try { const { data } = await supabase.from('member_coach_messages').select('role, content').eq('member_id', v.memberId).order('created_at', { ascending: false }).limit(10); hist = (data || []).reverse(); } catch (e) {}
-    const sys = FFP_ETHOS + ' You are Coach AL, ' + firstName + '’s active-lifestyle coach, chatting with them in Talk-to-Coach. '
+    var coachName = String((req.body && req.body.coach) || '').trim();
+    if (['Alba', 'Leo', 'Coach AL'].indexOf(coachName) === -1) coachName = 'Coach AL';
+    const sys = FFP_ETHOS + ' You are ' + coachName + ', an FFP active-lifestyle coach, chatting with the member in Talk-to-Coach. '
+      + ((firstName && firstName !== 'there') ? ('Their first name is exactly "' + firstName + '" — call them ' + firstName + ' and NEVER any other name; any other names in their data are OTHER people. ') : 'Do not invent a name for them. ')
       + 'Their motivations & goals (coach toward these): ' + JSON.stringify({ motivations: motivationLabels(mRow && mRow.motivations), goals: (mRow && mRow.goals) || [] }) + '. '
       + 'What you remember about them: ' + ((prof && prof.summary) ? prof.summary : '(still getting to know them)') + ' '
       + 'Their current facts: ' + JSON.stringify((prof && prof.facts) || {}) + '. '
@@ -6012,12 +6016,20 @@ app.post('/api/coach/opener', async (req, res) => {
     let firstName = 'there'; let mRow = null;
     try { const { data } = await supabase.from('members').select('given_names, full_name, motivations, goals').eq('id', v.memberId).maybeSingle(); mRow = data; if (data) firstName = String(data.given_names || data.full_name || 'there').split(' ')[0]; } catch (e) {}
     const facts = (prof && prof.facts) || {};
+    // Coach persona name (Alba = female members, Leo = male, else Coach AL) — sent by the app.
+    var coachName = String((req.body && req.body.coach) || '').trim();
+    if (['Alba', 'Leo', 'Coach AL'].indexOf(coachName) === -1) coachName = 'Coach AL';
+    var named = (firstName && firstName !== 'there');
     const fallback = (facts.streak && facts.streak >= 3)
-      ? ('That’s a ' + facts.streak + '-day streak now, ' + firstName + ' — what’s the plan to keep it rolling today?')
-      : ('Hey ' + firstName + ' — what are you moving toward this week? Tell me and I’ll help you get there.');
+      ? ('That’s a ' + facts.streak + '-day streak' + (named ? ', ' + firstName : '') + ' — what’s the plan to keep it rolling today?')
+      : ('Hey' + (named ? ' ' + firstName : '') + ' — what are you moving toward this week? Tell me and I’ll help you get there.');
     if (!ANTHROPIC_KEY) return res.json({ opener: fallback });
-    const sys = FFP_ETHOS + ' You are Coach AL, ' + firstName + '’s active-lifestyle coach. Proactively START a fresh conversation: '
-      + 'greet ' + firstName + ' by name, reference ONE specific, CURRENT thing from their data (a streak to protect, their most recent session, a pillar they’re neglecting, where they sit in a live quest, or a smart next move), and end with ONE genuine question that invites them to reply. '
+    const sys = FFP_ETHOS + ' You are ' + coachName + ', an FFP active-lifestyle coach. Proactively START a fresh conversation: '
+      + (named
+          ? 'the member’s first name is exactly "' + firstName + '" — address them as ' + firstName + ' and NEVER use any other name. '
+          : 'do NOT use or invent a name — greet them warmly without one. ')
+      + 'Any other names you see in their data are OTHER PEOPLE (their training partners), never the member, and do not assume the member’s gender. '
+      + 'Reference ONE specific, CURRENT thing from their data (a streak to protect, their most recent session, a pillar they’re neglecting, where they sit in a live quest, or a smart next move), and end with ONE genuine question that invites them to reply. '
       + '2–3 short sentences. Warm, punchy, specific — never generic, no lists, no headings, no restating stats like a report. If they are on a 3+ day streak or trained today, celebrate it and never imply they’ve slipped.';
     const ctx = 'What I remember: ' + ((prof && prof.summary) ? prof.summary : '(still getting to know them)')
       + ' Their facts: ' + JSON.stringify(facts)
